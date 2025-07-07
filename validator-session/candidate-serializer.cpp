@@ -28,9 +28,10 @@ td::Result<td::BufferSlice> serialize_candidate(const tl_object_ptr<ton_api::val
   if (!compression_enabled) {
     return serialize_tl_object(block, true);
   }
-  TRY_RESULT(compressed, compress_candidate_data(block->data_, block->collated_data_))
-  return create_serialize_tl_object<ton_api::validatorSession_compressedCandidateV2>(
-      0, block->src_, block->round_, block->root_hash_, std::move(compressed));
+  size_t decompressed_size;
+  TRY_RESULT(compressed, compress_candidate_data(block->data_, block->collated_data_, decompressed_size))
+  return create_serialize_tl_object<ton_api::validatorSession_compressedCandidate>(
+      0, block->src_, block->round_, block->root_hash_, (int)decompressed_size, std::move(compressed));
 }
 
 td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> deserialize_candidate(td::Slice data,
@@ -69,7 +70,8 @@ td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> deserialize_candi
   return res;
 }
 
-td::Result<td::BufferSlice> compress_candidate_data(td::Slice block, td::Slice collated_data) {
+td::Result<td::BufferSlice> compress_candidate_data(td::Slice block, td::Slice collated_data,
+                                                    size_t& decompressed_size) {
   vm::BagOfCells boc1, boc2;
   TRY_STATUS(boc1.deserialize(block));
   if (boc1.get_root_count() != 1) {
@@ -80,6 +82,7 @@ td::Result<td::BufferSlice> compress_candidate_data(td::Slice block, td::Slice c
   for (int i = 0; i < boc2.get_root_count(); ++i) {
     roots.push_back(boc2.get_root_cell(i));
   }
+  decompressed_size = block.size() + collated_data.size();
   TRY_RESULT(compressed, vm::boc_compress(roots, vm::CompressionAlgorithm::ImprovedStructureLZ4));
   LOG(DEBUG) << "Compressing block candidate: " << block.size() + collated_data.size() << " -> " << compressed.size();
   return compressed;
