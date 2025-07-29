@@ -23,18 +23,31 @@ This file is part of TON Blockchain Library.
 #include "vm/cells/CellSlice.h"
 #include "vm/cells/CellBuilder.h"
 #include "vm/excno.hpp"
+#include <algorithm>
+#include "vm/boc.h"
+#include "vm/boc-writers.h"
+#include "vm/cells.h"
+#include "vm/cellslice.h"
+#include "td/utils/Slice-decl.h"
+#include "td/utils/lz4.h"
 
 namespace vm {
 
 constexpr size_t kDecompressedSizeBytes = 4;
 
-enum class CompressionAlgorithm : int { BaselineLZ4 = 0, ImprovedStructureLZ4 = 1 };
+enum class CompressionAlgorithm : int { BaselineLZ4 = 0, ImprovedStructureLZ4 = 1, ImprovedStructureLZ4_v2 = 2};
 
 td::Result<td::BufferSlice> boc_compress_baseline_lz4(const std::vector<td::Ref<vm::Cell>>& boc_roots);
 td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress_baseline_lz4(td::Slice compressed, int max_decompressed_size);
 
+td::Status cache_cell_hashes(const std::vector<td::Ref<vm::Cell>>& boc_roots,
+                             td::HashMap<vm::Cell::Hash, size_t>& cache,
+                             std::vector<td::Ref<vm::Cell>>& hash_by_ind);
+
 td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vector<td::Ref<vm::Cell>>& boc_roots);
+td::Result<td::BufferSlice> boc_compress_improved_structure_lz4_prev(const std::vector<td::Ref<vm::Cell>>& boc_roots, const td::HashMap<vm::Cell::Hash, size_t>& cache);
 td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress_improved_structure_lz4(td::Slice compressed, int max_decompressed_size);
+td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress_improved_structure_lz4_prev(td::Slice compressed, int max_decompressed_size, std::vector<td::Ref<vm::Cell>>& hash_by_ind);
 
 td::Result<td::BufferSlice> boc_compress(const std::vector<td::Ref<vm::Cell>>& boc_roots, CompressionAlgorithm algo = CompressionAlgorithm::BaselineLZ4);
 td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress(td::Slice compressed, int max_decompressed_size);
