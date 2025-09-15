@@ -18,8 +18,23 @@
 */
 #include "boc-compression.h"
 #include "openssl/digest.hpp"
+#include <fstream>
 
 namespace vm {
+
+CellHash get_cell_data_hash(td::BitSlice data) {
+  digest::SHA256 hasher;
+  td::BitString data_bits;
+  data_bits.reserve_bitslice(data.size()) = data;
+  while (data_bits.size() % 8) {
+    data_bits.reserve_bitslice(1).bits().store_uint(0, 1);
+  }
+  if (data_bits.bits().offs != 0) exit(199);
+  hasher.feed(data_bits.bits().get_byte_ptr(), data_bits.size() / 8);
+  CellHash hash_;
+  hasher.extract(hash_.as_slice());
+  return hash_;
+}
 
 td::Result<td::BufferSlice> boc_compress_baseline_lz4(const std::vector<td::Ref<vm::Cell>>& boc_roots) {
   TRY_RESULT(data, vm::std_boc_serialize_multi(std::move(boc_roots), 2));
@@ -67,7 +82,163 @@ inline td::Result<unsigned> read_uint(td::BitSlice& bs, int bits) {
   return result;
 }
 
+std::map<int, int> cnt_types;
+int TESTS = 0;
+td::HashMap<vm::Cell::Hash, size_t> local_cache;
+td::HashMap<std::string, size_t> data_cache;
+int cnt_v = 0;
+std::vector<int> sourced_vertices;
+std::vector<int> matching_data_vertices;
+std::vector<std::pair<int, int>> direct_edges;
+std::vector<std::pair<int, int>> back_edges;
+std::map<int, std::string> vertex_data;
+std::map<int, int> subtree_size;
+
+void clr(bool clear_cache = true) {
+  if (clear_cache) {
+    local_cache.clear();
+    data_cache.clear();
+  }
+  // cnt_v = 0;
+  // sourced_vertices.clear();
+  // direct_edges.clear();
+  back_edges.clear();
+  cnt_types.clear();
+  TESTS = 0;
+}
+
+void print_edges() {
+  std::ofstream fout("/Users/olegvallas/midnight25/BOC_visualizer/input.txt");
+  // std::cout << "direct_edges_inp=\"";
+  for (auto& e : direct_edges) {
+    fout << "(" << e.first << ">" << e.second << (e == direct_edges.back() ? ")" : "),");
+  }
+  fout << std::endl;
+  // std::cout << "back_edges_inp=\"";
+  for (auto& e : back_edges) {
+    fout << "(" << e.first << ">" << e.second << (e == back_edges.back() ? ")" : "),");
+  }
+  fout << std::endl;
+  // std::cout << "sourced_nodes_inp=\"";
+  for (auto& e : sourced_vertices) {
+    fout << e << (e == sourced_vertices.back() ? "" : ",");
+  }
+  fout << std::endl;
+  for (auto& e : matching_data_vertices) {
+    fout << e << (e == matching_data_vertices.back() ? "" : ",");
+  }
+  fout << std::endl;
+  fout << vertex_data.size() << std::endl;
+  for (auto& e : vertex_data) {
+    fout << e.first << " " << e.second << std::endl;
+  }
+  fout << subtree_size.size() << std::endl;
+  for (auto& e : subtree_size) {
+    fout << e.first << " " << e.second << std::endl;
+  }
+  fout.close();
+  // std::cout << "==========================" << std::endl;
+}
+
+int calc_sub_size_local_cache(td::Ref<vm::Cell> cell, bool right_tree, td::Ref<vm::Cell> left_cell, int pr = -1) {
+  // std::cout << data_cache.size() << std::endl;
+  auto cell_hash = cell->get_hash();
+  auto cache_it = local_cache.find(cell_hash);
+  int current_id = cnt_v++;
+  if (pr != -1) {
+    direct_edges.push_back({pr, current_id});
+  }
+
+  if (right_tree && cache_it != local_cache.end()) {
+    int matched_id = cache_it->second;
+    sourced_vertices.push_back(current_id);
+    sourced_vertices.push_back(matched_id);
+    back_edges.push_back({current_id, matched_id});
+    return 0;
+  }
+
+  if (!right_tree) {
+    local_cache.emplace(cell_hash, current_id);
+  }
+  if (left_cell != td::Ref<vm::Cell>()) {
+    auto left_cell_hash = left_cell->get_hash();
+    auto it_left = local_cache.find(left_cell_hash);
+    if (it_left == local_cache.end()) {
+      exit(228);
+    }
+    int matched_id = it_left->second;
+    matching_data_vertices.emplace_back(matched_id);
+    matching_data_vertices.emplace_back(current_id);
+  }
+
+  bool is_special = false;
+  int sum_size = 0;
+  vm::CellSlice cell_slice = vm::load_cell_slice_special(cell, is_special);
+  td::BitSlice cell_bitslice = cell_slice.as_bitslice();
+  vertex_data[current_id] = cell_bitslice.to_hex();
+  if (!right_tree) {
+    for (int i = 1; i <= cell_bitslice.size(); ++i) {
+      std::string hash = cell_bitslice.subslice(0, i).to_binary();
+      data_cache.emplace(hash, current_id);
+    }
+  }
+  int longest_common_prefix = 0;
+  if (right_tree) {
+    for (int i = 1; i <= cell_bitslice.size(); ++i) {
+      std::string hash = cell_bitslice.subslice(0, i).to_binary();
+      if (data_cache.find(hash) != data_cache.end()) {
+        longest_common_prefix = i;
+      }
+    }
+  }
+
+  // if (left_cell != td::Ref<vm::Cell>()) {
+  //   vm::CellSlice left_cell_slice = vm::load_cell_slice_special(left_cell, is_special);
+  //   td::BitSlice left_cell_bitslice = left_cell_slice.as_bitslice();
+  //   int k = 0;
+  //   for (k = 0; k < std::min(cell_bitslice.size(), left_cell_bitslice.size()); ++k) {
+  //     if (cell_bitslice[k] != left_cell_bitslice[k]) {
+  //       break;
+  //     }
+  //   }
+  // }
+  sum_size += (cell_bitslice.size() - longest_common_prefix);
+  if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+    sum_size -= 16;
+  }
+
+  // 7801
+  // Process cell references
+  if (left_cell != td::Ref<vm::Cell>()) {
+    vm::CellSlice left_cell_slice = vm::load_cell_slice_special(left_cell, is_special);
+    if (left_cell_slice.size_refs() == cell_slice.size_refs()) {
+      for (int i = 0; i < cell_slice.size_refs(); ++i) {
+        sum_size += calc_sub_size_local_cache(
+          cell_slice.prefetch_ref(i),
+          right_tree,
+          left_cell_slice.prefetch_ref(i),
+          current_id
+        );
+      }
+      subtree_size[current_id] = sum_size;
+      return sum_size;
+    }
+  }
+  for (int i = 0; i < cell_slice.size_refs(); ++i) {
+    sum_size += calc_sub_size_local_cache(cell_slice.prefetch_ref(i), right_tree, td::Ref<vm::Cell>(), current_id);
+  }
+  subtree_size[current_id] = sum_size;
+  return sum_size;
+};
+
+std::map<int, int> copy_data;
+
+
+const int MAX_N = 10000;
+std::map<int, int> mu_right_data_sizes;
 td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vector<td::Ref<vm::Cell>>& boc_roots) {
+  local_cache.clear();
+  // mu_right_data_sizes.clear();
   // Input validation
   if (boc_roots.empty()) {
     return td::Status::Error("No root cells were provided for serialization");
@@ -80,9 +251,10 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
       return td::Status::Error("Cannot serialize a null cell reference into a bag of cells");
     }
   }
-
+  int counter = MAX_N;
   // Initialize data structures for graph representation
   td::HashMap<vm::Cell::Hash, size_t> cell_hashes;
+  td::HashMap<std::string, size_t> mu_left_cell_data_hashes;
   std::vector<std::array<size_t, 4>> boc_graph;
   std::vector<size_t> refs_cnt;
   std::vector<td::BitSlice> cell_data;
@@ -90,9 +262,9 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
   std::vector<size_t> prunned_branch_level;
   std::vector<size_t> root_indexes;
   size_t total_size_estimate = 0;
-
+  int total = 0, rem = 0, prunned = 0;
   // Build graph representation using recursive lambda
-  const auto build_graph = [&](auto&& self, td::Ref<vm::Cell> cell) -> td::Result<size_t> {
+  const auto build_graph = [&](auto&& self, td::Ref<vm::Cell> cell, bool is_merkle_left, bool is_merkle_right) -> td::Result<size_t> {
     if (cell.is_null()) {
       return td::Status::Error("Error while importing a cell during serialization: cell is null");
     }
@@ -113,28 +285,97 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
     }
     td::BitSlice cell_bitslice = cell_slice.as_bitslice();
 
+    if (is_merkle_left) {
+      for (int i = 1; i <= cell_bitslice.size(); ++i) {
+        std::string hash = cell_bitslice.subslice(0, i).to_binary();
+        mu_left_cell_data_hashes[hash] = current_cell_id;
+      }
+    }
+    int longest_common_prefix = 0;
+    if (is_merkle_right) {
+      for (int i = 1; i <= cell_bitslice.size(); ++i) {
+        std::string hash = cell_bitslice.subslice(0, i).to_binary();
+        if (mu_left_cell_data_hashes.find(hash) != mu_left_cell_data_hashes.end()) {
+          longest_common_prefix = i;
+        }
+      }
+      if (longest_common_prefix >= 16) {
+        longest_common_prefix = cell_bitslice.size();
+      }
+    }
+
     // Initialize new cell in graph
     boc_graph.emplace_back();
     refs_cnt.emplace_back(cell_slice.size_refs());
     cell_type.emplace_back(size_t(cell_slice.special_type()));
     prunned_branch_level.push_back(0);
 
+
     DCHECK(cell_slice.size_refs() <= 4);
+    if (0 && cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
+      clr();
+      std::cout << "real L: " << calc_sub_size_local_cache(cell_slice.prefetch_ref(0), false, td::Ref<vm::Cell>())  / 8 << std::endl;
+      // print_edges();
+      clr(false);
+      std::cout << "R with L in cache: " << calc_sub_size_local_cache(cell_slice.prefetch_ref(1), true, cell_slice.prefetch_ref(0))  / 8 << std::endl;
+      print_edges();
+      // local_cache.clear();
+      // local_cache2.clear();
+      // std::cout << "real R: " << calc_sub_size_local_cache(cell_slice.prefetch_ref(1))  / 8 << std::endl;
+      exit(0);
+    }
 
     // Process special cell of type PrunnedBranch
-    if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
-      DCHECK(cell_slice.size() >= 16);
-      cell_data.emplace_back(cell_bitslice.subslice(16, cell_bitslice.size() - 16));
-      prunned_branch_level.back() = cell_slice.data()[1];
+    if (is_merkle_left) {
+      cell_data.emplace_back();
     } else {
-      cell_data.emplace_back(cell_bitslice);
+      if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+        DCHECK(cell_slice.size() >= 16);
+        if (is_merkle_right) {
+          cell_data.emplace_back();
+        } else {
+          cell_data.emplace_back(cell_bitslice.subslice(16, cell_bitslice.size() - 16));
+        }
+        prunned_branch_level.back() = cell_slice.data()[1];
+      } else {
+        cell_data.emplace_back(cell_bitslice.subslice(longest_common_prefix, cell_bitslice.size() - longest_common_prefix));
+        if (is_merkle_right) {
+          mu_right_data_sizes[cell_bitslice.size()]++;
+        }
+      }
     }
+    // if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+    //   DCHECK(cell_slice.size() >= 16);
+    //   cell_data.emplace_back(cell_bitslice.subslice(16, cell_bitslice.size() - 16));
+    //   prunned_branch_level.back() = cell_slice.data()[1];
+    // } else {
+    //   cell_data.emplace_back(cell_bitslice);
+    // }
+
     total_size_estimate += cell_bitslice.size();
 
     // Process cell references
+    int skipped = 0;
     for (int i = 0; i < cell_slice.size_refs(); ++i) {
-      TRY_RESULT(child_id, self(self, cell_slice.prefetch_ref(i)));
-      boc_graph[current_cell_id][i] = child_id;
+      int child_id;
+      if (cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate && i == 0) {
+        is_merkle_left = true;
+        TRY_RESULT_ASSIGN(child_id, self(self, cell_slice.prefetch_ref(i), is_merkle_left, is_merkle_right));
+        is_merkle_left = false;
+        // skipped++;
+        // refs_cnt.back()--;
+        // continue;
+      } else if (cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate && i == 1) {
+        is_merkle_right = true;
+        TRY_RESULT_ASSIGN(child_id, self(self, cell_slice.prefetch_ref(i), is_merkle_left, is_merkle_right));
+        is_merkle_right = false;
+        // skipped++;
+        // refs_cnt.back()--;
+        // continue;
+      } else {
+        TRY_RESULT_ASSIGN(child_id, self(self, cell_slice.prefetch_ref(i), is_merkle_left, is_merkle_right));
+      }
+      boc_graph[current_cell_id][i - skipped] = child_id;
     }
 
     return current_cell_id;
@@ -142,9 +383,20 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
 
   // Build the graph starting from roots
   for (auto root : boc_roots) {
-    TRY_RESULT(root_cell_id, build_graph(build_graph, root));
+    TRY_RESULT(root_cell_id, build_graph(build_graph, root, 0, 0));
     root_indexes.push_back(root_cell_id);
   }
+  // std::cout << "-----------: " << total << " " << rem << " " << prunned << std::endl;
+  // if (TESTS == 200) {
+  //   for (auto c : cnt_types) {
+  //     std::cout << c.first << " " << c.second  / TESTS << std::endl;
+  //   }
+  // }
+  // for (auto c : mu_right_data_sizes) {
+  //   if (c.second > 1000)
+  //   std::cout << c.first << " " << c.second << std::endl;
+  // }
+  // std::cout << "==========================" << std::endl;
 
   // Check graph properties
   const size_t node_count = boc_graph.size();
@@ -156,6 +408,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
     for (size_t child_index = 0; child_index < refs_cnt[i]; ++child_index) {
       size_t child = boc_graph[i][child_index];
       ++edge_count;
+      if (child < MAX_N)
       reverse_graph[child].push_back(i);
     }
   }
@@ -178,6 +431,9 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
     // Calculate in-degrees and initialize queue
     for (int i = 0; i < node_count; ++i) {
       in_degree[i] = refs_cnt[i];
+      for (int to : boc_graph[i]) {
+        if (to >= MAX_N) --in_degree[i];
+      }
       if (in_degree[i] == 0) {
         queue.emplace_back(cell_type[i] == 0, -int(cell_data[i].size()), -i);
       }
@@ -203,7 +459,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
     }
 
     if (topo_order.size() != node_count) {
-      return td::Status::Error("Invalid graph structure");
+      return td::Status::Error("Invalid graph structure node count");
     }
 
     std::reverse(topo_order.begin(), topo_order.end());
@@ -338,19 +594,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
   return compressed_with_size;
 }
 
-CellHash get_cell_data_hash(td::BitSlice data) {
-  digest::SHA256 hasher;
-  td::BitString data_bits;
-  data_bits.reserve_bitslice(data.size()) = data;
-  while (data_bits.size() % 8) {
-    data_bits.reserve_bitslice(1).bits().store_uint(0, 1);
-  }
-  if (data_bits.bits().offs != 0) exit(199);
-  hasher.feed(data_bits.bits().get_byte_ptr(), data_bits.size() / 8);
-  CellHash hash_;
-  hasher.extract(hash_.as_slice());
-  return hash_;
-}
+
 
 td::Status cache_cell_hashes(const std::vector<td::Ref<vm::Cell>>& boc_roots,
                              td::HashMap<vm::Cell::Hash, size_t>& cache,
@@ -436,7 +680,6 @@ int calc_sub_size(td::Ref<vm::Cell> cell, const td::HashMap<vm::Cell::Hash, size
   return ANS;
 };
 
-std::map<int, int> copy_data;
 
 td::Result<td::BufferSlice> boc_compress_improved_structure_lz4_prev(const std::vector<td::Ref<vm::Cell>>& boc_roots,
                                                                      const td::HashMap<vm::Cell::Hash, size_t>& cache) {
