@@ -75,7 +75,17 @@ inline td::Result<unsigned> read_uint(td::BitSlice& bs, int bits) {
   return result;
 }
 
-td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vector<td::Ref<vm::Cell>>& boc_roots) {
+td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
+  const std::vector<td::Ref<vm::Cell>>& boc_roots, 
+  bool compress_merkle_update,
+  td::Ref<vm::Cell> state
+) {
+  const bool kMURemoveLeftTreeData = true;
+  const bool kMUReplacePrunnedBranchWithIndex = true;
+  const bool kMURemoveSubtreeSums = true;
+  const bool kMURemoveCommonPrefixes = true;
+  const bool kMUExtendLeftTree = true;
+  
   // Input validation
   if (boc_roots.empty()) {
     return td::Status::Error("No root cells were provided for serialization");
@@ -96,8 +106,35 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
   std::vector<size_t> root_indexes;
   size_t total_size_estimate = 0;
 
+  // When enabled, collect mapping from (hash at merkle depth) to real state cell
+  // while traversing the left subtree of a MerkleUpdate cell together with full state
+  td::HashMap<vm::Cell::Hash, td::Ref<vm::Cell>> mu_known_cells;
+
+  const auto mu_collect_known = [&](auto&& self,
+                                    td::Ref<vm::Cell> original,
+                                    td::Ref<vm::Cell> update_from,
+                                    int merkle_depth) -> void {
+    if (original.is_null() || update_from.is_null()) {
+      return;
+    }
+    vm::CellSlice cs_update(NoVm(), update_from);
+    mu_known_cells.emplace(original->get_hash(merkle_depth), original);
+    if (cs_update.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+      return;
+    }
+    int child_merkle_depth = cs_update.child_merkle_depth(merkle_depth);
+    vm::CellSlice cs_original(NoVm(), original);
+    for (unsigned i = 0; i < cs_original.size_refs(); i++) {
+      self(self, cs_original.prefetch_ref(i), cs_update.prefetch_ref(i), child_merkle_depth);
+    }
+  };
+
   // Build graph representation using recursive lambda
-  const auto build_graph = [&](auto&& self, td::Ref<vm::Cell> cell) -> td::Result<size_t> {
+  const auto build_graph = [&](auto&& self,
+                               td::Ref<vm::Cell> cell,
+                               bool skip_data = false,
+                               int merkle_depth = 0,
+                               bool under_mu_right = false) -> td::Result<size_t> {
     if (cell.is_null()) {
       return td::Status::Error("Error while importing a cell during serialization: cell is null");
     }
@@ -109,7 +146,13 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
     }
 
     size_t current_cell_id = boc_graph.size();
-    cell_hashes.emplace(cell_hash, current_cell_id);
+    bool cache_current_cell = true;
+    if (compress_merkle_update && skip_data && !kMUReplacePrunnedBranchWithIndex) {
+      cache_current_cell = false;
+    }
+    if (cache_current_cell) {
+      cell_hashes.emplace(cell_hash, current_cell_id);
+    }
 
     bool is_special = false;
     vm::CellSlice cell_slice = vm::load_cell_slice_special(cell, is_special);
@@ -127,19 +170,100 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
     DCHECK(cell_slice.size_refs() <= 4);
 
     // Process special cell of type PrunnedBranch
-    if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
-      DCHECK(cell_slice.size() >= 16);
-      cell_data.emplace_back(cell_bitslice.subslice(16, cell_bitslice.size() - 16));
-      prunned_branch_level.back() = cell_slice.data()[1];
+    if (skip_data) {
+      cell_data.emplace_back();
     } else {
-      cell_data.emplace_back(cell_bitslice);
+      if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+        DCHECK(cell_slice.size() >= 16);
+        cell_data.emplace_back(cell_bitslice.subslice(16, cell_bitslice.size() - 16));
+        prunned_branch_level.back() = cell_slice.data()[1];
+      } else {
+        cell_data.emplace_back(cell_bitslice);
+      }
     }
     total_size_estimate += cell_bitslice.size();
 
+    // If enabled and this is a MerkleUpdate cell, traverse the left subtree with state to build known-cells map
+    if (compress_merkle_update && state.not_null() && kMURemoveSubtreeSums &&
+        cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
+      mu_collect_known(mu_collect_known, state, cell_slice.prefetch_ref(0), 0);
+    }
+
     // Process cell references
     for (int i = 0; i < cell_slice.size_refs(); ++i) {
-      TRY_RESULT(child_id, self(self, cell_slice.prefetch_ref(i)));
+      bool skip_data_rec = skip_data;
+      if (compress_merkle_update && kMURemoveLeftTreeData &&
+        cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate && i == 0) {
+        skip_data_rec = true;
+      }
+      int child_merkle_depth = cell_slice.child_merkle_depth(merkle_depth);
+      bool child_under_mu_right = under_mu_right ||
+        (compress_merkle_update && cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate && i == 1);
+      TRY_RESULT(child_id, self(self, cell_slice.prefetch_ref(i), skip_data_rec, child_merkle_depth, child_under_mu_right));
       boc_graph[current_cell_id][i] = child_id;
+    }
+
+    // If we are under the right subtree of a MerkleUpdate, try to remove data when possible
+    if (compress_merkle_update && under_mu_right && !is_special) {
+      if (cell_slice.size_refs() == 2) {
+        auto try_read_i64 = [&](td::Ref<vm::Cell> c) -> std::pair<bool, int64_t> {
+          if (c.is_null()) return {false, 0};
+          vm::CellSlice cs(NoVm(), c);
+          size_t nbits = cs.size();
+          if (nbits == 0) return {true, 0};
+          if (nbits > 64) return {false, 0};
+          auto bs = cs.as_bitslice();
+          unsigned long long u = bs.bits().get_uint((unsigned)nbits);
+          if (u > static_cast<unsigned long long>(std::numeric_limits<int64_t>::max())) return {false, 0};
+          return {true, static_cast<int64_t>(u)};
+        };
+
+        bool ok = true;
+        td::Ref<vm::Cell> child_cells[2];
+        for (int i = 0; i < 2; ++i) {
+          auto cref = cell_slice.prefetch_ref(i);
+          vm::CellSlice ccs(NoVm(), cref);
+          if (ccs.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+            // can restore only if level matches merkle_depth + 1
+            if ((int)cref->get_level() == merkle_depth + 1) {
+              auto it = mu_known_cells.find(cref->get_hash(merkle_depth));
+              if (it == mu_known_cells.end()) {
+                ok = false;
+                break;
+              }
+              child_cells[i] = it->second;
+            } else {
+              ok = false;
+              break;
+            }
+          } else {
+            child_cells[i] = cref;
+          }
+        }
+
+        if (ok) {
+          auto [ok0, v0] = try_read_i64(child_cells[0]);
+          auto [ok1, v1] = try_read_i64(child_cells[1]);
+          if (ok0 && ok1) {
+            // current cell value
+            int64_t vcur = 0;
+            bool cur_ok = true;
+            if (cell_bitslice.size() > 0) {
+              if (cell_bitslice.size() > 64) {
+                cur_ok = false;
+              } else {
+                unsigned long long u = cell_bitslice.bits().get_uint((unsigned)cell_bitslice.size());
+                if (u > static_cast<unsigned long long>(std::numeric_limits<int64_t>::max())) cur_ok = false;
+                else vcur = static_cast<int64_t>(u);
+              }
+            }
+            if (cur_ok && (v0 + v1 == vcur)) {
+              // remove data from this cell
+              cell_data[current_cell_id] = td::BitSlice();
+            }
+          }
+        }
+      }
     }
 
     return current_cell_id;
@@ -147,7 +271,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
 
   // Build the graph starting from roots
   for (auto root : boc_roots) {
-    TRY_RESULT(root_cell_id, build_graph(build_graph, root));
+    TRY_RESULT(root_cell_id, build_graph(build_graph, root, false, 0, false));
     root_indexes.push_back(root_cell_id);
   }
 
@@ -584,7 +708,7 @@ td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress_improved_structure_lz4
   return root_nodes;
 }
 
-td::Result<td::BufferSlice> boc_compress(const std::vector<td::Ref<vm::Cell>>& boc_roots, CompressionAlgorithm algo) {
+td::Result<td::BufferSlice> boc_compress(const std::vector<td::Ref<vm::Cell>>& boc_roots, CompressionAlgorithm algo, td::Ref<vm::Cell> state) {
   // Check for empty input
   if (boc_roots.empty()) {
     return td::Status::Error("Cannot compress empty BOC roots");
@@ -594,7 +718,9 @@ td::Result<td::BufferSlice> boc_compress(const std::vector<td::Ref<vm::Cell>>& b
   if (algo == CompressionAlgorithm::BaselineLZ4) {
     TRY_RESULT_ASSIGN(compressed, boc_compress_baseline_lz4(boc_roots));
   } else if (algo == CompressionAlgorithm::ImprovedStructureLZ4) {
-    TRY_RESULT_ASSIGN(compressed, boc_compress_improved_structure_lz4(boc_roots));
+    TRY_RESULT_ASSIGN(compressed, boc_compress_improved_structure_lz4(boc_roots, false));
+  } else if (algo == CompressionAlgorithm::ImprovedStructureLZ4WithMU) {
+    TRY_RESULT_ASSIGN(compressed, boc_compress_improved_structure_lz4(boc_roots, true, state));
   } else {
       return td::Status::Error("Unknown compression algorithm");
   }
@@ -617,6 +743,8 @@ td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress(td::Slice compressed, 
     case int(CompressionAlgorithm::BaselineLZ4):
       return boc_decompress_baseline_lz4(compressed, max_decompressed_size);
     case int(CompressionAlgorithm::ImprovedStructureLZ4):
+      return boc_decompress_improved_structure_lz4(compressed, max_decompressed_size);
+    case int(CompressionAlgorithm::ImprovedStructureLZ4WithMU):
       return boc_decompress_improved_structure_lz4(compressed, max_decompressed_size);
   }
   return td::Status::Error("Unknown compression algorithm");
