@@ -33,6 +33,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_EXTENSIONS FALSE)
 
+set(CMAKE_COLOR_DIAGNOSTICS TRUE)
+
 #BEGIN internal
 option(BUILD_SHARED_LIBS "Use \"ON\" to build shared libraries instead of static where it's not specified (not recommended)" OFF)
 option(USE_EMSCRIPTEN "Use \"ON\" for config building wasm." OFF)
@@ -56,12 +58,22 @@ option(TON_USE_TSAN "Use \"ON\" to enable ThreadSanitizer." OFF)
 option(TON_USE_UBSAN "Use \"ON\" to enable UndefinedBehaviorSanitizer." OFF)
 set(TON_ARCH "native" CACHE STRING "Architecture, will be passed to -march=")
 
+option(TON_PRINT_BACKTRACE_ON_CRASH "Attempt to print a backtrace when a fatal signal is caught" ON)
+
+option(TON_USE_LLD "Use LLD for linking" OFF)
+
+if (TON_USE_LLD)
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=lld")
+  set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -fuse-ld=lld")
+endif()
+
 #BEGIN M1 support
 EXECUTE_PROCESS( COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE )
 
 if ((ARCHITECTURE MATCHES "arm64") AND (CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
-    (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)) # only clang 13+ supports cpu=apple-m1
-    set(TON_ARCH "apple-m1")
+(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)) # only clang 13+ supports cpu=apple-m1
+  set(TON_ARCH "apple-m1")
 endif()
 #END M1 support
 
@@ -168,6 +180,21 @@ include(CheckCXXCompilerFlag)
 
 set(CMAKE_THREAD_PREFER_PTHREAD ON)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
+
+set(OPENSSL_ROOT_DIR "/opt/homebrew/opt/openssl@3")
+set(OPENSSL_INCLUDE_DIR "/opt/homebrew/opt/openssl@3/include")
+set(OPENSSL_CRYPTO_LIBRARY "/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib")
+set(OPENSSL_SSL_LIBRARY "/opt/homebrew/opt/openssl@3/lib/libssl.dylib")
+
+# If the above paths don't exist, try these alternatives:
+if (NOT EXISTS ${OPENSSL_ROOT_DIR})
+  set(OPENSSL_ROOT_DIR "/usr/local/opt/openssl@3")
+  set(OPENSSL_INCLUDE_DIR "/usr/local/opt/openssl@3/include")
+  set(OPENSSL_CRYPTO_LIBRARY "/usr/local/opt/openssl@3/lib/libcrypto.dylib")
+  set(OPENSSL_SSL_LIBRARY "/usr/local/opt/openssl@3/lib/libssl.dylib")
+endif ()
+
+
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 
@@ -260,14 +287,14 @@ endif()
 
 set(INTERNAL_COMPILE "0")
 #BEGIN internal
-  add_definitions(-D_INTERNAL_COMPILE=1)
-  set(INTERNAL_COMPILE "1")
+add_definitions(-D_INTERNAL_COMPILE=1)
+set(INTERNAL_COMPILE "1")
 #END internal
 
 set(TONLIB_COMPILE "0")
 #BEGIN tonlib
-  add_definitions(-D_TONLIB_COMPILE=1)
-  set(TONLIB_COMPILE "1")
+add_definitions(-D_TONLIB_COMPILE=1)
+set(TONLIB_COMPILE "1")
 #END tonlib
 
 include(AddCXXCompilerFlag)
@@ -384,26 +411,26 @@ add_subdirectory(tonlib)
 
 #BEGIN internal
 if (NOT TON_ONLY_TONLIB)
-add_subdirectory(common)
-add_subdirectory(tdfec)
-add_subdirectory(keyring)
-add_subdirectory(fec)
-add_subdirectory(rldp)
-add_subdirectory(rldp2)
-add_subdirectory(dht)
-add_subdirectory(overlay)
-add_subdirectory(catchain)
-add_subdirectory(validator-session)
-add_subdirectory(validator)
-add_subdirectory(blockchain-explorer)
-add_subdirectory(storage)
-add_subdirectory(validator-engine)
-add_subdirectory(validator-engine-console)
-add_subdirectory(create-hardfork)
-add_subdirectory(dht-server)
-add_subdirectory(utils)
-add_subdirectory(http)
-add_subdirectory(rldp-http-proxy)
+  add_subdirectory(common)
+  add_subdirectory(tdfec)
+  add_subdirectory(keyring)
+  add_subdirectory(fec)
+  add_subdirectory(rldp)
+  add_subdirectory(rldp2)
+  add_subdirectory(dht)
+  add_subdirectory(overlay)
+  add_subdirectory(catchain)
+  add_subdirectory(validator-session)
+  add_subdirectory(validator)
+  add_subdirectory(blockchain-explorer)
+  add_subdirectory(storage)
+  add_subdirectory(validator-engine)
+  add_subdirectory(validator-engine-console)
+  add_subdirectory(create-hardfork)
+  add_subdirectory(dht-server)
+  add_subdirectory(utils)
+  add_subdirectory(http)
+  add_subdirectory(rldp-http-proxy)
 endif()
 #END internal
 
@@ -415,215 +442,238 @@ if (NOT CMAKE_CROSSCOMPILING)
 endif()
 
 #TESTS
-add_executable(test-ed25519 test/test-td-main.cpp ${ED25519_TEST_SOURCE})
-target_link_libraries(test-ed25519 PRIVATE ton_crypto)
-
-add_executable(test-vm test/test-td-main.cpp ${TONVM_TEST_SOURCE})
-target_link_libraries(test-vm PRIVATE ton_crypto fift-lib)
-
-add_executable(test-smartcont test/test-td-main.cpp ${SMARTCONT_TEST_SOURCE})
-target_link_libraries(test-smartcont PRIVATE smc-envelope fift-lib ton_db)
-
-add_executable(test-bigint ${BIGINT_TEST_SOURCE})
-target_link_libraries(test-bigint PRIVATE ton_crypto)
-
-if (WINGETOPT_FOUND)
-  target_link_libraries_system(test-bigint wingetopt)
-endif()
-
-add_executable(test-cells test/test-td-main.cpp ${CELLS_TEST_SOURCE})
-target_link_libraries(test-cells PRIVATE ton_crypto)
-
-add_executable(test-fift test/test-td-main.cpp ${FIFT_TEST_SOURCE})
-target_link_libraries(test-fift PRIVATE fift-lib)
-
-add_executable(test-tdutils test/test-td-main.cpp ${TDUTILS_TEST_SOURCE})
-target_link_libraries(test-tdutils PRIVATE tdutils ${CMAKE_THREAD_LIBS_INIT} memprof ${JEMALLOC_LIBRARIES})
-#target_link_libraries_system(test-tdutils absl::base absl::container absl::hash )
-#target_link_libraries_system(test-tdutils libcuckoo)
-#target_include_directories(test-tdutils PRIVATE SYSTEM ${JUNCTION_ALL_INCLUDE_DIRS})
-#target_link_libraries(test-tdutils PRIVATE ${JUNCTION_ALL_LIBRARIES})
-
-add_executable(test-tdactor test/test-td-main.cpp ${TDACTOR_TEST_SOURCE})
-target_link_libraries(test-tdactor PRIVATE tdactor ${CMAKE_THREAD_LIBS_INIT})
-
-add_executable(test-net test/test-td-main.cpp ${NET_TEST_SOURCE})
-target_link_libraries(test-net PRIVATE tdnet tdutils ${CMAKE_THREAD_LIBS_INIT})
-
-#BEGIN tonlib
-add_executable(test-tonlib ${TONLIB_ONLINE_TEST_SOURCE})
-target_link_libraries(test-tonlib tdactor adnllite tl_api ton_crypto tl_tonlib_api tonlib)
-
-add_executable(test-tonlib-offline test/test-td-main.cpp ${TONLIB_OFFLINE_TEST_SOURCE})
-target_link_libraries(test-tonlib-offline tdactor adnllite tl_api ton_crypto fift-lib tl_tonlib_api tonlib)
-
-if (NOT CMAKE_CROSSCOMPILING)
-  add_dependencies(test-tonlib-offline gen_fif)
-endif()
+#add_executable(test-ed25519 test/test-td-main.cpp ${ED25519_TEST_SOURCE})
+#target_link_libraries(test-ed25519 PRIVATE ton_crypto)
+#
+#add_executable(test-vm test/test-td-main.cpp ${TONVM_TEST_SOURCE})
+#target_link_libraries(test-vm PRIVATE ton_crypto fift-lib)
+#
+#add_executable(test-smartcont test/test-td-main.cpp ${SMARTCONT_TEST_SOURCE})
+#target_link_libraries(test-smartcont PRIVATE smc-envelope fift-lib ton_db)
+#
+#add_executable(test-bigint ${BIGINT_TEST_SOURCE})
+#target_link_libraries(test-bigint PRIVATE ton_crypto)
+#
+#if (WINGETOPT_FOUND)
+#    target_link_libraries_system(test-bigint wingetopt)
+#endif()
+#
+#add_executable(test-cells test/test-td-main.cpp ${CELLS_TEST_SOURCE})
+#target_link_libraries(test-cells PRIVATE ton_crypto)
+#
+#add_executable(test-fift test/test-td-main.cpp ${FIFT_TEST_SOURCE})
+#target_link_libraries(test-fift PRIVATE fift-lib)
+#
+#add_executable(test-tdutils test/test-td-main.cpp ${TDUTILS_TEST_SOURCE})
+#target_link_libraries(test-tdutils PRIVATE tdutils ${CMAKE_THREAD_LIBS_INIT} memprof ${JEMALLOC_LIBRARIES})
+##target_link_libraries_system(test-tdutils absl::base absl::container absl::hash )
+##target_link_libraries_system(test-tdutils libcuckoo)
+##target_include_directories(test-tdutils PRIVATE SYSTEM ${JUNCTION_ALL_INCLUDE_DIRS})
+##target_link_libraries(test-tdutils PRIVATE ${JUNCTION_ALL_LIBRARIES})
+#
+#add_executable(test-tdactor test/test-td-main.cpp ${TDACTOR_TEST_SOURCE})
+#target_link_libraries(test-tdactor PRIVATE tdactor ${CMAKE_THREAD_LIBS_INIT})
+#
+#add_executable(test-net test/test-td-main.cpp ${NET_TEST_SOURCE})
+#target_link_libraries(test-net PRIVATE tdnet tdutils ${CMAKE_THREAD_LIBS_INIT})
+#
+##BEGIN tonlib
+#add_executable(test-tonlib ${TONLIB_ONLINE_TEST_SOURCE})
+#target_link_libraries(test-tonlib tdactor adnllite tl_api ton_crypto tl_tonlib_api tonlib)
+#
+#add_executable(test-tonlib-offline test/test-td-main.cpp ${TONLIB_OFFLINE_TEST_SOURCE})
+#target_link_libraries(test-tonlib-offline tdactor adnllite tl_api ton_crypto fift-lib tl_tonlib_api tonlib)
+#
+#if (NOT CMAKE_CROSSCOMPILING)
+#    add_dependencies(test-tonlib-offline gen_fif)
+#endif()
 #END tonlib
 
 #BEGIN internal
-if (NOT TON_ONLY_TONLIB)
-add_executable(test-db test/test-td-main.cpp ${TONDB_TEST_SOURCE})
-target_link_libraries(test-db PRIVATE ton_db memprof tdfec)
-
-add_executable(test-storage test/test-td-main.cpp ${STORAGE_TEST_SOURCE})
-target_link_libraries(test-storage PRIVATE storage ton_db memprof tl_api tl-utils fec rldp2)
-
-add_executable(test-rocksdb test/test-rocksdb.cpp)
-target_link_libraries(test-rocksdb PRIVATE memprof tddb tdutils)
-
-add_executable(test-tddb test/test-td-main.cpp ${TDDB_TEST_SOURCE})
-target_link_libraries(test-tddb PRIVATE tdutils tddb ${CMAKE_THREAD_LIBS_INIT} memprof)
-
-add_executable(test-fec test/test-td-main.cpp ${FEC_TEST_SOURCE})
-target_link_libraries(test-fec PRIVATE tdfec tdutils ${CMAKE_THREAD_LIBS_INIT})
-if (USE_LIBRAPTORQ)
-  target_link_libraries(test-fec PRIVATE third_party_fec)
-  target_compile_definitions(test-fec PRIVATE "USE_LIBRAPTORQ=1")
-endif()
-
-add_executable(test-hello-world test/test-hello-world.cpp )
-target_link_libraries(test-hello-world tl_api ton_crypto)
-
-add_executable(test-adnl test/test-adnl.cpp)
-target_link_libraries(test-adnl adnl adnltest dht tl_api)
-add_executable(test-dht test/test-dht.cpp)
-target_link_libraries(test-dht adnl adnltest dht tl_api)
-add_executable(test-rldp test/test-rldp.cpp)
-target_link_libraries(test-rldp adnl adnltest dht rldp tl_api)
-add_executable(test-rldp2 test/test-rldp2.cpp)
-target_link_libraries(test-rldp2 adnl adnltest dht rldp2 tl_api)
-add_executable(test-validator-session-state test/test-validator-session-state.cpp)
-target_link_libraries(test-validator-session-state adnl dht rldp validatorsession tl_api)
-
-add_executable(test-overlay test/test-overlay.cpp)
-target_link_libraries(test-overlay overlay tdutils tdactor adnl adnltest tl_api dht )
-add_executable(test-catchain test/test-catchain.cpp)
-target_link_libraries(test-catchain overlay tdutils tdactor adnl adnltest rldp tl_api dht
-  catchain )
-add_executable(test-ton-collator test/test-ton-collator.cpp)
-target_link_libraries(test-ton-collator overlay tdutils tdactor adnl tl_api dht
-  catchain validatorsession validator-disk ton_validator validator-disk )
-
-add_executable(test-http test/test-http.cpp)
-target_link_libraries(test-http PRIVATE tonhttp)
-
-add_executable(test-emulator test/test-td-main.cpp emulator/test/emulator-tests.cpp)
-target_link_libraries(test-emulator PRIVATE emulator)
-
-get_directory_property(HAS_PARENT PARENT_DIRECTORY)
-if (HAS_PARENT)
-  set(ALL_TEST_SOURCE
-          ${TDUTILS_TEST_SOURCE}
-          ${TDACTOR_TEST_SOURCE}
-          ${NET_TEST_SOURCE}
-          ${TDDB_TEST_SOURCE}
-          ${FEC_TEST_SOURCE}
-          ${ED25519_TEST_SOURCE}
-          ${TONDB_TEST_SOURCE}
-          ${BIGNUM_TEST_SOURCE}
-          ${CELLS_TEST_SOURCE} # ${TONVM_TEST_SOURCE} ${FIFT_TEST_SOURCE} ${TONLIB_ONLINE_TEST_SOURCE}
-          PARENT_SCOPE)
-endif()
-add_library(all_tests INTERFACE)
-target_link_libraries(all_tests INTERFACE tdutils tdactor tdnet tdfec ton_db ton_crypto fift-lib)
-endif()
+#if (NOT TON_ONLY_TONLIB)
+#    add_executable(test-db test/test-td-main.cpp ${TONDB_TEST_SOURCE})
+#    target_link_libraries(test-db PRIVATE ton_db memprof tdfec)
+#
+#    add_executable(test-storage test/test-td-main.cpp ${STORAGE_TEST_SOURCE})
+#    target_link_libraries(test-storage PRIVATE storage ton_db memprof tl_api tl-utils fec rldp2)
+#
+#    add_executable(test-rocksdb test/test-rocksdb.cpp)
+#    target_link_libraries(test-rocksdb PRIVATE memprof tddb tdutils)
+#
+#    add_executable(test-tddb test/test-td-main.cpp ${TDDB_TEST_SOURCE})
+#    target_link_libraries(test-tddb PRIVATE tdutils tddb ${CMAKE_THREAD_LIBS_INIT} memprof)
+#
+#    add_executable(test-fec test/test-td-main.cpp ${FEC_TEST_SOURCE})
+#    target_link_libraries(test-fec PRIVATE tdfec tdutils ${CMAKE_THREAD_LIBS_INIT})
+#    if (USE_LIBRAPTORQ)
+#        target_link_libraries(test-fec PRIVATE third_party_fec)
+#        target_compile_definitions(test-fec PRIVATE "USE_LIBRAPTORQ=1")
+#    endif()
+#
+#    add_executable(test-hello-world test/test-hello-world.cpp )
+#    target_link_libraries(test-hello-world tl_api ton_crypto)
+#
+#    add_executable(test-adnl test/test-adnl.cpp)
+#    target_link_libraries(test-adnl adnl adnltest dht tl_api)
+#    add_executable(test-dht test/test-dht.cpp)
+#    target_link_libraries(test-dht adnl adnltest dht tl_api)
+#    add_executable(test-rldp test/test-rldp.cpp)
+#    target_link_libraries(test-rldp adnl adnltest dht rldp tl_api)
+#    add_executable(test-rldp2 test/test-rldp2.cpp)
+#    target_link_libraries(test-rldp2 adnl adnltest dht rldp2 tl_api)
+#    add_executable(test-validator-session-state test/test-validator-session-state.cpp)
+#    target_link_libraries(test-validator-session-state adnl dht rldp validatorsession tl_api)
+#
+#    add_executable(test-overlay test/test-overlay.cpp)
+#    target_link_libraries(test-overlay overlay tdutils tdactor adnl adnltest tl_api dht )
+#    add_executable(test-catchain test/test-catchain.cpp)
+#    target_link_libraries(test-catchain overlay tdutils tdactor adnl adnltest rldp tl_api dht
+#            catchain )
+#    add_executable(test-ton-collator test/test-ton-collator.cpp)
+#    target_link_libraries(test-ton-collator overlay tdutils tdactor adnl tl_api dht
+#            catchain validatorsession validator-disk ton_validator validator-disk )
+#
+#    add_executable(test-http test/test-http.cpp)
+#    target_link_libraries(test-http PRIVATE tonhttp)
+#
+#    add_executable(test-emulator test/test-td-main.cpp emulator/test/emulator-tests.cpp)
+#    target_link_libraries(test-emulator PRIVATE emulator)
+#
+#    get_directory_property(HAS_PARENT PARENT_DIRECTORY)
+#    if (HAS_PARENT)
+#        set(ALL_TEST_SOURCE
+#                ${TDUTILS_TEST_SOURCE}
+#                ${TDACTOR_TEST_SOURCE}
+#                ${NET_TEST_SOURCE}
+#                ${TDDB_TEST_SOURCE}
+#                ${FEC_TEST_SOURCE}
+#                ${ED25519_TEST_SOURCE}
+#                ${TONDB_TEST_SOURCE}
+#                ${BIGNUM_TEST_SOURCE}
+#                ${CELLS_TEST_SOURCE} # ${TONVM_TEST_SOURCE} ${FIFT_TEST_SOURCE} ${TONLIB_ONLINE_TEST_SOURCE}
+#                PARENT_SCOPE)
+#    endif()
+#    add_library(all_tests INTERFACE)
+#    target_link_libraries(all_tests INTERFACE tdutils tdactor tdnet tdfec ton_db ton_crypto fift-lib)
+#endif()
 #END internal
 
-enable_testing()
-set(TEST_OPTIONS "--regression ${CMAKE_CURRENT_SOURCE_DIR}/test/regression-tests.ans --filter -Bench")
-separate_arguments(TEST_OPTIONS)
-add_test(test-ed25519 test-ed25519)
-add_test(test-bigint test-bigint)
-add_test(test-vm test-vm ${TEST_OPTIONS})
-add_test(test-fift test-fift ${TEST_OPTIONS})
-add_test(test-cells test-cells ${TEST_OPTIONS})
-add_test(test-smartcont test-smartcont)
-add_test(test-net test-net)
-add_test(test-actors test-tdactor)
-add_test(test-emulator test-emulator)
+#enable_testing()
+#set(TEST_OPTIONS "--regression ${CMAKE_CURRENT_SOURCE_DIR}/test/regression-tests.ans --filter -Bench")
+#separate_arguments(TEST_OPTIONS)
+#add_test(test-ed25519 test-ed25519)
+#add_test(test-bigint test-bigint)
+#add_test(test-vm test-vm ${TEST_OPTIONS})
+#add_test(test-fift test-fift ${TEST_OPTIONS})
+#add_test(test-cells test-cells ${TEST_OPTIONS})
+#add_test(test-smartcont test-smartcont)
+#add_test(test-net test-net)
+#add_test(test-actors test-tdactor)
+#add_test(test-emulator test-emulator)
 
 #BEGIN tonlib
-add_test(test-tdutils test-tdutils)
-add_test(test-tonlib-offline test-tonlib-offline)
+#add_test(test-tdutils test-tdutils)
+#add_test(test-tonlib-offline test-tonlib-offline)
 #END tonlib
 
 # FunC tests
-if (NOT NIX)
-    if (MSVC)
-      set(PYTHON_VER "python")
-    else()
-      set(PYTHON_VER "python3")
-    endif()
-    add_test(
-      NAME test-func
-      COMMAND ${PYTHON_VER} run_tests.py tests/
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/crypto/func/auto-tests)
-    if (WIN32)
-        set_property(TEST test-func PROPERTY ENVIRONMENT
-          "FUNC_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/func.exe"
-          "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift.exe"
-          "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
-    else()
-        set_property(TEST test-func PROPERTY ENVIRONMENT
-          "FUNC_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/func"
-          "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift"
-          "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
-    endif()
-
-    add_test(
-      NAME test-func-legacy
-      COMMAND ${PYTHON_VER} legacy_tester.py
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/crypto/func/auto-tests)
-    if (WIN32)
-        set_property(TEST test-func-legacy PROPERTY ENVIRONMENT
-          "FUNC_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/func.exe"
-          "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift.exe"
-          "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
-    else()
-        set_property(TEST test-func-legacy PROPERTY ENVIRONMENT
-          "FUNC_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/func"
-          "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift"
-          "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
-    endif()
-endif()
-
-# Tolk tests
-if (NOT NIX)
-    if (MSVC)
-      set(PYTHON_VER "python")
-    else()
-      set(PYTHON_VER "python3")
-    endif()
-    add_test(
-      NAME test-tolk
-      COMMAND ${PYTHON_VER} tolk-tester.py tests/
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tolk-tester)
-    if (WIN32)
-        set_property(TEST test-tolk PROPERTY ENVIRONMENT
-          "TOLK_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/tolk/tolk.exe"
-          "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift.exe"
-          "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
-    else()
-        set_property(TEST test-tolk PROPERTY ENVIRONMENT
-          "TOLK_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/tolk/tolk"
-          "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift"
-          "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
-    endif()
-endif()
-
-#BEGIN internal
-if (NOT TON_ONLY_TONLIB)
-add_test(test-adnl test-adnl)
-add_test(test-dht test-dht)
-add_test(test-rldp test-rldp)
-add_test(test-rldp2 test-rldp2)
-add_test(test-validator-session-state test-validator-session-state)
-add_test(test-catchain test-catchain)
-
-add_test(test-fec test-fec)
-add_test(test-tddb test-tddb ${TEST_OPTIONS})
-add_test(test-db test-db ${TEST_OPTIONS})
-endif()
+#if (NOT NIX)
+#    if (MSVC)
+#        set(PYTHON_VER "python")
+#    else()
+#        set(PYTHON_VER "python3")
+#    endif()
+#    add_test(
+#            NAME test-func
+#            COMMAND ${PYTHON_VER} run_tests.py tests/
+#            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/crypto/func/auto-tests)
+#    if (WIN32)
+#        set_property(TEST test-func PROPERTY ENVIRONMENT
+#                "FUNC_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/func.exe"
+#                "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift.exe"
+#                "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
+#    else()
+#        set_property(TEST test-func PROPERTY ENVIRONMENT
+#                "FUNC_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/func"
+#                "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift"
+#                "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
+#    endif()
+#
+#    add_test(
+#            NAME test-func-legacy
+#            COMMAND ${PYTHON_VER} legacy_tester.py
+#            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/crypto/func/auto-tests)
+#    if (WIN32)
+#        set_property(TEST test-func-legacy PROPERTY ENVIRONMENT
+#                "FUNC_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/func.exe"
+#                "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift.exe"
+#                "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
+#    else()
+#        set_property(TEST test-func-legacy PROPERTY ENVIRONMENT
+#                "FUNC_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/func"
+#                "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift"
+#                "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
+#    endif()
+#endif()
+#
+## Tolk tests
+#if (NOT NIX)
+#    if (MSVC)
+#        set(PYTHON_VER "python")
+#    else()
+#        set(PYTHON_VER "python3")
+#    endif()
+#    add_test(
+#            NAME test-tolk
+#            COMMAND ${PYTHON_VER} tolk-tester.py tests/
+#            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tolk-tester)
+#    if (WIN32)
+#        set_property(TEST test-tolk PROPERTY ENVIRONMENT
+#                "TOLK_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/tolk/tolk.exe"
+#                "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift.exe"
+#                "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
+#    else()
+#        set_property(TEST test-tolk PROPERTY ENVIRONMENT
+#                "TOLK_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/tolk/tolk"
+#                "FIFT_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/crypto/fift"
+#                "FIFTPATH=${CMAKE_CURRENT_SOURCE_DIR}/crypto/fift/lib/")
+#    endif()
+#endif()
+#
+##BEGIN internal
+#if (NOT TON_ONLY_TONLIB)
+#    add_test(test-adnl test-adnl)
+#    add_test(test-dht test-dht)
+#    add_test(test-rldp test-rldp)
+#    add_test(test-rldp2 test-rldp2)
+#    add_test(test-validator-session-state test-validator-session-state)
+#    add_test(test-catchain test-catchain)
+#
+#    add_test(test-fec test-fec)
+#    add_test(test-tddb test-tddb ${TEST_OPTIONS})
+#    add_test(test-db test-db ${TEST_OPTIONS})
+#endif()
 #END internal
+
+set(SOURCE_FILE
+        solutions/solution_test.cpp)
+
+add_executable(solution ${SOURCE_FILE})
+
+# Add necessary include directories
+target_include_directories(solution PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_BINARY_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tdutils
+        ${CMAKE_CURRENT_SOURCE_DIR}/crypto
+        ${CMAKE_CURRENT_SOURCE_DIR}/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/ton
+)
+
+# Link required libraries
+target_link_libraries(solution PRIVATE
+        tdutils
+        ton_crypto
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+

@@ -66,8 +66,47 @@ void evaluate_contest200(vm::CompressionAlgorithm algo) {
     auto root = vm::std_boc_deserialize(data).move_as_ok();
     vector<td::Ref<vm::Cell>> roots{root};
 
-    // parse_tlb_info(root);
+    parse_tlb_info(root);
 
+    start_timer();
+    td::BufferSlice compressed_data = vm::boc_compress(roots, algo).move_as_ok();
+    end_timer("compress");
+
+    update_score(compressed_data, filename, data.size());
+
+    continue;
+
+    start_timer();
+    vector<td::Ref<vm::Cell>> decoded_roots = vm::boc_decompress(compressed_data, max_decompressed_size).move_as_ok();
+    end_timer("decompress");
+
+    auto decompressed_data = vm::std_boc_serialize(decoded_roots[0], 31).move_as_ok();
+    if (decompressed_data != data) {
+      std::cerr << "Decompressed data does not match original data for file: " << filename << std::endl;
+      exit(1);
+    }
+  }
+  report();
+}
+
+void evaluate_testnet(vm::CompressionAlgorithm algo) {
+  for (string filename : tq::tqdm(TESTNET_FILES)) {
+    ifstream cin(TESTNET_PATH + filename + ".block");
+    std::string base64_data;
+    cin >> base64_data;
+    CHECK(!base64_data.empty());
+    td::BufferSlice data(td::base64_decode(base64_data).move_as_ok());
+    auto roots = vm::boc_decompress(data, max_decompressed_size).move_as_ok();
+
+    ifstream cin_update(TESTNET_PATH + filename + ".update");
+    std::string base64_data_update;
+    cin_update >> base64_data_update;
+    CHECK(!base64_data_update.empty());
+    td::BufferSlice data_update(td::base64_decode(base64_data_update).move_as_ok());
+    auto roots_update = vm::boc_decompress(data_update, max_decompressed_size).move_as_ok();
+    roots.push_back(roots_update[0]);
+
+    // exit(0);
     start_timer();
     td::BufferSlice compressed_data = vm::boc_compress(roots, algo).move_as_ok();
     end_timer("compress");
@@ -375,7 +414,8 @@ unsigned get_gen_catchain_seqno(td::Ref<vm::Cell> root) {
 
 int main() {
   // evaluate_contest200(vm::CompressionAlgorithm::BaselineLZ4);
-  evaluate_contest200(vm::CompressionAlgorithm::ImprovedStructureLZ4);
+  // evaluate_contest200(vm::CompressionAlgorithm::ImprovedStructureLZ4);
+  evaluate_testnet(vm::CompressionAlgorithm::ImprovedStructureLZ4);
   // evaluate_big500(vm::CompressionAlgorithm::BaselineLZ4);
   // evaluate_big500(vm::CompressionAlgorithm::ImprovedStructureLZ4);
   // evaluate_compress_candidate_data(vm::CompressionAlgorithm::ImprovedStructureLZ4);

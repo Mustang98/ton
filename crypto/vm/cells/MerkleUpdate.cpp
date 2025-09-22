@@ -499,6 +499,77 @@ class MerkleCombine {
     return std::make_pair(std::move(update_from), std::move(update_to));
   }
 };
+
+class MerkleUpdateRestore {
+ public:
+  Ref<Cell> restore(Ref<Cell> from, Ref<Cell> update_from, td::uint32 from_level) {
+    if (from_level != from->get_level()) {
+      return {};
+    }
+    dfs_both(from, update_from, from_level);
+    return dfs_restore(update_from, from_level);
+  }
+
+ private:
+  using Key = std::pair<Cell::Hash, int>;
+  td::HashMap<Cell::Hash, Ref<Cell>> known_cells_;
+  td::HashMap<Key, Ref<Cell>> ready_cells_;
+
+  void dfs_both(Ref<Cell> original, Ref<Cell> update_from, int merkle_depth) {
+    CellSlice cs_update_from(NoVm(), update_from);
+    known_cells_.emplace(original->get_hash(merkle_depth), original);
+    if (cs_update_from.special_type() == Cell::SpecialType::PrunnedBranch) {
+      return;
+    }
+    int child_merkle_depth = cs_update_from.child_merkle_depth(merkle_depth);
+
+    CellSlice cs_original(NoVm(), original);
+    for (unsigned i = 0; i < cs_original.size_refs(); i++) {
+      dfs_both(cs_original.prefetch_ref(i), cs_update_from.prefetch_ref(i), child_merkle_depth);
+    }
+  }
+
+  Ref<Cell> dfs_restore(Ref<Cell> cell, int merkle_depth) {
+    CellSlice cs(NoVm(), cell);
+    if (cs.special_type() == Cell::SpecialType::PrunnedBranch) {
+      if ((int)cell->get_level() == merkle_depth + 1) {
+        auto it = known_cells_.find(cell->get_hash(merkle_depth));
+        if (it != known_cells_.end()) {
+          // Replace pruned branch with original cell, but don't store its children
+          CellSlice original_cs(NoVm(), it->second);
+          CellBuilder cb;
+          cb.store_bits(original_cs.fetch_bits(original_cs.size()));
+          // Don't store any references - just the bits from the original cell
+          return cb.finalize(original_cs.is_special());
+        }
+        return {};
+      }
+      return cell;
+    }
+    Key key{cell->get_hash(), merkle_depth};
+    {
+      auto it = ready_cells_.find(key);
+      if (it != ready_cells_.end()) {
+        return it->second;
+      }
+    }
+
+    int child_merkle_depth = cs.child_merkle_depth(merkle_depth);
+
+    CellBuilder cb;
+    cb.store_bits(cs.fetch_bits(cs.size()));
+    for (unsigned i = 0; i < cs.size_refs(); i++) {
+      auto ref = dfs_restore(cs.prefetch_ref(i), child_merkle_depth);
+      if (ref.is_null()) {
+        return {};
+      }
+      cb.store_ref(std::move(ref));
+    }
+    auto res = cb.finalize(cs.is_special());
+    ready_cells_.emplace(key, res);
+    return res;
+  }
+};
 }  // namespace detail
 
 Ref<Cell> MerkleUpdate::combine(Ref<Cell> ab, Ref<Cell> bc) {
@@ -508,6 +579,21 @@ Ref<Cell> MerkleUpdate::combine(Ref<Cell> ab, Ref<Cell> bc) {
     return {};
   }
   return res.move_as_ok();
+}
+
+Ref<Cell> MerkleUpdate::restore_update(Ref<Cell> from, Ref<Cell> update) {
+  if (update->get_level() != 0 || from->get_level() != 0) {
+    return {};
+  }
+  CellSlice cs(NoVm(), std::move(update));
+  if (cs.special_type() != Cell::SpecialType::MerkleUpdate) {
+    return {};
+  }
+  auto update_from = cs.fetch_ref();
+  if (from->get_hash(0) != update_from->get_hash(0)) {
+    return {};
+  }
+  return detail::MerkleUpdateRestore().restore(std::move(from), std::move(update_from), 0);
 }
 
 }  // namespace vm

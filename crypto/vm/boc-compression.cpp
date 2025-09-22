@@ -237,6 +237,7 @@ std::map<int, int> copy_data;
 const int MAX_N = 10000;
 std::map<int, int> mu_right_data_sizes;
 td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vector<td::Ref<vm::Cell>>& boc_roots) {
+  auto left_restored = boc_roots[1];
   local_cache.clear();
   // mu_right_data_sizes.clear();
   // Input validation
@@ -312,12 +313,14 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
 
 
     DCHECK(cell_slice.size_refs() <= 4);
-    if (0 && cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
+    if (cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
       clr();
-      std::cout << "real L: " << calc_sub_size_local_cache(cell_slice.prefetch_ref(0), false, td::Ref<vm::Cell>())  / 8 << std::endl;
+      // std::cout << "real L: " << calc_sub_size_local_cache(cell_slice.prefetch_ref(0), false, td::Ref<vm::Cell>())  / 8 << std::endl;
+      std::cout << "real L: " << calc_sub_size_local_cache(left_restored, false, td::Ref<vm::Cell>())  / 8 << std::endl;
       // print_edges();
       clr(false);
-      std::cout << "R with L in cache: " << calc_sub_size_local_cache(cell_slice.prefetch_ref(1), true, cell_slice.prefetch_ref(0))  / 8 << std::endl;
+      // std::cout << "R with L in cache: " << calc_sub_size_local_cache(cell_slice.prefetch_ref(1), true, cell_slice.prefetch_ref(0))  / 8 << std::endl;
+      std::cout << "R with L in cache: " << calc_sub_size_local_cache(cell_slice.prefetch_ref(1), true, left_restored)  / 8 << std::endl;
       print_edges();
       // local_cache.clear();
       // local_cache2.clear();
@@ -385,6 +388,8 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(const std::vecto
   for (auto root : boc_roots) {
     TRY_RESULT(root_cell_id, build_graph(build_graph, root, 0, 0));
     root_indexes.push_back(root_cell_id);
+    std::cout << "CAREFUL!!!!!! BREAK AFTER THE FIRST ROOT IN BOC" << std::endl;
+    break;
   }
   // std::cout << "-----------: " << total << " " << rem << " " << prunned << std::endl;
   // if (TESTS == 200) {

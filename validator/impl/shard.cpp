@@ -27,6 +27,11 @@
 #include "block/block-parse.h"
 #include "block/block-auto.h"
 #include "td/utils/filesystem.h"
+#include "vm/boc-compression.h"
+#include <fstream>
+#include <random>
+#include <chrono>
+#include "td/utils/base64.h"
 
 #define LAZY_STATE_DESERIALIZE 1
 
@@ -178,6 +183,33 @@ td::Result<Ref<MessageQueue>> ShardStateQ::message_queue() const {
   return Ref<MessageQueue>(Ref<MessageQueueQ>{true, blkid, std::move(out_queue_info)});
 }
 
+int calculate_block_size(td::Ref<vm::Cell> cell) {
+  bool is_special = false;
+  vm::CellSlice cell_slice = vm::load_cell_slice_special(cell, is_special);
+  td::BitSlice cell_bitslice = cell_slice.as_bitslice();
+  int size = cell_bitslice.size();
+
+  // Process cell references
+  for (int i = 0; i < cell_slice.size_refs(); ++i) {
+    size += calculate_block_size(cell_slice.prefetch_ref(i));
+  }
+  return size;
+};
+
+int calculate_block_vertexes(td::Ref<vm::Cell> cell) {
+  bool is_special = false;
+  vm::CellSlice cell_slice = vm::load_cell_slice_special(cell, is_special);
+  td::BitSlice cell_bitslice = cell_slice.as_bitslice();
+  int size = 1;
+
+  // Process cell references
+  for (int i = 0; i < cell_slice.size_refs(); ++i) {
+    size += calculate_block_vertexes(cell_slice.prefetch_ref(i));
+  }
+  return size;
+};
+
+
 td::Status ShardStateQ::apply_block(BlockIdExt newid, td::Ref<BlockData> block) {
   if (block.is_null()) {
     return td::Status::Error(-666, "the block to be applied to a previous state is absent");
@@ -202,6 +234,65 @@ td::Status ShardStateQ::apply_block(BlockIdExt newid, td::Ref<BlockData> block) 
     return td::Status::Error(-666, "invalid shardchain block header for block "s + block->block_id().id.to_str());
   }
   Ref<vm::Cell> update = cs.prefetch_ref(2);  // Merkle update
+
+
+  LOG(INFO) << "OLEG MERKLE_APPLY 2";
+  LOG(INFO) << "OLEG block size: " << calculate_block_size(block_root) / 8 << " bytes";
+  vm::CellSlice cs_update(vm::NoVm(), update);
+  td::Ref<vm::Cell> update_from = cs_update.prefetch_ref();
+  LOG(INFO) << "OLEG update from size: " << calculate_block_size(update_from) / 8 << " bytes";
+  LOG(INFO) << "OLEG update from vertexes: " << calculate_block_vertexes(update_from);
+  td::Ref<vm::Cell> update_from_restored = vm::MerkleUpdate::restore_update(root, update);
+  LOG(INFO) << "OLEG update from restored size: " << calculate_block_size(update_from_restored) / 8 << " bytes";
+  LOG(INFO) << "OLEG update from restored vertexes: " << calculate_block_vertexes(update_from_restored);
+
+  td::BufferSlice compressed_block = vm::boc_compress({block_root}, vm::CompressionAlgorithm::BaselineLZ4).move_as_ok();
+  td::BufferSlice compressed_update_restored = vm::boc_compress({update_from_restored}, vm::CompressionAlgorithm::BaselineLZ4).move_as_ok();
+  LOG(INFO) << "OLEG compressed block size: " << compressed_block.size() << " bytes";
+  LOG(INFO) << "OLEG compressed update restored size: " << compressed_update_restored.size() << " bytes";
+  // Helper function to generate random filename
+  auto generate_random_name = []() -> std::string {
+    static const char alphanum[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    constexpr int len = 12;
+    std::string result;
+    result.reserve(len);
+    std::mt19937 rng(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    for (int i = 0; i < len; ++i) {
+      result += alphanum[rng() % (sizeof(alphanum) - 1)];
+    }
+    return result;
+  };
+
+  // Helper function to save binary data as base64 to file
+  auto save_base64_file = [](const std::string& filepath, const td::Slice& data) -> bool {
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+      LOG(ERROR) << "OLEG Failed to open " << filepath << " for writing";
+      return false;
+    }
+
+    std::string base64_data = td::base64_encode(data);
+    file << base64_data;
+    if (!file.good()) {
+      LOG(ERROR) << "OLEG Failed to write data to " << filepath;
+      return false;
+    }
+
+    file.close();
+    LOG(INFO) << "OLEG Successfully saved " << data.size() << " bytes (" << base64_data.size() << " base64 chars) to " << filepath;
+    return true;
+  };
+
+  const std::string random_name = generate_random_name();
+  const std::string blocks_dir = "/tmp/blocks/";
+  const std::string block_path = blocks_dir + random_name + ".block";
+  const std::string update_path = blocks_dir + random_name + ".update";
+
+  // Save files as base64
+  save_base64_file(block_path, compressed_block.as_slice());
+  save_base64_file(update_path, compressed_update_restored.as_slice());
+
+
   auto next_state_root = vm::MerkleUpdate::apply(root, update);
   if (next_state_root.is_null()) {
     return td::Status::Error("cannot apply Merkle update from block "s + block->block_id().id.to_str() +

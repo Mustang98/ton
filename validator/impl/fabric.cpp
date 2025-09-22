@@ -35,6 +35,7 @@
 #include "liteserver.hpp"
 #include "validator/fabric.h"
 #include "liteserver-cache.hpp"
+#include "vm/cells/MerkleUpdate.h"
 
 namespace ton {
 
@@ -267,6 +268,76 @@ void run_validate_shard_block_description(td::BufferSlice data, BlockHandle mast
                                                       std::move(masterchain_block), std::move(masterchain_state),
                                                       manager, timeout, is_fake, std::move(promise))
       .release();
+}
+
+Ref<vm::Cell> extract_merkle_update(td::Ref<vm::Cell> root) {
+  block::gen::Block::Record block_rec;
+  block::gen::Block().cell_unpack(root, block_rec);
+  return block_rec.state_update.prefetch_ref(1);
+}
+
+class MyActor : public td::actor::Actor {
+ public:
+  MyActor(td::actor::ActorId<ValidatorManager> manager) : manager_(manager) {
+  }
+
+  void start_up() override {
+    BlockIdExt block_id =
+        BlockIdExt::from_str(
+            "(-1,8000000000000000,52030718):8FC93FFB18FFF49F819500ED89161F5D6401AAF402155A965E9CBE7C854282C6:A1D5C2D3048AE16DD28E8A9D0B275C111D03DC6BC0AF6B34BA197DCC089260F1")
+            .move_as_ok();
+
+    td::actor::send_closure(manager_, &ValidatorManager::wait_block_state_short, block_id, 0, td::Timestamp::in(10.0),
+                            false, [SelfId = actor_id(this)](td::Result<td::Ref<ShardState>> R) {
+                              R.ensure();
+                              td::actor::send_closure(SelfId, &MyActor::got_state, R.move_as_ok());
+                            });
+  }
+
+  void got_state(td::Ref<ShardState> state) {
+    state_ = state;
+    td::actor::send_closure(manager_, &ValidatorManager::wait_block_data_short, state->get_block_id(), 0,
+                            td::Timestamp::in(10.0), [SelfId = actor_id(this)](td::Result<td::Ref<BlockData>> R) {
+                              R.ensure();
+                              td::actor::send_closure(SelfId, &MyActor::got_block, R.move_as_ok());
+                            });
+  }
+
+  void got_block(td::Ref<BlockData> block) {
+    block_ = block;
+
+    td::Ref<vm::Cell> block_root = block_->root_cell();
+    td::Ref<vm::Cell> state_cell = state_->root_cell();
+    
+    // Extract merkle update root from block
+    td::Ref<vm::Cell> merkle_update = extract_merkle_update(block_root);
+    
+    // Validate the merkle update structure
+    auto validate_result = vm::MerkleUpdate::validate(merkle_update);
+    if (validate_result.is_error()) {
+      LOG(ERROR) << "OLEG_DEBUG: Merkle update validation failed: " << validate_result.error().message().str();
+      return;
+    } else {
+      LOG(INFO) << "OLEG_DEBUG: Merkle update validation passed";
+    }
+    
+    // Check if the update can be applied to the current state
+    auto may_apply_result = vm::MerkleUpdate::may_apply(state_cell, merkle_update);
+    if (may_apply_result.is_error()) {
+      LOG(ERROR) << "OLEG_DEBUG: Merkle update cannot be applied: " << may_apply_result.error().message().str();
+      return;
+    } else {
+      LOG(INFO) << "OLEG_DEBUG: Merkle update can be applied";
+    }
+  }
+
+  td::actor::ActorId<ValidatorManager> manager_;
+  td::Ref<ShardState> state_;
+  td::Ref<BlockData> block_;
+};
+
+void create_my_actor(td::actor::ActorId<ValidatorManager> manager) {
+  td::actor::create_actor<MyActor>("myactor", manager).release();
 }
 
 }  // namespace validator

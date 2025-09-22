@@ -2045,6 +2045,8 @@ void ValidatorManagerImpl::started(ValidatorManagerInitResult R) {
       });
   td::actor::send_closure(db_, &Db::get_persistent_state_descriptions, std::move(Q));
   update_shard_overlays();
+
+  create_my_actor(actor_id(this));
 }
 
 void ValidatorManagerImpl::read_gc_list(std::vector<ValidatorSessionId> list) {

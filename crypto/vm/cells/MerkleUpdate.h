@@ -46,5 +46,8 @@ class MerkleUpdate {
                                  td::uint32 to_level);
 
   static Ref<Cell> combine(Ref<Cell> ab, Ref<Cell> bc);
+
+  // Restore pruned branches in update_from with original cells from state, but without their children
+  static Ref<Cell> restore_update(Ref<Cell> from, Ref<Cell> update);
 };
 }  // namespace vm
