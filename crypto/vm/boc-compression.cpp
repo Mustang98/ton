@@ -118,12 +118,13 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
       return;
     }
     vm::CellSlice cs_update(NoVm(), update_from);
-    mu_known_cells.emplace(original->get_hash(merkle_depth), original);
+    vm::CellSlice cs_original(NoVm(), original);
+    mu_known_cells.emplace(update_from->get_hash(), original);
     if (cs_update.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+      // std::cout << "PRUNNED " << cs_update.as_bitslice().to_hex() << " " << cs_original.as_bitslice().to_hex() << std::endl;
       return;
     }
     int child_merkle_depth = cs_update.child_merkle_depth(merkle_depth);
-    vm::CellSlice cs_original(NoVm(), original);
     for (unsigned i = 0; i < cs_original.size_refs(); i++) {
       self(self, cs_original.prefetch_ref(i), cs_update.prefetch_ref(i), child_merkle_depth);
     }
@@ -140,6 +141,13 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
     }
 
     auto cell_hash = cell->get_hash();
+    bool is_special = false;
+    vm::CellSlice cell_slice = vm::load_cell_slice_special(cell, is_special);
+
+    // if (under_mu_right && cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+    //   std::cout << "PRUNNED RIGHT " << (mu_known_cells.find(cell_hash) != mu_known_cells.end()) << std::endl;
+    // }
+    
     auto it = cell_hashes.find(cell_hash);
     if (it != cell_hashes.end()) {
       return it->second;
@@ -154,8 +162,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
       cell_hashes.emplace(cell_hash, current_cell_id);
     }
 
-    bool is_special = false;
-    vm::CellSlice cell_slice = vm::load_cell_slice_special(cell, is_special);
+  
     if (!cell_slice.is_valid()) {
       return td::Status::Error("Invalid loaded cell data");
     }
@@ -187,7 +194,10 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
     if (compress_merkle_update && state.not_null() && kMURemoveSubtreeSums &&
         cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
       mu_collect_known(mu_collect_known, state, cell_slice.prefetch_ref(0), 0);
+      std::cout << "PRUNNED CNT: " << mu_known_cells.size() << std::endl;
     }
+
+    
 
     // Process cell references
     for (int i = 0; i < cell_slice.size_refs(); ++i) {
@@ -205,6 +215,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
 
     // If we are under the right subtree of a MerkleUpdate, try to remove data when possible
     if (compress_merkle_update && under_mu_right && !is_special) {
+      // std::cout << "QQ" << std::endl;
       if (cell_slice.size_refs() == 2) {
         auto try_read_i64 = [&](td::Ref<vm::Cell> c) -> std::pair<bool, int64_t> {
           if (c.is_null()) return {false, 0};
@@ -225,17 +236,20 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
           vm::CellSlice ccs(NoVm(), cref);
           if (ccs.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
             // can restore only if level matches merkle_depth + 1
-            if ((int)cref->get_level() == merkle_depth + 1) {
-              auto it = mu_known_cells.find(cref->get_hash(merkle_depth));
+            // if ((int)cref->get_level() == merkle_depth + 1) {
+              auto it = mu_known_cells.find(cref->get_hash());
               if (it == mu_known_cells.end()) {
+                // std::cout << "AA" << std::endl;
                 ok = false;
                 break;
               }
               child_cells[i] = it->second;
-            } else {
-              ok = false;
-              break;
-            }
+            // } else {
+
+            //   std::cout << "AA" << std::endl;
+            //   ok = false;
+            //   break;
+            // }
           } else {
             child_cells[i] = cref;
           }
@@ -245,6 +259,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
           auto [ok0, v0] = try_read_i64(child_cells[0]);
           auto [ok1, v1] = try_read_i64(child_cells[1]);
           if (ok0 && ok1) {
+            std::cout << "QQ" << std::endl;
             // current cell value
             int64_t vcur = 0;
             bool cur_ok = true;
@@ -257,10 +272,14 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
                 else vcur = static_cast<int64_t>(u);
               }
             }
-            if (cur_ok && (v0 + v1 == vcur)) {
+            if (1){//cur_ok && (v0 + v1 == vcur)) {
               // remove data from this cell
               cell_data[current_cell_id] = td::BitSlice();
+            } else {
+              std::cout << "NOT EQUEAL SUM " << v0 << " " << v1 << " " << vcur << std::endl;
             }
+          } else {
+            std::cout << "BAD" << std::endl;
           }
         }
       }
