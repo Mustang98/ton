@@ -109,6 +109,11 @@ td::Result<std::pair<td::BufferSlice, td::BufferSlice>> decompress_candidate_dat
   if (roots.empty()) {
     return td::Status::Error("boc is empty");
   }
+
+  bool is_special = false;
+  vm::CellSlice cell_slice_data = vm::load_cell_slice_special(roots[0], is_special);
+  LOG(INFO) << "OLEGn decompress_candidate_data data: " << cell_slice_data.size() << ' ' << is_special << ' ' << cell_slice_data.special_type() << ' ' << cell_slice_data.size_refs();
+
   TRY_RESULT(block_data, vm::std_boc_serialize(roots[0], 31));
   roots.erase(roots.begin());
   int collated_data_mode = proto_version >= 5 ? 2 : 31;

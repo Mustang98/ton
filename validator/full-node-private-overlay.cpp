@@ -40,7 +40,8 @@ void FullNodePrivateBlockOverlay::process_broadcast(PublicKeyHash src,
 }
 
 void FullNodePrivateBlockOverlay::process_block_broadcast(PublicKeyHash src, ton_api::tonNode_Broadcast &query) {
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size());
+  LOG(INFO) << "OLEG FullNodePrivateBlockOverlay::process_block_broadcast";
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), validator_manager_);
   if (B.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << B.move_as_error();
     return;
@@ -322,7 +323,8 @@ void FullNodeCustomOverlay::process_block_broadcast(PublicKeyHash src, ton_api::
                           << src;
     return;
   }
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size());
+  LOG(INFO) << "OLEG FullNodeCustomOverlay::process_block_broadcast";
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), validator_manager_);
   if (B.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << B.move_as_error();
     return;

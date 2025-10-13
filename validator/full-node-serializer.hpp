@@ -17,11 +17,13 @@
 #pragma once
 #include "ton/ton-types.h"
 #include "auto/tl/ton_api.h"
+#include "validator/validator.h"
+#include "td/actor/ActorId.h"
 
 namespace ton::validator::fullnode {
 
 td::Result<td::BufferSlice> serialize_block_broadcast(const BlockBroadcast& broadcast, bool compression_enabled);
-td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_Broadcast& obj, int max_decompressed_data_size);
+td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_Broadcast& obj, int max_decompressed_data_size, td::actor::ActorId<ValidatorManagerInterface> manager);
 
 td::Result<td::BufferSlice> serialize_block_full(const BlockIdExt& id, td::Slice proof, td::Slice data,
                                                  bool is_proof_link, bool compression_enabled);

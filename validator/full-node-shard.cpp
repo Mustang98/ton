@@ -842,11 +842,19 @@ void FullNodeShardImpl::process_broadcast(PublicKeyHash src, ton_api::tonNode_bl
 }
 
 void FullNodeShardImpl::process_block_broadcast(PublicKeyHash src, ton_api::tonNode_Broadcast &query) {
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size());
+  LOG(INFO) << "OLEG FullNodeShardImpl::process_block_broadcast";
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), validator_manager_);
   if (B.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << B.move_as_error();
     return;
   }
+
+  // Obtain state and block data for this broadcast's block (example-based flow)
+  // {
+  //   BlockIdExt block_id = B.ok().block_id;
+  // }
+
+  
   //if (!shard_is_ancestor(shard_, block_id.shard_full())) {
   //  LOG(FULL_NODE_WARNING) << "dropping block broadcast: shard mismatch. overlay=" << shard_.to_str()
   //                         << " block=" << block_id.to_str();

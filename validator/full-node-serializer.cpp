@@ -24,6 +24,7 @@
 #include "td/utils/lz4.h"
 #include "full-node.h"
 #include "td/utils/overloaded.h"
+#include "vm/cells/MerkleUpdate.h"
 
 namespace ton::validator::fullnode {
 
@@ -57,6 +58,7 @@ static td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_b
   for (auto& sig : f.signatures_) {
     signatures.emplace_back(BlockSignature{sig->who_, std::move(sig->signature_)});
   }
+  LOG(INFO) << "OLEG deserializing block broadcast";
   return BlockBroadcast{create_block_id(f.id_),
                         std::move(signatures),
                         static_cast<UnixTime>(f.catchain_seqno_),
@@ -81,6 +83,7 @@ static td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_b
   TRY_RESULT(data, vm::std_boc_serialize(roots[1], 31));
   VLOG(FULL_NODE_DEBUG) << "Decompressing block broadcast: " << f.compressed_.size() << " -> "
                         << data.size() + proof.size() + signatures.size() * 96;
+  LOG(INFO) << "OLEG deserializing block broadcast compressed";                      
   return BlockBroadcast{create_block_id(f.id_),
                         std::move(signatures),
                         static_cast<UnixTime>(f.catchain_seqno_),
@@ -90,8 +93,8 @@ static td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_b
 }
 
 static td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_blockBroadcastCompressedV2& f,
-                                                              int max_decompressed_size) {
-  std::vector<BlockSignature> signatures;
+                                                              int max_decompressed_size, td::actor::ActorId<ValidatorManagerInterface> manager) {                                                             
+                                                                std::vector<BlockSignature> signatures;
   for (auto& sig : f.signatures_) {
     signatures.emplace_back(BlockSignature{sig->who_, std::move(sig->signature_)});
   }
@@ -101,6 +104,76 @@ static td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_b
   }
   TRY_RESULT(proof, vm::std_boc_serialize(roots[0], 0));
   TRY_RESULT(data, vm::std_boc_serialize(roots[1], 31));
+
+  // Obtain state and block data for this broadcast's block (example-based flow)
+  {
+    BlockIdExt block_id = create_block_id(f.id_);
+
+    // Parse block and extract previous block ID
+    std::vector<BlockIdExt> prev_blocks;
+    BlockIdExt mc_blkid;
+    bool after_split;
+    auto parse_result = block::unpack_block_prev_blk_try(roots[1], block_id, prev_blocks, mc_blkid, after_split);
+    
+    if (parse_result.is_ok()) {
+      LOG(INFO) << "OLEGn successfully parsed block, found " << prev_blocks.size() << " previous block(s)";
+    } else {
+      LOG(ERROR) << "OLEGn failed to parse block: " << parse_result.error().message();
+    }
+    BlockIdExt prev_block_id = prev_blocks[0];
+
+    bool is_special = false;
+    vm::CellSlice cell_slice_proof = vm::load_cell_slice_special(roots[0], is_special);
+    LOG(INFO) << "OLEGn proof: " << cell_slice_proof.size() << ' ' << is_special << ' ' << cell_slice_proof.special_type() << ' ' << cell_slice_proof.size_refs();
+
+    vm::CellSlice cell_slice_data = vm::load_cell_slice_special(roots[1], is_special);
+    LOG(INFO) << "OLEGn data: " << cell_slice_data.size() << ' ' << is_special << ' ' << cell_slice_data.special_type() << ' ' << cell_slice_data.size_refs();
+
+    // Ref<vm::Cell> proof_merkle_update = cell_slice_proof.prefetch_ref(2);  // Merkle update
+    // vm::CellSlice cs_proof_merkle_update = vm::load_cell_slice_special(proof_merkle_update, is_special);
+    // LOG(INFO) << "OLEGn proof merkle update: " << cs_proof_merkle_update.size() << ' ' << is_special << ' ' << cs_proof_merkle_update.special_type();
+    
+    Ref<vm::Cell> data_merkle_update = cell_slice_data.prefetch_ref(2);  // Merkle update
+    vm::CellSlice cs_data_merkle_update = vm::load_cell_slice_special(data_merkle_update, is_special);
+    LOG(INFO) << "OLEGn data merkle update: " << cs_data_merkle_update.size() << ' ' << is_special << ' ' << cs_data_merkle_update.special_type();
+    
+    td::Ref<vm::Cell> data_merkle_update_from = cs_data_merkle_update.prefetch_ref();
+    vm::CellSlice cs_data_merkle_update_from = vm::load_cell_slice_special(data_merkle_update_from, is_special);
+    LOG(INFO) << "OLEGn data merkle update from: " << cs_data_merkle_update_from.size() << ' ' << is_special << ' ' << cs_data_merkle_update_from.special_type();
+
+    // td::Ref<vm::Cell> proof_merkle_update_from = cs_proof_merkle_update.prefetch_ref();
+    // vm::CellSlice cs_proof_merkle_update_from = vm::load_cell_slice_special(proof_merkle_update_from, is_special);
+    // LOG(INFO) << "OLEGn proof merkle update from: " << cs_proof_merkle_update_from.size() << ' ' << is_special << ' ' << cs_proof_merkle_update_from.special_type();
+
+    
+    
+    td::actor::send_closure(manager, &ValidatorManagerInterface::wait_block_state_short, prev_block_id, 0,
+                            td::Timestamp::in(10.0),
+                            td::PromiseCreator::lambda([manager, prev_block_id, data_merkle_update](td::Result<td::Ref<ShardState>> R) mutable {
+                              if (R.is_error()) {
+                                LOG(INFO) << "OLEGn failed to get state in process_block_broadcast: "
+                                                        << R.move_as_error();
+                                return;
+                              }
+                              auto state = R.move_as_ok()->root_cell();
+                              bool is_special = false;
+                              vm::CellSlice cs_state = vm::load_cell_slice_special(state, is_special);
+                              LOG(INFO) << "OLEGn state: " << cs_state.size() << ' ' << is_special << ' ' << cs_state.special_type();
+
+                              auto may_apply_data_result = vm::MerkleUpdate::may_apply(state, data_merkle_update);
+                              if (may_apply_data_result.is_error()) {
+                                LOG(ERROR) << "OLEGn: Merkle update data cannot be applied: " << may_apply_data_result.error().message().str();
+                                return;
+                              } else {
+                                LOG(INFO) << "OLEGn: Merkle update data can be applied";
+                              }
+
+
+                              
+                            }));
+  } 
+
+  LOG(INFO) << "OLEG deserializing block broadcast compressed V2";
   VLOG(FULL_NODE_DEBUG) << "Decompressing block broadcast: " << f.compressed_.size() << " -> "
                         << data.size() + proof.size() + signatures.size() * 96;
   return BlockBroadcast{create_block_id(f.id_),
@@ -112,7 +185,7 @@ static td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_b
 }
 
 td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_Broadcast& obj,
-                                                       int max_decompressed_data_size) {
+                                                       int max_decompressed_data_size, td::actor::ActorId<ValidatorManagerInterface> manager) {
   td::Result<BlockBroadcast> B;
   ton_api::downcast_call(obj,
                          td::overloaded([&](ton_api::tonNode_blockBroadcast& f) { B = deserialize_block_broadcast(f); },
@@ -120,7 +193,7 @@ td::Result<BlockBroadcast> deserialize_block_broadcast(ton_api::tonNode_Broadcas
                                           B = deserialize_block_broadcast(f, max_decompressed_data_size);
                                         },
                                         [&](ton_api::tonNode_blockBroadcastCompressedV2& f) {
-                                          B = deserialize_block_broadcast(f, max_decompressed_data_size);
+                                          B = deserialize_block_broadcast(f, max_decompressed_data_size, manager);
                                         },
                                         [&](auto&) { B = td::Status::Error("unknown broadcast type"); }));
   return B;
