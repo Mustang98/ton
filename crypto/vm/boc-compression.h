@@ -42,5 +42,4 @@ td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress_improved_structure_lz4
 
 td::Result<td::BufferSlice> boc_compress(const std::vector<td::Ref<vm::Cell>>& boc_roots, CompressionAlgorithm algo = CompressionAlgorithm::BaselineLZ4, td::Ref<vm::Cell> state = td::Ref<vm::Cell>());
 td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress(td::Slice compressed, int max_decompressed_size);
-
 }  // namespace vm

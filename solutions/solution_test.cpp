@@ -417,10 +417,10 @@ unsigned get_gen_catchain_seqno(td::Ref<vm::Cell> root) {
 int main() {
   // evaluate_contest200(vm::CompressionAlgorithm::BaselineLZ4);
   std::cout << color::RED << "================================================================================================" << std::endl;
-  evaluate_contest200(vm::CompressionAlgorithm::ImprovedStructureLZ4);
+  // evaluate_contest200(vm::CompressionAlgorithm::ImprovedStructureLZ4);
   // evaluate_testnet(vm::CompressionAlgorithm::ImprovedStructureLZ4);
   // evaluate_big500(vm::CompressionAlgorithm::BaselineLZ4);
-  // evaluate_big500(vm::CompressionAlgorithm::ImprovedStructureLZ4);
+  evaluate_big500(vm::CompressionAlgorithm::ImprovedStructureLZ4);
   // evaluate_compress_candidate_data(vm::CompressionAlgorithm::ImprovedStructureLZ4);
   // evaluate_serialize_block_broadcast(vm::CompressionAlgorithm::ImprovedStructureLZ4);
   // evaluate_serialize_block_candidate_broadcast(vm::CompressionAlgorithm::ImprovedStructureLZ4);

@@ -21,11 +21,11 @@
 #include <algorithm>
 #include <bitset>
 #include "vm/boc.h"
-#include "vm/boc-writers.h"
-#include "vm/cells.h"
 #include "vm/cellslice.h"
 #include "td/utils/Slice-decl.h"
 #include "td/utils/lz4.h"
+#include "crypto/block/block-auto.h"
+#include "crypto/block/block-parse.h"
 
 namespace vm {
 
@@ -75,6 +75,117 @@ inline td::Result<unsigned> read_uint(td::BitSlice& bs, int bits) {
   return result;
 }
 
+td::HashMap<vm::Cell::Hash, size_t> cur_cell_hashes;
+
+// Helper function to decode DepthBalanceInfo and extract nanograms (manual implementation)
+td::RefInt256 extract_balance_from_depth_balance_info_manual(vm::CellSlice& cs) {
+  // DepthBalanceInfo structure: split_depth:(#<= 30) balance:CurrencyCollection
+  // We need to skip split_depth and extract the grams from CurrencyCollection
+  
+  int split_depth;
+  if (!cs.fetch_uint_leq(30, split_depth)) {
+    return td::RefInt256{};
+  }
+  
+  // Now extract grams from CurrencyCollection
+  // CurrencyCollection = grams:Grams extra:ExtraCurrencyCollection
+  // Grams is VarUInteger 16
+  
+  int len_bits = (int)cs.prefetch_ulong(4);
+  if (!cs.have(4 + len_bits * 8)) {
+    return td::RefInt256{};
+  }
+  
+  cs.advance(4);
+  if (len_bits == 0) {
+    return td::make_refint(0);
+  }
+  
+  auto grams = td::RefInt256{true};
+  if (!grams.write().import_bits(cs.data_bits(), len_bits * 8, false)) {
+    return td::RefInt256{};
+  }
+  
+  return grams;
+}
+
+// Helper function to decode DepthBalanceInfo and extract nanograms (using TLB methods)
+td::RefInt256 extract_balance_from_depth_balance_info(vm::CellSlice& cs) {
+  // Use the existing TLB unpack method
+  int split_depth;
+  Ref<vm::CellSlice> balance_cs;
+  
+  if (!block::gen::t_DepthBalanceInfo.unpack_depth_balance(cs, split_depth, balance_cs)) {
+    return td::RefInt256{};
+  }
+  
+  // Extract grams from CurrencyCollection using the TLB method
+  return block::tlb::t_CurrencyCollection.as_integer_skip(balance_cs.write());
+}
+
+
+// Skip the Hashmap label using the existing TLB implementation
+bool skip_hashmap_label(vm::CellSlice& cs, int max_bits) {
+  cs.advance(2);
+  return true;
+  return block::gen::HmLabel{max_bits}.skip(cs);
+}
+
+// Process ShardAccounts tree vertices and output balance differences
+std::string process_shard_accounts_vertex(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right) {  
+  vm::CellSlice cs_left(NoVm(), left);
+  vm::CellSlice cs_right(NoVm(), right);
+  
+  // Skip label on both sides
+  if (skip_hashmap_label(cs_left, 256) && skip_hashmap_label(cs_right, 256)) {
+    // Now try to decode DepthBalanceInfo from augmentation values
+    auto balance_left = extract_balance_from_depth_balance_info_manual(cs_left);
+    auto balance_right = extract_balance_from_depth_balance_info_manual(cs_right);
+    
+    if (balance_left.not_null() && balance_right.not_null()) {
+      // Compute difference: right - left
+      td::RefInt256 diff = balance_right;
+      diff.write() -= *balance_left;
+      
+      std::string diff_str = diff->to_dec_string();
+      return diff_str;
+    }
+  }
+  return "";
+}
+
+
+std::string process_merkle_tree(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right, std::set<vm::Cell::Hash>& skipped_diffs) {
+  if (left.is_null() || right.is_null()) {
+    return "";
+  }
+  vm::CellSlice cs_left(NoVm(), left);
+  vm::CellSlice cs_right(NoVm(), right);
+
+
+  if (cs_left.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+    return "";
+  }
+  if (cs_right.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+    return "";
+  }
+
+  std::string diff = process_shard_accounts_vertex(left, right);
+  
+  bool can_skip = false;
+  for (unsigned i = 0; i < cs_right.size_refs(); i++) {
+    auto diff_rec = process_merkle_tree(cs_left.prefetch_ref(i), cs_right.prefetch_ref(i), skipped_diffs);
+    if (diff_rec == diff) {
+      can_skip = true;
+    }
+  }
+  if (can_skip && diff != "") {
+    skipped_diffs.insert(right->get_hash());
+  }
+
+  return diff;
+};
+
 td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
   const std::vector<td::Ref<vm::Cell>>& boc_roots, 
   bool compress_merkle_update,
@@ -105,6 +216,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
   std::vector<size_t> prunned_branch_level;
   std::vector<size_t> root_indexes;
   size_t total_size_estimate = 0;
+  std::set<vm::Cell::Hash> skipped_diffs;
 
   // When enabled, collect mapping from (hash at merkle depth) to real state cell
   // while traversing the left subtree of a MerkleUpdate cell together with full state
@@ -177,7 +289,10 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
     DCHECK(cell_slice.size_refs() <= 4);
 
     // Process special cell of type PrunnedBranch
-    if (skip_data) {
+    if (skipped_diffs.find(cell_hash) != skipped_diffs.end()) {
+      cell_data.emplace_back();
+      prunned_branch_level.back() = 9;
+    } else if (skip_data) {
       cell_data.emplace_back();
     } else {
       if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
@@ -191,6 +306,9 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
     total_size_estimate += cell_bitslice.size();
 
     // If enabled and this is a MerkleUpdate cell, traverse the left subtree with state to build known-cells map
+    if (cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
+      process_merkle_tree(cell_slice.prefetch_ref(0), cell_slice.prefetch_ref(1), skipped_diffs);
+    }
     if (compress_merkle_update && state.not_null() && kMURemoveSubtreeSums &&
         cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
       mu_collect_known(mu_collect_known, state, cell_slice.prefetch_ref(0), 0);
