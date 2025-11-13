@@ -268,12 +268,12 @@ td::RefInt256 extract_balance_from_depth_balance_info_manual(vm::CellSlice& cs) 
 }
 
 // Helper function to decode DepthBalanceInfo and extract nanograms (using TLB methods)
-td::RefInt256 extract_balance_from_depth_balance_info(vm::CellSlice& cs, int& suffix) {
+td::RefInt256 extract_balance_from_depth_balance_info(vm::CellSlice& cs) {
   // Use the existing TLB unpack method
   int split_depth;
-  Ref<vm::CellSlice> balance_cs;
+  Ref<vm::CellSlice> balance_cs_ref;
   
-  if (!block::gen::t_DepthBalanceInfo.unpack_depth_balance(cs, split_depth, balance_cs)) {
+  if (!block::gen::t_DepthBalanceInfo.unpack_depth_balance(cs, split_depth, balance_cs_ref)) {
     return td::RefInt256{};
   }
   if (split_depth != 0) {
@@ -283,37 +283,31 @@ td::RefInt256 extract_balance_from_depth_balance_info(vm::CellSlice& cs, int& su
   if (!cs.empty()) {
     return td::RefInt256{};
   }
-  suffix = cs.size();
-  // auto balance_cs_slice = balance_cs.write();
   // Extract grams from CurrencyCollection using the TLB method
-  // auto res = block::tlb::t_Grams.as_integer_skip(balance_cs_slice);
-  // suffix += balance_cs_slice.size();
-  // return res;
-  return block::tlb::t_CurrencyCollection.as_integer_skip(balance_cs.write());
-}
-
-// Helper function to decode DepthBalanceInfo and extract nanograms (using TLB methods)
-td::RefInt256 extract_grams_from_depth_balance_info(vm::CellSlice& cs, int& suffix) {
-  int x = cs.fetch_ulong(5);
-  if (x != 0) {
+  auto balance_cs = balance_cs_ref.write();
+  auto res = block::tlb::t_Grams.as_integer_skip(balance_cs);
+  if (balance_cs.size() != 1) {
     return td::RefInt256{};
   }
-  auto res = block::tlb::t_Grams.as_integer_skip(cs);
-  suffix = cs.size();
-  if (suffix == 1) --suffix;
+  int last_bit = balance_cs.fetch_ulong(1);
+  if (last_bit != 0) {
+    return td::RefInt256{};
+  }
   return res;
-  // return block::tlb::t_CurrencyCollection.as_integer_skip(balance_cs.write());
 }
 
 // Skip the Hashmap label using the existing TLB implementation
 bool skip_hashmap_label(vm::CellSlice& cs, int max_bits) {
-  cs.advance(2);
+  int k = cs.fetch_ulong(2);
+  if (k != 0) {
+    return false;
+  }
   return true;
   // return block::gen::HmLabel{max_bits}.skip(cs);
 }
 
 // Process ShardAccounts tree vertices and output balance differences
-td::RefInt256 process_shard_accounts_vertex(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right, int& suffix) {  
+td::RefInt256 process_shard_accounts_vertex(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right) {  
   vm::CellSlice cs_left(NoVm(), left);
   vm::CellSlice cs_right(NoVm(), right);
 
@@ -322,8 +316,8 @@ td::RefInt256 process_shard_accounts_vertex(td::Ref<vm::Cell> left, td::Ref<vm::
   // Skip label on both sides
   if (skip_hashmap_label(cs_left, 256) && skip_hashmap_label(cs_right, 256)) {
     // // Now try to decode DepthBalanceInfo from augmentation values
-    auto balance_left = extract_balance_from_depth_balance_info(cs_left, suffix);
-    auto balance_right = extract_balance_from_depth_balance_info(cs_right, suffix);
+    auto balance_left = extract_balance_from_depth_balance_info(cs_left);
+    auto balance_right = extract_balance_from_depth_balance_info(cs_right);
     
     if (balance_left.not_null() && balance_right.not_null()) {
       // Compute difference: right - left
@@ -336,8 +330,58 @@ td::RefInt256 process_shard_accounts_vertex(td::Ref<vm::Cell> left, td::Ref<vm::
   return td::RefInt256{};
 }
 
+// Try to reconstruct ShardAccounts vertex data from left vertex and sum of children's diffs.
+// Returns true if reconstructed bits match exactly the original right vertex bits.
+bool reconstruct_shard_vertex_and_compare(vm::CellSlice cs_left, vm::CellSlice cs_right, const td::RefInt256& sum_child_diff) {
+  // Extract left grams
+  if (!skip_hashmap_label(cs_left, 256)) {
+    std::cout << "Failed to skip hashmap label" << std::endl;
+    return false;
+  }
+  auto left_grams = extract_balance_from_depth_balance_info(cs_left);
+  if (left_grams.is_null()) {
+    std::cout << "Failed to extract balance from depth balance info" << std::endl;
+    return false;
+  }
+  // Compute expected right grams = left + sum_child_diff
+  td::RefInt256 expected_right_grams = left_grams;
+  expected_right_grams += sum_child_diff;
 
-td::RefInt256 process_merkle_tree(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right, std::map<vm::Cell::Hash, int>& skipped_diffs) {
+  // Build expected right vertex bits: label '00', split_depth=0 (5 bits), then CurrencyCollection with expected grams and empty extra
+  vm::CellBuilder cb;
+  if (!cb.store_zeroes_bool(2)) {  // Hashmap label '00'
+    std::cout << "Failed to store zeroes bool" << std::endl;
+    return false;
+  }
+  if (!cb.store_zeroes_bool(5)) {  // split_depth:(#<=30) set to 0
+    std::cout << "Failed to store zeroes bool" << std::endl;
+    return false;
+  }
+  // Pack CurrencyCollection value (grams) with empty extra
+  if (!block::tlb::t_CurrencyCollection.pack_special(cb, expected_right_grams, td::Ref<vm::Cell>())) {
+    std::cout << "Failed to pack CurrencyCollection" << std::endl;
+    return false;
+  }
+  td::Ref<vm::Cell> built_cell;
+  try {
+    built_cell = cb.finalize(false);
+  } catch (vm::CellBuilder::CellWriteError&) {
+    std::cout << "Failed to finalize cell" << std::endl;
+    return false;
+  }
+  vm::CellSlice built_cs(NoVm(), built_cell);
+  if (built_cs.as_bitslice().to_hex() != cs_right.as_bitslice().to_hex()) {
+    std::cout << "Built cell does not match right cell" << std::endl;
+    std::cout << "Built cell: " << built_cs.as_bitslice().to_binary() << std::endl;
+    std::cout << "Right cell: " << cs_right.as_bitslice().to_binary() << std::endl;
+
+    return false;
+  }
+  return true;
+}
+
+
+td::RefInt256 process_merkle_tree(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right, std::set<vm::Cell::Hash>& skipped_diffs) {
   if (left.is_null() || right.is_null()) {
     return td::RefInt256{};
   }
@@ -352,8 +396,7 @@ td::RefInt256 process_merkle_tree(td::Ref<vm::Cell> left, td::Ref<vm::Cell> righ
     return td::RefInt256{};
   }
 
-  int suffix;
-  td::RefInt256 diff = process_shard_accounts_vertex(left, right, suffix);
+  td::RefInt256 diff = process_shard_accounts_vertex(left, right);
   
   td::RefInt256 sum_child_diff = td::make_refint(0);
   for (unsigned i = 0; i < cs_right.size_refs(); i++) {
@@ -363,12 +406,13 @@ td::RefInt256 process_merkle_tree(td::Ref<vm::Cell> left, td::Ref<vm::Cell> righ
     }
   }
   if (diff.not_null() && sum_child_diff.not_null() && cmp(sum_child_diff, diff) == 0) {
-    skipped_diffs.emplace(right->get_hash(), suffix);
+    // Verify we can reconstruct this vertex exactly from left vertex and children's diffs
+    if (reconstruct_shard_vertex_and_compare(cs_left, cs_right, sum_child_diff)) {
+      skipped_diffs.insert(right->get_hash());
+    } else {
+      exit(1);
+    }
   }
-  // 19.7281
-  // if (can_skip && diff.not_null()) {
-  //   skipped_diffs.insert(right->get_hash());
-  // }
   return diff;
 };
 
@@ -376,7 +420,7 @@ int K = 0;
 // Traverse a single tree and, for each vertex, compute the sum of children's values and
 // compare it with the vertex's own value. If equal, add the vertex hash to balanced_vertices.
 // Returns the computed "value" of the current vertex to allow parent accumulation.
-td::RefInt256 process_single_vertex_sums(td::Ref<vm::Cell> node, std::map<vm::Cell::Hash, int>& balanced_vertices) {
+td::RefInt256 process_single_vertex_sums(td::Ref<vm::Cell> node, std::set<vm::Cell::Hash>& balanced_vertices) {
   if (node.is_null()) {
     return td::RefInt256{};
   }
@@ -388,10 +432,9 @@ td::RefInt256 process_single_vertex_sums(td::Ref<vm::Cell> node, std::map<vm::Ce
 
   // Compute own value (ShardAccounts augmentation grams)
   vm::CellSlice cs_value = cs;
-  int suffix;
   td::RefInt256 own_value;
   if (skip_hashmap_label(cs_value, 256)) {
-    own_value = extract_grams_from_depth_balance_info(cs_value, suffix);
+    own_value = extract_balance_from_depth_balance_info(cs_value);
   }
 
   // Accumulate children's values
@@ -406,9 +449,7 @@ td::RefInt256 process_single_vertex_sums(td::Ref<vm::Cell> node, std::map<vm::Ce
 
   // If own value exists and equals sum of children, mark node
   if (own_value.not_null() && own_value->to_dec_string() != "0" && td::cmp(sum_children, own_value) == 0) {
-    std::cout << "balanced_vertex: " << " own_value: " << own_value->to_dec_string() << " sum_children: " << sum_children->to_dec_string() << "size: " << cs.as_bitslice().size() << " suffix: " << suffix << " cut: " << cs.as_bitslice().subslice(0, cs.as_bitslice().size() - suffix).to_binary() << std::endl;
-    balanced_vertices.emplace(node->get_hash(), suffix);
-    std::cout << "balanced_vertex: " << K++ << std::endl;
+    balanced_vertices.insert(node->get_hash());
   }
   return own_value;
 } 
@@ -439,13 +480,15 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
   std::vector<size_t> prunned_branch_level;
   std::vector<size_t> root_indexes;
   size_t total_size_estimate = 0;
-  std::map<vm::Cell::Hash, int> skipped_diffs;
-  std::map<vm::Cell::Hash, int> balanced_vertices;
+  std::set<vm::Cell::Hash> skipped_diffs;
+  std::set<vm::Cell::Hash> balanced_vertices;
+  // Accumulates 32-byte (256-bit) SHA256 hashes from prunned branches
+  td::BitString prunned_branch_hashes_accumulator;
 
   // Precompute balanced vertices (own value equals sum of children's values) across all roots
-  for (const auto& root : boc_roots) {
-    process_single_vertex_sums(root, balanced_vertices);
-  }
+  // for (const auto& root : boc_roots) {
+  //   process_single_vertex_sums(root, balanced_vertices);
+  // }
 
   // When enabled, collect mapping from (hash at merkle depth) to real state cell
   // while traversing the left subtree of a MerkleUpdate cell together with full state
@@ -488,19 +531,19 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
 
     // Process special cell of type PrunnedBranch
     if (kMURemoveSubtreeSums && skipped_diffs.find(cell_hash) != skipped_diffs.end()) {
-      int suffix = skipped_diffs[cell_hash];
-      cell_data.emplace_back(cell_bitslice.subslice(cell_bitslice.size() - suffix, suffix));
+      cell_data.emplace_back();
       prunned_branch_level.back() = 9;
     } else if (balanced_vertices.find(cell_hash) != balanced_vertices.end()) {
-      int suffix = balanced_vertices[cell_hash];
-      cell_data.emplace_back(cell_bitslice.subslice(cell_bitslice.size() - suffix, suffix));
+      cell_data.emplace_back();
       prunned_branch_level.back() = 10;
     } else if (compress_merkle_update && under_mu_left) {
       cell_data.emplace_back();
     } else {
       if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
         DCHECK(cell_slice.size() >= 16);
-        cell_data.emplace_back(cell_bitslice.subslice(16, cell_bitslice.size() - 16));
+        auto tail = cell_bitslice.subslice(16, cell_bitslice.size() - 16);
+        cell_data.emplace_back(tail);
+        // prunned_branch_hashes_accumulator.append(tail);
         prunned_branch_level.back() = cell_slice.data()[1];
       } else {
         cell_data.emplace_back(cell_bitslice);
@@ -715,6 +758,10 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
   }
 
   // Create final compressed buffer
+  // Append accumulated prunned branch hashes to the end before LZ4 compression
+  if (prunned_branch_hashes_accumulator.size() > 0) {
+    result.append(prunned_branch_hashes_accumulator);
+  }
   td::BufferSlice serialized((const char*)result.bits().get_byte_ptr(), result.size() / 8);
 
   td::BufferSlice compressed = td::lz4_compress(serialized);
