@@ -20,12 +20,14 @@
 
 #include <algorithm>
 #include <bitset>
+#include "common/refint.h"
 #include "vm/boc.h"
 #include "vm/cellslice.h"
 #include "td/utils/Slice-decl.h"
 #include "td/utils/lz4.h"
 #include "crypto/block/block-auto.h"
 #include "crypto/block/block-parse.h"
+#include <fstream>
 
 namespace vm {
 
@@ -60,6 +62,162 @@ td::Result<std::vector<td::Ref<vm::Cell>>> boc_decompress_baseline_lz4(td::Slice
   TRY_RESULT(roots, vm::std_boc_deserialize_multi(decompressed));
   return roots;
 }
+
+
+td::HashMap<vm::Cell::Hash, size_t> local_cache;
+td::HashMap<std::string, size_t> data_cache;
+int cnt_v = 0;
+
+std::vector<int> sourced_vertices;
+std::vector<int> matching_data_vertices;
+std::vector<std::pair<int, int>> direct_edges;
+std::vector<std::pair<int, int>> back_edges;
+std::map<int, std::string> vertex_data;
+std::map<int, int> subtree_size;
+
+void clear_cache() {
+  local_cache.clear();
+  data_cache.clear();
+}
+
+void print_tree_structure() {
+  std::ofstream fout("/Users/olegvallas/midnight25/BOC_visualizer/input.txt");
+  // std::cout << "direct_edges_inp=\"";
+  for (auto& e : direct_edges) {
+    fout << "(" << e.first << ">" << e.second << (e == direct_edges.back() ? ")" : "),");
+  }
+  fout << std::endl;
+  // std::cout << "back_edges_inp=\"";
+  for (auto& e : back_edges) {
+    fout << "(" << e.first << ">" << e.second << (e == back_edges.back() ? ")" : "),");
+  }
+  fout << std::endl;
+  // std::cout << "sourced_nodes_inp=\"";
+  for (auto& e : sourced_vertices) {
+    fout << e << (e == sourced_vertices.back() ? "" : ",");
+  }
+  fout << std::endl;
+  for (auto& e : matching_data_vertices) {
+    fout << e << (e == matching_data_vertices.back() ? "" : ",");
+  }
+  fout << std::endl;
+  fout << vertex_data.size() << std::endl;
+  for (auto& e : vertex_data) {
+    fout << e.first << " " << e.second << std::endl;
+  }
+  fout << subtree_size.size() << std::endl;
+  for (auto& e : subtree_size) {
+    fout << e.first << " " << e.second << std::endl;
+  }
+  fout.close();
+  // std::cout << "==========================" << std::endl;
+}
+
+// 9248
+int analyze_tree_structure(td::Ref<vm::Cell> cell, bool right_tree, td::Ref<vm::Cell> left_cell, const std::set<vm::Cell::Hash>& skipped_diffs, int pr = -1) {
+  // std::cout << data_cache.size() << std::endl;
+  auto cell_hash = cell->get_hash();
+  auto cache_it = local_cache.find(cell_hash);
+  int current_id = cnt_v++;
+  if (pr != -1) {
+    direct_edges.push_back({pr, current_id});
+  }
+
+  // Mark right-tree vertices that are in skipped_diffs
+  bool size_0 = false;
+  if (right_tree && skipped_diffs.find(cell_hash) != skipped_diffs.end()) {
+    matching_data_vertices.emplace_back(current_id);
+    // size_0 = true;
+  }
+
+  if (right_tree && cache_it != local_cache.end()) {
+    int matched_id = cache_it->second;
+    sourced_vertices.push_back(current_id);
+    sourced_vertices.push_back(matched_id);
+    back_edges.push_back({current_id, matched_id});
+    return 0;
+  }
+
+  if (!right_tree) {
+    local_cache.emplace(cell_hash, current_id);
+  }
+  // if (left_cell != td::Ref<vm::Cell>()) {
+  //   auto left_cell_hash = left_cell->get_hash();
+  //   auto it_left = local_cache.find(left_cell_hash);
+  //   if (it_left == local_cache.end()) {
+  //     exit(229);
+  //   }
+  //   int matched_id = it_left->second;
+  //   matching_data_vertices.emplace_back(matched_id);
+  //   matching_data_vertices.emplace_back(current_id);
+  // }
+
+  bool is_special = false;
+  int sum_size = 0;
+  vm::CellSlice cell_slice = vm::load_cell_slice_special(cell, is_special);
+  td::BitSlice cell_bitslice = cell_slice.as_bitslice();
+  vertex_data[current_id] = cell_bitslice.to_hex();
+  if (!right_tree) {
+    for (int i = 1; i <= cell_bitslice.size(); ++i) {
+      std::string hash = cell_bitslice.subslice(0, i).to_binary();
+      data_cache.emplace(hash, current_id);
+    }
+  }
+  int longest_common_prefix = 0;
+  // if (right_tree) {
+  //   for (int i = 1; i <= cell_bitslice.size(); ++i) {
+  //     std::string hash = cell_bitslice.subslice(0, i).to_binary();
+  //     if (data_cache.find(hash) != data_cache.end()) {
+  //       longest_common_prefix = i;
+  //     }
+  //   }
+  // }
+
+  // if (left_cell != td::Ref<vm::Cell>()) {
+  //   vm::CellSlice left_cell_slice = vm::load_cell_slice_special(left_cell, is_special);
+  //   td::BitSlice left_cell_bitslice = left_cell_slice.as_bitslice();
+  //   int k = 0;
+  //   for (k = 0; k < std::min(cell_bitslice.size(), left_cell_bitslice.size()); ++k) {
+  //     if (cell_bitslice[k] != left_cell_bitslice[k]) {
+  //       break;
+  //     }
+  //   }
+  // }
+  if (!size_0) {
+    sum_size += (cell_bitslice.size() - longest_common_prefix);
+    if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+      sum_size -= 16;
+    }
+  }
+
+  if (left_cell != td::Ref<vm::Cell>()) {
+    vm::CellSlice left_cell_slice = vm::load_cell_slice_special(left_cell, is_special);
+    if (left_cell_slice.size_refs() == cell_slice.size_refs()) {
+      for (int i = 0; i < cell_slice.size_refs(); ++i) {
+        sum_size += analyze_tree_structure(
+          cell_slice.prefetch_ref(i),
+          right_tree,
+          left_cell_slice.prefetch_ref(i),
+          skipped_diffs,
+          current_id
+        );
+      }
+      subtree_size[current_id] = sum_size;
+      return sum_size;
+    }
+  }
+  for (int i = 0; i < cell_slice.size_refs(); ++i) {
+    sum_size += analyze_tree_structure(
+      cell_slice.prefetch_ref(i),
+      right_tree,
+      td::Ref<vm::Cell>(),
+      skipped_diffs,
+      current_id
+    );
+  }
+  subtree_size[current_id] = sum_size;
+  return sum_size;
+};
 
 inline void append_uint(td::BitString& bs, unsigned val, unsigned n) {
   bs.reserve_bitslice(n).bits().store_uint(val, n);
@@ -110,7 +268,7 @@ td::RefInt256 extract_balance_from_depth_balance_info_manual(vm::CellSlice& cs) 
 }
 
 // Helper function to decode DepthBalanceInfo and extract nanograms (using TLB methods)
-td::RefInt256 extract_balance_from_depth_balance_info(vm::CellSlice& cs) {
+td::RefInt256 extract_balance_from_depth_balance_info(vm::CellSlice& cs, int& suffix) {
   // Use the existing TLB unpack method
   int split_depth;
   Ref<vm::CellSlice> balance_cs;
@@ -118,84 +276,149 @@ td::RefInt256 extract_balance_from_depth_balance_info(vm::CellSlice& cs) {
   if (!block::gen::t_DepthBalanceInfo.unpack_depth_balance(cs, split_depth, balance_cs)) {
     return td::RefInt256{};
   }
-  
+  if (split_depth != 0) {
+    return td::RefInt256{};
+  }
+
+  if (!cs.empty()) {
+    return td::RefInt256{};
+  }
+  suffix = cs.size();
+  // auto balance_cs_slice = balance_cs.write();
   // Extract grams from CurrencyCollection using the TLB method
+  // auto res = block::tlb::t_Grams.as_integer_skip(balance_cs_slice);
+  // suffix += balance_cs_slice.size();
+  // return res;
   return block::tlb::t_CurrencyCollection.as_integer_skip(balance_cs.write());
 }
 
+// Helper function to decode DepthBalanceInfo and extract nanograms (using TLB methods)
+td::RefInt256 extract_grams_from_depth_balance_info(vm::CellSlice& cs, int& suffix) {
+  int x = cs.fetch_ulong(5);
+  if (x != 0) {
+    return td::RefInt256{};
+  }
+  auto res = block::tlb::t_Grams.as_integer_skip(cs);
+  suffix = cs.size();
+  if (suffix == 1) --suffix;
+  return res;
+  // return block::tlb::t_CurrencyCollection.as_integer_skip(balance_cs.write());
+}
 
 // Skip the Hashmap label using the existing TLB implementation
 bool skip_hashmap_label(vm::CellSlice& cs, int max_bits) {
   cs.advance(2);
   return true;
-  return block::gen::HmLabel{max_bits}.skip(cs);
+  // return block::gen::HmLabel{max_bits}.skip(cs);
 }
 
 // Process ShardAccounts tree vertices and output balance differences
-std::string process_shard_accounts_vertex(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right) {  
+td::RefInt256 process_shard_accounts_vertex(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right, int& suffix) {  
   vm::CellSlice cs_left(NoVm(), left);
   vm::CellSlice cs_right(NoVm(), right);
+
+  bool is_debug = cs_right.as_bitslice().to_hex() == "QQ";
   
   // Skip label on both sides
   if (skip_hashmap_label(cs_left, 256) && skip_hashmap_label(cs_right, 256)) {
-    // Now try to decode DepthBalanceInfo from augmentation values
-    auto balance_left = extract_balance_from_depth_balance_info_manual(cs_left);
-    auto balance_right = extract_balance_from_depth_balance_info_manual(cs_right);
+    // // Now try to decode DepthBalanceInfo from augmentation values
+    auto balance_left = extract_balance_from_depth_balance_info(cs_left, suffix);
+    auto balance_right = extract_balance_from_depth_balance_info(cs_right, suffix);
     
     if (balance_left.not_null() && balance_right.not_null()) {
       // Compute difference: right - left
       td::RefInt256 diff = balance_right;
-      diff.write() -= *balance_left;
-      
-      std::string diff_str = diff->to_dec_string();
-      return diff_str;
+      diff -= balance_left;
+
+      return diff;
     }
   }
-  return "";
+  return td::RefInt256{};
 }
 
 
-std::string process_merkle_tree(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right, std::set<vm::Cell::Hash>& skipped_diffs) {
+td::RefInt256 process_merkle_tree(td::Ref<vm::Cell> left, td::Ref<vm::Cell> right, std::map<vm::Cell::Hash, int>& skipped_diffs) {
   if (left.is_null() || right.is_null()) {
-    return "";
+    return td::RefInt256{};
   }
   vm::CellSlice cs_left(NoVm(), left);
   vm::CellSlice cs_right(NoVm(), right);
 
 
   if (cs_left.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
-    return "";
+    return td::RefInt256{};
   }
   if (cs_right.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
-    return "";
+    return td::RefInt256{};
   }
 
-  std::string diff = process_shard_accounts_vertex(left, right);
+  int suffix;
+  td::RefInt256 diff = process_shard_accounts_vertex(left, right, suffix);
   
-  bool can_skip = false;
+  td::RefInt256 sum_child_diff = td::make_refint(0);
   for (unsigned i = 0; i < cs_right.size_refs(); i++) {
     auto diff_rec = process_merkle_tree(cs_left.prefetch_ref(i), cs_right.prefetch_ref(i), skipped_diffs);
-    if (diff_rec == diff) {
-      can_skip = true;
+    if (diff_rec.not_null()) {
+      sum_child_diff += diff_rec;
     }
   }
-  if (can_skip && diff != "") {
-    skipped_diffs.insert(right->get_hash());
+  if (diff.not_null() && sum_child_diff.not_null() && cmp(sum_child_diff, diff) == 0) {
+    skipped_diffs.emplace(right->get_hash(), suffix);
   }
-
+  // 19.7281
+  // if (can_skip && diff.not_null()) {
+  //   skipped_diffs.insert(right->get_hash());
+  // }
   return diff;
 };
+
+int K = 0;
+// Traverse a single tree and, for each vertex, compute the sum of children's values and
+// compare it with the vertex's own value. If equal, add the vertex hash to balanced_vertices.
+// Returns the computed "value" of the current vertex to allow parent accumulation.
+td::RefInt256 process_single_vertex_sums(td::Ref<vm::Cell> node, std::map<vm::Cell::Hash, int>& balanced_vertices) {
+  if (node.is_null()) {
+    return td::RefInt256{};
+  }
+
+  vm::CellSlice cs(NoVm(), node);
+  if (cs.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
+    return td::RefInt256{};
+  }
+
+  // Compute own value (ShardAccounts augmentation grams)
+  vm::CellSlice cs_value = cs;
+  int suffix;
+  td::RefInt256 own_value;
+  if (skip_hashmap_label(cs_value, 256)) {
+    own_value = extract_grams_from_depth_balance_info(cs_value, suffix);
+  }
+
+  // Accumulate children's values
+  td::RefInt256 sum_children = td::make_refint(0);
+  for (unsigned i = 0; i < cs.size_refs(); i++) {
+    auto child = cs.prefetch_ref(i);
+    td::RefInt256 child_val = process_single_vertex_sums(child, balanced_vertices);
+    if (child_val.not_null()) {
+        sum_children += child_val;
+    }
+  }
+
+  // If own value exists and equals sum of children, mark node
+  if (own_value.not_null() && own_value->to_dec_string() != "0" && td::cmp(sum_children, own_value) == 0) {
+    std::cout << "balanced_vertex: " << " own_value: " << own_value->to_dec_string() << " sum_children: " << sum_children->to_dec_string() << "size: " << cs.as_bitslice().size() << " suffix: " << suffix << " cut: " << cs.as_bitslice().subslice(0, cs.as_bitslice().size() - suffix).to_binary() << std::endl;
+    balanced_vertices.emplace(node->get_hash(), suffix);
+    std::cout << "balanced_vertex: " << K++ << std::endl;
+  }
+  return own_value;
+} 
 
 td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
   const std::vector<td::Ref<vm::Cell>>& boc_roots, 
   bool compress_merkle_update,
   td::Ref<vm::Cell> state
 ) {
-  const bool kMURemoveLeftTreeData = true;
-  const bool kMUReplacePrunnedBranchWithIndex = true;
   const bool kMURemoveSubtreeSums = true;
-  const bool kMURemoveCommonPrefixes = true;
-  const bool kMUExtendLeftTree = true;
   
   // Input validation
   if (boc_roots.empty()) {
@@ -216,37 +439,22 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
   std::vector<size_t> prunned_branch_level;
   std::vector<size_t> root_indexes;
   size_t total_size_estimate = 0;
-  std::set<vm::Cell::Hash> skipped_diffs;
+  std::map<vm::Cell::Hash, int> skipped_diffs;
+  std::map<vm::Cell::Hash, int> balanced_vertices;
+
+  // Precompute balanced vertices (own value equals sum of children's values) across all roots
+  for (const auto& root : boc_roots) {
+    process_single_vertex_sums(root, balanced_vertices);
+  }
 
   // When enabled, collect mapping from (hash at merkle depth) to real state cell
   // while traversing the left subtree of a MerkleUpdate cell together with full state
   td::HashMap<vm::Cell::Hash, td::Ref<vm::Cell>> mu_known_cells;
 
-  const auto mu_collect_known = [&](auto&& self,
-                                    td::Ref<vm::Cell> original,
-                                    td::Ref<vm::Cell> update_from,
-                                    int merkle_depth) -> void {
-    if (original.is_null() || update_from.is_null()) {
-      return;
-    }
-    vm::CellSlice cs_update(NoVm(), update_from);
-    vm::CellSlice cs_original(NoVm(), original);
-    mu_known_cells.emplace(update_from->get_hash(), original);
-    if (cs_update.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
-      // std::cout << "PRUNNED " << cs_update.as_bitslice().to_hex() << " " << cs_original.as_bitslice().to_hex() << std::endl;
-      return;
-    }
-    int child_merkle_depth = cs_update.child_merkle_depth(merkle_depth);
-    for (unsigned i = 0; i < cs_original.size_refs(); i++) {
-      self(self, cs_original.prefetch_ref(i), cs_update.prefetch_ref(i), child_merkle_depth);
-    }
-  };
-
   // Build graph representation using recursive lambda
   const auto build_graph = [&](auto&& self,
                                td::Ref<vm::Cell> cell,
-                               bool skip_data = false,
-                               int merkle_depth = 0,
+                               bool under_mu_left = false,
                                bool under_mu_right = false) -> td::Result<size_t> {
     if (cell.is_null()) {
       return td::Status::Error("Error while importing a cell during serialization: cell is null");
@@ -255,10 +463,6 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
     auto cell_hash = cell->get_hash();
     bool is_special = false;
     vm::CellSlice cell_slice = vm::load_cell_slice_special(cell, is_special);
-
-    // if (under_mu_right && cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
-    //   std::cout << "PRUNNED RIGHT " << (mu_known_cells.find(cell_hash) != mu_known_cells.end()) << std::endl;
-    // }
     
     auto it = cell_hashes.find(cell_hash);
     if (it != cell_hashes.end()) {
@@ -266,13 +470,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
     }
 
     size_t current_cell_id = boc_graph.size();
-    bool cache_current_cell = true;
-    if (compress_merkle_update && skip_data && !kMUReplacePrunnedBranchWithIndex) {
-      cache_current_cell = false;
-    }
-    if (cache_current_cell) {
-      cell_hashes.emplace(cell_hash, current_cell_id);
-    }
+    cell_hashes.emplace(cell_hash, current_cell_id);
 
   
     if (!cell_slice.is_valid()) {
@@ -289,10 +487,15 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
     DCHECK(cell_slice.size_refs() <= 4);
 
     // Process special cell of type PrunnedBranch
-    if (skipped_diffs.find(cell_hash) != skipped_diffs.end()) {
-      cell_data.emplace_back();
+    if (kMURemoveSubtreeSums && skipped_diffs.find(cell_hash) != skipped_diffs.end()) {
+      int suffix = skipped_diffs[cell_hash];
+      cell_data.emplace_back(cell_bitslice.subslice(cell_bitslice.size() - suffix, suffix));
       prunned_branch_level.back() = 9;
-    } else if (skip_data) {
+    } else if (balanced_vertices.find(cell_hash) != balanced_vertices.end()) {
+      int suffix = balanced_vertices[cell_hash];
+      cell_data.emplace_back(cell_bitslice.subslice(cell_bitslice.size() - suffix, suffix));
+      prunned_branch_level.back() = 10;
+    } else if (compress_merkle_update && under_mu_left) {
       cell_data.emplace_back();
     } else {
       if (cell_slice.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
@@ -305,102 +508,26 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
     }
     total_size_estimate += cell_bitslice.size();
 
-    // If enabled and this is a MerkleUpdate cell, traverse the left subtree with state to build known-cells map
-    if (cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
+    // If enabled and this is a MerkleUpdate cell, find replacable subtree sums
+    if (kMURemoveSubtreeSums && cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
       process_merkle_tree(cell_slice.prefetch_ref(0), cell_slice.prefetch_ref(1), skipped_diffs);
     }
-    if (compress_merkle_update && state.not_null() && kMURemoveSubtreeSums &&
-        cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
-      mu_collect_known(mu_collect_known, state, cell_slice.prefetch_ref(0), 0);
-      std::cout << "PRUNNED CNT: " << mu_known_cells.size() << std::endl;
-    }
 
-    
+    // if (cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate) {
+    //   std::cout << "real L: " << analyze_tree_structure(cell_slice.prefetch_ref(0), false, td::Ref<vm::Cell>(), skipped_diffs)  / 8 << std::endl;
+    //   // clear_cache();
+    //   std::cout << "R with L in cache: " << analyze_tree_structure(cell_slice.prefetch_ref(1), true, cell_slice.prefetch_ref(0), skipped_diffs)  / 8 << std::endl;
+    //   print_tree_structure();
+    //   // exit(0);
+    // }
 
     // Process cell references
     for (int i = 0; i < cell_slice.size_refs(); ++i) {
-      bool skip_data_rec = skip_data;
-      if (compress_merkle_update && kMURemoveLeftTreeData &&
-        cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate && i == 0) {
-        skip_data_rec = true;
-      }
-      int child_merkle_depth = cell_slice.child_merkle_depth(merkle_depth);
-      bool child_under_mu_right = under_mu_right ||
-        (compress_merkle_update && cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate && i == 1);
-      TRY_RESULT(child_id, self(self, cell_slice.prefetch_ref(i), skip_data_rec, child_merkle_depth, child_under_mu_right));
+      bool is_mu = (cell_slice.special_type() == vm::CellTraits::SpecialType::MerkleUpdate);
+      bool child_under_mu_left = under_mu_left || (is_mu && i == 0);
+      bool child_under_mu_right = under_mu_right || (is_mu && i == 1);
+      TRY_RESULT(child_id, self(self, cell_slice.prefetch_ref(i), child_under_mu_left, child_under_mu_right));
       boc_graph[current_cell_id][i] = child_id;
-    }
-
-    // If we are under the right subtree of a MerkleUpdate, try to remove data when possible
-    if (compress_merkle_update && under_mu_right && !is_special) {
-      // std::cout << "QQ" << std::endl;
-      if (cell_slice.size_refs() == 2) {
-        auto try_read_i64 = [&](td::Ref<vm::Cell> c) -> std::pair<bool, int64_t> {
-          if (c.is_null()) return {false, 0};
-          vm::CellSlice cs(NoVm(), c);
-          size_t nbits = cs.size();
-          if (nbits == 0) return {true, 0};
-          if (nbits > 64) return {false, 0};
-          auto bs = cs.as_bitslice();
-          unsigned long long u = bs.bits().get_uint((unsigned)nbits);
-          if (u > static_cast<unsigned long long>(std::numeric_limits<int64_t>::max())) return {false, 0};
-          return {true, static_cast<int64_t>(u)};
-        };
-
-        bool ok = true;
-        td::Ref<vm::Cell> child_cells[2];
-        for (int i = 0; i < 2; ++i) {
-          auto cref = cell_slice.prefetch_ref(i);
-          vm::CellSlice ccs(NoVm(), cref);
-          if (ccs.special_type() == vm::CellTraits::SpecialType::PrunnedBranch) {
-            // can restore only if level matches merkle_depth + 1
-            // if ((int)cref->get_level() == merkle_depth + 1) {
-              auto it = mu_known_cells.find(cref->get_hash());
-              if (it == mu_known_cells.end()) {
-                // std::cout << "AA" << std::endl;
-                ok = false;
-                break;
-              }
-              child_cells[i] = it->second;
-            // } else {
-
-            //   std::cout << "AA" << std::endl;
-            //   ok = false;
-            //   break;
-            // }
-          } else {
-            child_cells[i] = cref;
-          }
-        }
-
-        if (ok) {
-          auto [ok0, v0] = try_read_i64(child_cells[0]);
-          auto [ok1, v1] = try_read_i64(child_cells[1]);
-          if (ok0 && ok1) {
-            std::cout << "QQ" << std::endl;
-            // current cell value
-            int64_t vcur = 0;
-            bool cur_ok = true;
-            if (cell_bitslice.size() > 0) {
-              if (cell_bitslice.size() > 64) {
-                cur_ok = false;
-              } else {
-                unsigned long long u = cell_bitslice.bits().get_uint((unsigned)cell_bitslice.size());
-                if (u > static_cast<unsigned long long>(std::numeric_limits<int64_t>::max())) cur_ok = false;
-                else vcur = static_cast<int64_t>(u);
-              }
-            }
-            if (1){//cur_ok && (v0 + v1 == vcur)) {
-              // remove data from this cell
-              cell_data[current_cell_id] = td::BitSlice();
-            } else {
-              std::cout << "NOT EQUEAL SUM " << v0 << " " << v1 << " " << vcur << std::endl;
-            }
-          } else {
-            std::cout << "BAD" << std::endl;
-          }
-        }
-      }
     }
 
     return current_cell_id;
@@ -408,7 +535,7 @@ td::Result<td::BufferSlice> boc_compress_improved_structure_lz4(
 
   // Build the graph starting from roots
   for (auto root : boc_roots) {
-    TRY_RESULT(root_cell_id, build_graph(build_graph, root, false, 0, false));
+    TRY_RESULT(root_cell_id, build_graph(build_graph, root, false, false));
     root_indexes.push_back(root_cell_id);
   }
 
