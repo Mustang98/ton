@@ -332,7 +332,6 @@ static td::Status deserialize_block_candidate_broadcast(ton_api::tonNode_newBloc
                                                         int max_decompressed_data_size, std::string overlay) {
   block_id = create_block_id(obj.id_);
   LOG(INFO) << "COMPR_BENCHMARK2 deserialize_block_candidate_broadcast START_DECOMPRESS block_id=" << block_id.to_str();
-
   cc_seqno = obj.catchain_seqno_;
   validator_set_hash = obj.validator_set_hash_;
   TRY_RESULT(roots, vm::boc_decompress(obj.compressed_, max_decompressed_data_size));
