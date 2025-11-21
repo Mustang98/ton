@@ -951,7 +951,7 @@ void FullNodeShardImpl::send_broadcast(BlockBroadcast broadcast) {
     return;
   }
   VLOG(FULL_NODE_DEBUG) << "Sending block broadcast in private overlay: " << broadcast.block_id.to_str();
-  auto B = serialize_block_broadcast(broadcast, false, "public");  // compression_enabled = false
+  auto B = serialize_block_broadcast(broadcast, true, "public");  // compression_enabled = false
   if (B.is_error()) {
     VLOG(FULL_NODE_WARNING) << "failed to serialize block broadcast: " << B.move_as_error();
     return;

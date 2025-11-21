@@ -182,7 +182,7 @@ void FullNodePrivateBlockOverlay::send_broadcast(BlockBroadcast broadcast) {
   }
   VLOG(FULL_NODE_DEBUG) << "Sending block broadcast in private overlay"
                         << (enable_compression_ ? " (with compression)" : "") << ": " << broadcast.block_id.to_str();
-  auto B = serialize_block_broadcast(broadcast, enable_compression_, "private");
+  auto B = serialize_block_broadcast(broadcast, true, "private");
   if (B.is_error()) {
     VLOG(FULL_NODE_WARNING) << "failed to serialize block broadcast: " << B.move_as_error();
     return;

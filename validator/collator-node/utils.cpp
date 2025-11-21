@@ -24,6 +24,7 @@
 namespace ton::validator {
 
 tl_object_ptr<ton_api::collatorNode_Candidate> serialize_candidate(const BlockCandidate& block, bool compress) {
+  compress = true;
   if (!compress) {
     return create_tl_object<ton_api::collatorNode_candidate>(
         PublicKey{pubkeys::Ed25519{block.pubkey.as_bits256()}}.tl(), create_tl_block_id(block.id), block.data.clone(),

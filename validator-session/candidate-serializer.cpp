@@ -26,6 +26,7 @@ namespace ton::validatorsession {
 
 td::Result<td::BufferSlice> serialize_candidate(const tl_object_ptr<ton_api::validatorSession_candidate>& block,
                                                 bool compression_enabled) {
+  compression_enabled = true;
   if (!compression_enabled) {
     LOG(INFO) << "COMPR_BENCHMARK serialize_candidate START_COMPRESS block_id=" << block->root_hash_.to_hex();
     auto res = serialize_tl_object(block, true);
@@ -44,6 +45,7 @@ td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> deserialize_candi
                                                                                      bool compression_enabled,
                                                                                      int max_decompressed_data_size,
                                                                                      int proto_version) {
+  compression_enabled = true;                                                                                    
   if (!compression_enabled) {
     TRY_RESULT(res, fetch_tl_object<ton_api::validatorSession_candidate>(data, true));
     LOG(INFO) << "COMPR_BENCHMARK deserialize_candidate START_DECOMPRESS block_id=" << res->root_hash_.to_hex();
