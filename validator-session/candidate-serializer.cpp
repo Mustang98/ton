@@ -94,10 +94,10 @@ td::Result<td::BufferSlice> compress_candidate_data(td::Slice block, td::Slice c
   for (int i = 0; i < boc2.get_root_count(); ++i) {
     roots.push_back(boc2.get_root_cell(i));
   }
-  LOG(INFO) << "COMPR_BENCHMARK compress_candidate_data START_COMPRESS block_id=" << root_hash;
+  LOG(INFO) << "COMPR_BENCHMARK2 compress_candidate_data START_COMPRESS block_id=" << root_hash;
   TRY_RESULT(compressed, vm::boc_compress(roots, vm::CompressionAlgorithm::ImprovedStructureLZ4));
   LOG(DEBUG) << "Compressing block candidate: " << block.size() + collated_data.size() << " -> " << compressed.size();
-  LOG(INFO) << "COMPR_BENCHMARK compress_candidate_data END_COMPRESS block_id=" << root_hash
+  LOG(INFO) << "COMPR_BENCHMARK2 compress_candidate_data END_COMPRESS block_id=" << root_hash
             << " compression_enabled=" << true
             << " data_size_bytes=" << block.size() + collated_data.size()
             << " res_size=" << compressed.size();
@@ -122,7 +122,11 @@ td::Result<std::pair<td::BufferSlice, td::BufferSlice>> decompress_candidate_dat
               << " compression_enabled=" << true
               << " received_size=" << compressed.size();
   } else {
+    LOG(INFO) << "COMPR_BENCHMARK2 decompress_candidate_data START_DECOMPRESS block_id=" << root_hash;
     TRY_RESULT_ASSIGN(roots, vm::boc_decompress(compressed, max_decompressed_size));
+    LOG(INFO) << "COMPR_BENCHMARK2 decompress_candidate_data END_DECOMPRESS block_id=" << root_hash
+              << " compression_enabled=" << true
+              << " received_size=" << compressed.size();
   }
   if (roots.empty()) {
     return td::Status::Error("boc is empty");
