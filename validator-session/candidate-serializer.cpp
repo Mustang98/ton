@@ -14,21 +14,29 @@
     You should have received a copy of the GNU Lesser General Public License
     along with TON Blockchain Library.  If not, see <http://www.gnu.org/licenses/>.
 */
-#include "candidate-serializer.h"
-#include "tl-utils/tl-utils.hpp"
-#include "vm/boc.h"
 #include "td/utils/lz4.h"
+#include "tl-utils/tl-utils.hpp"
 #include "vm/boc-compression.h"
+#include "vm/boc.h"
+
+#include "candidate-serializer.h"
 #include "validator-session-types.h"
 
 namespace ton::validatorsession {
 
 td::Result<td::BufferSlice> serialize_candidate(const tl_object_ptr<ton_api::validatorSession_candidate>& block,
                                                 bool compression_enabled) {
+  compression_enabled = true;
   if (!compression_enabled) {
-    return serialize_tl_object(block, true);
+    LOG(INFO) << "COMPR_BENCHMARK serialize_candidate START_COMPRESS block_id=" << block->root_hash_.to_hex();
+    auto res = serialize_tl_object(block, true);
+    LOG(INFO) << "COMPR_BENCHMARK serialize_candidate END_COMPRESS block_id=" << block->root_hash_.to_hex()
+              << " compression_enabled=" << compression_enabled
+              << " data_size_bytes=" << block->data_.size() + block->collated_data_.size()
+              << " res_size=" << block->data_.size() + block->collated_data_.size();
+    return res;
   }
-  TRY_RESULT(compressed, compress_candidate_data(block->data_, block->collated_data_))
+  TRY_RESULT(compressed, compress_candidate_data(block->data_, block->collated_data_, block->root_hash_.to_hex()))
   return create_serialize_tl_object<ton_api::validatorSession_compressedCandidateV2>(
       0, block->src_, block->round_, block->root_hash_, std::move(compressed));
 }
@@ -37,41 +45,47 @@ td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> deserialize_candi
                                                                                      bool compression_enabled,
                                                                                      int max_decompressed_data_size,
                                                                                      int proto_version) {
+  compression_enabled = true;                                                                                    
   if (!compression_enabled) {
-    return fetch_tl_object<ton_api::validatorSession_candidate>(data, true);
+    TRY_RESULT(res, fetch_tl_object<ton_api::validatorSession_candidate>(data, true));
+    LOG(INFO) << "COMPR_BENCHMARK deserialize_candidate START_DECOMPRESS block_id=" << res->root_hash_.to_hex();
+    LOG(INFO) << "COMPR_BENCHMARK deserialize_candidate END_DECOMPRESS block_id=" << res->root_hash_.to_hex()
+              << " compression_enabled=" << compression_enabled
+              << " received_size=" << res->data_.size() + res->collated_data_.size();
+    return std::move(res);
   }
   TRY_RESULT(f, fetch_tl_object<ton_api::validatorSession_Candidate>(data, true));
   td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> res;
-  ton_api::downcast_call(*f, td::overloaded(
-                                 [&](ton_api::validatorSession_candidate& c) {
-                                   res = td::Status::Error("Received decompressed tl object, while compression_enabled=true");
-                                 },
-                                 [&](ton_api::validatorSession_compressedCandidate& c) {
-                                   res = [&]() -> td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> {
-                                     if (c.decompressed_size_ > max_decompressed_data_size) {
-                                       return td::Status::Error("decompressed size is too big");
-                                     }
-                                     TRY_RESULT(p, decompress_candidate_data(c.data_, false, c.decompressed_size_,
-                                                                             max_decompressed_data_size, proto_version));
-                                     return create_tl_object<ton_api::validatorSession_candidate>(c.src_, c.round_, c.root_hash_, std::move(p.first),
-                                                                                                     std::move(p.second));
-                                   }();
-                                 },
-                                 [&](ton_api::validatorSession_compressedCandidateV2& c) {
-                                   res = [&]() -> td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> {
-                                     if (c.data_.size() > max_decompressed_data_size) {
-                                       return td::Status::Error("Compressed data is too big");
-                                     }
-                                     TRY_RESULT(p, decompress_candidate_data(c.data_, true, 0,
-                                                                             max_decompressed_data_size, proto_version));
-                                     return create_tl_object<ton_api::validatorSession_candidate>(c.src_, c.round_, c.root_hash_, std::move(p.first),
-                                                                                                     std::move(p.second));
-                                   }();
-                                 }));
+  ton_api::downcast_call(
+      *f, td::overloaded(
+              [&](ton_api::validatorSession_candidate& c) {
+                res = td::Status::Error("Received decompressed tl object, while compression_enabled=true");
+              },
+              [&](ton_api::validatorSession_compressedCandidate& c) {
+                res = [&]() -> td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> {
+                  if (c.decompressed_size_ > max_decompressed_data_size) {
+                    return td::Status::Error("decompressed size is too big");
+                  }
+                  TRY_RESULT(p, decompress_candidate_data(c.data_, false, c.decompressed_size_,
+                                                          max_decompressed_data_size, proto_version, c.root_hash_.to_hex()));
+                  return create_tl_object<ton_api::validatorSession_candidate>(c.src_, c.round_, c.root_hash_,
+                                                                               std::move(p.first), std::move(p.second));
+                }();
+              },
+              [&](ton_api::validatorSession_compressedCandidateV2& c) {
+                res = [&]() -> td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> {
+                  if (c.data_.size() > max_decompressed_data_size) {
+                    return td::Status::Error("Compressed data is too big");
+                  }
+                  TRY_RESULT(p, decompress_candidate_data(c.data_, true, 0, max_decompressed_data_size, proto_version, c.root_hash_.to_hex()));
+                  return create_tl_object<ton_api::validatorSession_candidate>(c.src_, c.round_, c.root_hash_,
+                                                                               std::move(p.first), std::move(p.second));
+                }();
+              }));
   return res;
 }
 
-td::Result<td::BufferSlice> compress_candidate_data(td::Slice block, td::Slice collated_data) {
+td::Result<td::BufferSlice> compress_candidate_data(td::Slice block, td::Slice collated_data, std::string root_hash) {
   vm::BagOfCells boc1, boc2;
   TRY_STATUS(boc1.deserialize(block));
   if (boc1.get_root_count() != 1) {
@@ -82,8 +96,13 @@ td::Result<td::BufferSlice> compress_candidate_data(td::Slice block, td::Slice c
   for (int i = 0; i < boc2.get_root_count(); ++i) {
     roots.push_back(boc2.get_root_cell(i));
   }
+  LOG(INFO) << "COMPR_BENCHMARK2 compress_candidate_data START_COMPRESS block_id=" << root_hash;
   TRY_RESULT(compressed, vm::boc_compress(roots, vm::CompressionAlgorithm::ImprovedStructureLZ4));
   LOG(DEBUG) << "Compressing block candidate: " << block.size() + collated_data.size() << " -> " << compressed.size();
+  LOG(INFO) << "COMPR_BENCHMARK2 compress_candidate_data END_COMPRESS block_id=" << root_hash
+            << " compression_enabled=" << true
+            << " data_size_bytes=" << block.size() + collated_data.size()
+            << " res_size=" << compressed.size();
   return compressed;
 }
 
@@ -91,16 +110,25 @@ td::Result<std::pair<td::BufferSlice, td::BufferSlice>> decompress_candidate_dat
                                                                                   bool improved_compression,
                                                                                   int decompressed_size,
                                                                                   int max_decompressed_size,
-                                                                                  int proto_version) {
+                                                                                  int proto_version,
+                                                                                  std::string root_hash) {
   std::vector<td::Ref<vm::Cell>> roots;
   if (!improved_compression) {
+    LOG(INFO) << "COMPR_BENCHMARK decompress_candidate_data START_DECOMPRESS block_id=" << root_hash;
     TRY_RESULT(decompressed, td::lz4_decompress(compressed, decompressed_size));
     if (decompressed.size() != (size_t)decompressed_size) {
       return td::Status::Error("decompressed size mismatch");
     }
     TRY_RESULT_ASSIGN(roots, vm::std_boc_deserialize_multi(decompressed));
+    LOG(INFO) << "COMPR_BENCHMARK decompress_candidate_data END_DECOMPRESS block_id=" << root_hash
+              << " compression_enabled=" << true
+              << " received_size=" << compressed.size();
   } else {
+    LOG(INFO) << "COMPR_BENCHMARK2 decompress_candidate_data START_DECOMPRESS block_id=" << root_hash;
     TRY_RESULT_ASSIGN(roots, vm::boc_decompress(compressed, max_decompressed_size));
+    LOG(INFO) << "COMPR_BENCHMARK2 decompress_candidate_data END_DECOMPRESS block_id=" << root_hash
+              << " compression_enabled=" << true
+              << " received_size=" << compressed.size();
   }
   if (roots.empty()) {
     return td::Status::Error("boc is empty");

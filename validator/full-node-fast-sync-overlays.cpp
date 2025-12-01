@@ -15,14 +15,14 @@
     along with TON Blockchain Library.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "full-node-fast-sync-overlays.hpp"
-
-#include "checksum.h"
-#include "ton/ton-tl.hpp"
+#include "auto/tl/ton_api_json.h"
 #include "common/delay.h"
 #include "td/utils/JsonBuilder.h"
 #include "tl/tl_json.h"
-#include "auto/tl/ton_api_json.h"
+#include "ton/ton-tl.hpp"
+
+#include "checksum.h"
+#include "full-node-fast-sync-overlays.hpp"
 #include "full-node-serializer.hpp"
 
 namespace ton::validator::fullnode {
@@ -52,7 +52,7 @@ void FullNodeFastSyncOverlay::process_block_broadcast(PublicKeyHash src, ton_api
     return;
   }
   
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size());
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), "fast-sync");
   if (B.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << B.move_as_error();
     return;
@@ -141,7 +141,7 @@ void FullNodeFastSyncOverlay::process_block_candidate_broadcast(PublicKeyHash sr
   td::uint32 validator_set_hash;
   td::BufferSlice data;
   auto S = deserialize_block_candidate_broadcast(query, block_id, cc_seqno, validator_set_hash, data,
-                                                 overlay::Overlays::max_fec_broadcast_size());
+                                                 overlay::Overlays::max_fec_broadcast_size(), "fast-sync");
   if (S.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << S;
     return;
@@ -223,8 +223,7 @@ void FullNodeFastSyncOverlay::send_broadcast(BlockBroadcast broadcast) {
   }
   VLOG(FULL_NODE_DEBUG) << "Sending block broadcast in fast sync overlay (with compression): "
                         << broadcast.block_id.to_str();
-  LOG(INFO) << "OLEG send_broadcast fast sync";
-  auto B = serialize_block_broadcast(broadcast, true, StateUsage::DecompressOnly);
+  auto B = serialize_block_broadcast(broadcast, true, StateUsage::DecompressOnly, td::Ref<vm::Cell>(), "fast-sync");
   if (B.is_error()) {
     VLOG(FULL_NODE_WARNING) << "failed to serialize block broadcast: " << B.move_as_error();
     return;
@@ -239,7 +238,7 @@ void FullNodeFastSyncOverlay::send_block_candidate(BlockIdExt block_id, Catchain
     return;
   }
   auto B =
-      serialize_block_candidate_broadcast(block_id, cc_seqno, validator_set_hash, data, true);  // compression enabled
+      serialize_block_candidate_broadcast(block_id, cc_seqno, validator_set_hash, data, true, "fast-sync");  // compression enabled
   if (B.is_error()) {
     VLOG(FULL_NODE_WARNING) << "failed to serialize block candidate broadcast: " << B.move_as_error();
     return;
