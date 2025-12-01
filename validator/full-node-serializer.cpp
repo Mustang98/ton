@@ -152,7 +152,7 @@ td::Result<std::vector<BlockIdExt>> extract_prev_blocks_from_proof(td::Slice pro
   if (proof_blk_id != block_id) {
     return td::Status::Error("block proof is for different block than broadcast id");
   }
-  auto header_root = vm::MerkleProof::virtualize(proof_rec.root, 1);
+  auto header_root = vm::MerkleProof::virtualize(proof_rec.root);
   if (header_root.is_null()) {
     return td::Status::Error("block proof does not contain a valid Merkle header proof");
   }
