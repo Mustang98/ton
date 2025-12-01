@@ -41,7 +41,7 @@ void FullNodePrivateBlockOverlay::process_broadcast(PublicKeyHash src,
 }
 
 void FullNodePrivateBlockOverlay::process_block_broadcast(PublicKeyHash src, ton_api::tonNode_Broadcast &query) {
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), "private");
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), td::Ref<vm::Cell>(), "private");
   if (B.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << B.move_as_error();
     return;
@@ -336,7 +336,7 @@ void FullNodeCustomOverlay::process_block_broadcast(PublicKeyHash src, ton_api::
     return;
   }
   
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), "custom");
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), td::Ref<vm::Cell>(), "custom");
   if (B.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << B.move_as_error();
     return;
@@ -356,7 +356,7 @@ void FullNodeCustomOverlay::got_state_for_v2_broadcast(PublicKeyHash src,
   
   auto state = R.move_as_ok();
   
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), state->root_cell());
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), state->root_cell(), "custom");
   if (B.is_error()) {
     LOG(DEBUG) << "Failed to deserialize V2 broadcast: " << B.move_as_error();
     return;

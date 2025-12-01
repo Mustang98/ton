@@ -52,7 +52,7 @@ void FullNodeFastSyncOverlay::process_block_broadcast(PublicKeyHash src, ton_api
     return;
   }
   
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), "fast-sync");
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), td::Ref<vm::Cell>(), "fast-sync");
   if (B.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << B.move_as_error();
     return;
@@ -72,7 +72,7 @@ void FullNodeFastSyncOverlay::got_state_for_v2_broadcast(PublicKeyHash src,
   
   auto state = R.move_as_ok();
   
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), state->root_cell());
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), state->root_cell(), "fast-sync");
   if (B.is_error()) {
     LOG(DEBUG) << "Failed to deserialize V2 broadcast: " << B.move_as_error();
     return;

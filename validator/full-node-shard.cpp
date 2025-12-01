@@ -849,7 +849,7 @@ void FullNodeShardImpl::process_block_broadcast(PublicKeyHash src, ton_api::tonN
     return;
   }
   
-  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), "public");
+  auto B = deserialize_block_broadcast(query, overlay::Overlays::max_fec_broadcast_size(), td::Ref<vm::Cell>(), "public");
   if (B.is_error()) {
     LOG(DEBUG) << "dropped broadcast: " << B.move_as_error();
     return;
@@ -980,7 +980,7 @@ void FullNodeShardImpl::send_broadcast(BlockBroadcast broadcast) {
   }
   VLOG(FULL_NODE_DEBUG) << "Sending block broadcast in private overlay: " << broadcast.block_id.to_str();
   LOG(INFO) << "OLEG send_broadcast shard";
-  auto B = serialize_block_broadcast(broadcast, true, StateUsage::DecompressOnly, "public");
+  auto B = serialize_block_broadcast(broadcast, true, StateUsage::DecompressOnly, td::Ref<vm::Cell>(), "public");
   if (B.is_error()) {
     VLOG(FULL_NODE_WARNING) << "failed to serialize block broadcast: " << B.move_as_error();
     return;
