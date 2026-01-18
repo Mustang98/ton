@@ -120,6 +120,7 @@ void OverlayManager::create_public_overlay(adnl::AdnlNodeIdShort local_id, Overl
 void OverlayManager::create_public_overlay_ex(adnl::AdnlNodeIdShort local_id, OverlayIdFull overlay_id,
                                               std::unique_ptr<Callback> callback, OverlayPrivacyRules rules,
                                               td::string scope, OverlayOptions opts) {
+  LOG(WARNING) << "BROADCAST_MULTIPLIER public:" << opts.broadcast_speed_multiplier_;                                              
   CHECK(!dht_node_.empty());
   auto id = overlay_id.compute_short_id();
   register_overlay(local_id, id, OverlayMemberCertificate{},
@@ -139,6 +140,7 @@ void OverlayManager::create_private_overlay_ex(adnl::AdnlNodeIdShort local_id, O
                                                std::vector<adnl::AdnlNodeIdShort> nodes,
                                                std::unique_ptr<Callback> callback, OverlayPrivacyRules rules,
                                                std::string scope, OverlayOptions opts) {
+  LOG(WARNING) << "BROADCAST_MULTIPLIER private:" << opts.broadcast_speed_multiplier_;                                              
   auto id = overlay_id.compute_short_id();
   register_overlay(local_id, id, OverlayMemberCertificate{},
                    Overlay::create_private(keyring_, adnl_, actor_id(this), dht_node_, local_id, std::move(overlay_id),
@@ -152,6 +154,7 @@ void OverlayManager::create_semiprivate_overlay(adnl::AdnlNodeIdShort local_id, 
                                                 OverlayMemberCertificate certificate,
                                                 std::unique_ptr<Callback> callback, OverlayPrivacyRules rules,
                                                 td::string scope, OverlayOptions opts) {
+  LOG(WARNING) << "BROADCAST_MULTIPLIER semiprivate:" << opts.broadcast_speed_multiplier_;                                              
   auto id = overlay_id.compute_short_id();
   register_overlay(
       local_id, id, certificate,
