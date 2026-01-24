@@ -16,21 +16,20 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
-#include "vm/dict.h"
-#include "vm/cells.h"
-#include "vm/cellslice.h"
-#include "vm/stack.hpp"
 #include "common/bitstring.h"
 #include "td/utils/Random.h"
-
 #include "td/utils/bits.h"
+#include "vm/cells.h"
+#include "vm/cellslice.h"
+#include "vm/dict.h"
+#include "vm/stack.hpp"
 
 namespace vm {
 
 /*
- * 
+ *
  *  DictionaryBase : basic (common) dictionary manipulation
- * 
+ *
  */
 
 DictionaryBase::DictionaryBase(Ref<CellSlice> _root, int _n, bool validate)
@@ -180,7 +179,7 @@ bool DictionaryBase::append_dict_to_bool(CellBuilder& cb) && {
   return cb.store_maybe_ref(std::move(root_cell));
 }
 
-bool DictionaryBase::append_dict_to_bool(CellBuilder& cb) const & {
+bool DictionaryBase::append_dict_to_bool(CellBuilder& cb) const& {
   return is_valid() && cb.store_maybe_ref(root_cell);
 }
 
@@ -237,7 +236,7 @@ bool DictionaryFixed::check_fork_raw(Ref<CellSlice> cs_ref, int n) const {
 }
 
 /*
- * 
+ *
  *  Label parser (HmLabel n ~l) for all dictionary types
  *
  */
@@ -409,9 +408,9 @@ int LabelParser::copy_label_prefix_to(td::BitPtr to, int max_len) const {
 }  // namespace dict
 
 /*
- * 
+ *
  *   Usual Dictionary
- * 
+ *
  */
 
 using dict::LabelParser;
@@ -1102,8 +1101,8 @@ Ref<CellSlice> Dictionary::lookup_set_gen(td::ConstBitPtr key, int key_len, cons
 }
 
 Ref<CellSlice> Dictionary::lookup_set(td::ConstBitPtr key, int key_len, Ref<CellSlice> value, SetMode mode) {
-  return lookup_set_gen(key, key_len, [value](CellBuilder& cb) { return cell_builder_add_slice_bool(cb, *value); },
-                        mode);
+  return lookup_set_gen(
+      key, key_len, [value](CellBuilder& cb) { return cell_builder_add_slice_bool(cb, *value); }, mode);
 }
 
 Ref<Cell> Dictionary::lookup_set_ref(td::ConstBitPtr key, int key_len, Ref<Cell> val_ref, SetMode mode) {
@@ -2261,8 +2260,8 @@ bool DictionaryFixed::combine_with(DictionaryFixed& dict2) {
 }
 
 bool DictionaryFixed::dict_check_for_each(Ref<Cell> dict, td::BitPtr key_buffer, int n, int total_key_len,
-                                          const DictionaryFixed::foreach_func_t& foreach_func,
-                                          bool invert_first, bool shuffle) const {
+                                          const DictionaryFixed::foreach_func_t& foreach_func, bool invert_first,
+                                          bool shuffle) const {
   if (dict.is_null()) {
     return true;
   }
@@ -2282,7 +2281,7 @@ bool DictionaryFixed::dict_check_for_each(Ref<Cell> dict, td::BitPtr key_buffer,
   if (l) {
     invert_first = false;
   }
-  bool invert = shuffle ? td::Random::fast(0, 1) == 1: invert_first;
+  bool invert = shuffle ? td::Random::fast(0, 1) == 1 : invert_first;
   if (invert) {
     std::swap(c1, c2);
   }
@@ -2576,9 +2575,9 @@ bool DictionaryFixed::validate_all() {
 }
 
 /*
- * 
+ *
  *   PREFIX DICTIONARIES
- * 
+ *
  */
 
 std::pair<Ref<CellSlice>, int> PrefixDictionary::lookup_prefix(td::ConstBitPtr key, int key_len) {
@@ -2669,9 +2668,9 @@ Ref<CellSlice> PrefixDictionary::lookup_delete(td::ConstBitPtr key, int key_len)
 }
 
 /*
- * 
+ *
  *   AUGMENTED DICTIONARIES
- * 
+ *
  */
 
 namespace dict {
@@ -2804,7 +2803,7 @@ Ref<CellSlice> AugmentedDictionary::extract_root() && {
   return std::move(root);
 }
 
-bool AugmentedDictionary::append_dict_to_bool(CellBuilder& cb) const & {
+bool AugmentedDictionary::append_dict_to_bool(CellBuilder& cb) const& {
   if (!is_valid()) {
     return false;
   }

@@ -18,18 +18,17 @@
 */
 #pragma once
 
-#include "td/utils/port/config.h"
+#include <memory>
 
-#include "td/utils/buffer.h"
-#include "td/utils/optional.h"
-#include "td/utils/port/detail/NativeFd.h"
-#include "td/utils/port/detail/PollableFd.h"
-#include "td/utils/port/IPAddress.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Span.h"
 #include "td/utils/Status.h"
-
-#include <memory>
+#include "td/utils/buffer.h"
+#include "td/utils/optional.h"
+#include "td/utils/port/IPAddress.h"
+#include "td/utils/port/config.h"
+#include "td/utils/port/detail/NativeFd.h"
+#include "td/utils/port/detail/PollableFd.h"
 
 namespace td {
 // Udp and errors
@@ -65,6 +64,7 @@ class UdpSocketFd {
   PollableFdInfo &get_poll_info();
   const PollableFdInfo &get_poll_info() const;
   const NativeFd &get_native_fd() const;
+  [[nodiscard]] Result<IPAddress> get_local_address() const;
 
   void close();
   bool empty() const;

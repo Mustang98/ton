@@ -17,8 +17,8 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #pragma once
-#include "td/actor/common.h"
 #include "td/actor/ActorId.h"
+#include "td/actor/common.h"
 
 namespace td {
 namespace actor {
@@ -112,7 +112,7 @@ ActorShared<SelfT> actor_shared(SelfT *self, uint64 id = static_cast<uint64>(-1)
 }
 
 inline ActorShared<> actor_shared() {
-  return actor_shared(&core::ActorExecuteContext::get()->actor());
+  return actor_shared(&core::ActorExecuteContext::get().actor());
 }
 }  // namespace core
 using core::actor_shared;

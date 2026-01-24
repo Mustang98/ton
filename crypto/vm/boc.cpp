@@ -16,18 +16,19 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
-#include <iostream>
-#include <iomanip>
 #include <algorithm>
-#include "vm/boc.h"
-#include "vm/boc-writers.h"
-#include "vm/cells.h"
-#include "vm/cellslice.h"
+#include <iomanip>
+#include <iostream>
+
+#include "td/utils/Slice-decl.h"
 #include "td/utils/bits.h"
 #include "td/utils/crypto.h"
 #include "td/utils/format.h"
 #include "td/utils/misc.h"
-#include "td/utils/Slice-decl.h"
+#include "vm/boc-writers.h"
+#include "vm/boc.h"
+#include "vm/cells.h"
+#include "vm/cellslice.h"
 
 namespace vm {
 using td::Ref;
@@ -163,7 +164,7 @@ int BagOfCells::add_root(td::Ref<vm::Cell> add_root) {
   if (add_root.is_null()) {
     return 0;
   }
-  LOG_CHECK(add_root->get_virtualization() == 0) << "TODO: support serialization of virtualized cells";
+  LOG_CHECK(!add_root->is_virtualized()) << "TODO: support serialization of virtualized cells";
   //const Cell::Hash& hash = add_root->get_hash();
   //for (const auto& root_info : roots) {
   //if (root_info.cell->get_hash() == hash) {
@@ -217,7 +218,7 @@ td::Result<int> BagOfCells::import_cell(td::Ref<vm::Cell> cell, int depth) {
     cell_list_[pos].should_cache = true;
     return pos;
   }
-  if (cell->get_virtualization() != 0) {
+  if (cell->is_virtualized()) {
     return td::Status::Error(
         "error while importing a cell into a bag of cells: cell has non-zero virtualization level");
   }
@@ -946,9 +947,9 @@ unsigned long long BagOfCells::get_idx_entry_raw(int index) {
 }
 
 /*
- * 
+ *
  *  Simple BoC serialization/deserialization functions
- * 
+ *
  */
 
 td::Result<Ref<Cell>> std_boc_deserialize(td::Slice data, bool can_be_empty, bool allow_nonzero_level) {
@@ -1039,9 +1040,9 @@ td::Status std_boc_serialize_to_file(Ref<Cell> root, td::FileFd& fd, int mode,
 }
 
 /*
- * 
+ *
  *  Cell storage statistics
- * 
+ *
  */
 
 td::Result<CellStorageStat::CellInfo> CellStorageStat::compute_used_storage(Ref<vm::CellSlice> cs_ref, bool kill_dup,
@@ -1157,7 +1158,7 @@ td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(Ref<vm::
 }
 
 td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(td::Span<Ref<Cell>> cells, bool kill_dup,
-                                      unsigned skip_count_root) {
+                                                                        unsigned skip_count_root) {
   CellInfo result;
   for (const auto& cell : cells) {
     TRY_RESULT(info, add_used_storage(cell, kill_dup, skip_count_root));
@@ -1296,7 +1297,6 @@ void ProofStorageStat::add_loaded_cells(const ProofStorageStat& other) {
     proof_size_ += old_size = new_size;
   }
 }
-
 
 td::uint64 ProofStorageStat::estimate_proof_size() const {
   return proof_size_;

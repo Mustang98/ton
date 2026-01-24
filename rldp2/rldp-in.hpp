@@ -18,16 +18,15 @@
 */
 #pragma once
 
-#include "rldp.hpp"
-
-#include "tl-utils/tl-utils.hpp"
-#include "adnl/adnl-query.h"
-#include "adnl/adnl-peer-table.h"
-
-#include "td/utils/List.h"
-
 #include <map>
 #include <set>
+
+#include "adnl/adnl-peer-table.h"
+#include "adnl/adnl-query.h"
+#include "td/utils/List.h"
+#include "tl-utils/tl-utils.hpp"
+
+#include "rldp.hpp"
 
 namespace ton {
 
@@ -90,9 +89,12 @@ class RldpIn : public RldpImpl {
 
   void add_id(adnl::AdnlNodeIdShort local_id) override;
 
-  void get_conn_ip_str(adnl::AdnlNodeIdShort l_id, adnl::AdnlNodeIdShort p_id, td::Promise<td::string> promise) override;
+  void get_conn_ip_str(adnl::AdnlNodeIdShort l_id, adnl::AdnlNodeIdShort p_id,
+                       td::Promise<td::string> promise) override;
 
   void set_default_mtu(td::uint64 mtu) override;
+  void add_peer_mtu_limit(adnl::AdnlNodeIdShort local_id, adnl::AdnlNodeIdShort peer_id, td::uint64 mtu) override;
+  void remove_peer_mtu_limit(adnl::AdnlNodeIdShort local_id, adnl::AdnlNodeIdShort peer_id, td::uint64 mtu) override;
 
   RldpIn(td::actor::ActorId<adnl::AdnlPeerTable> adnl) : adnl_(adnl) {
   }
@@ -110,8 +112,10 @@ class RldpIn : public RldpImpl {
   std::set<adnl::AdnlNodeIdShort> local_ids_;
 
   td::optional<td::uint64> custom_default_mtu_;
+  std::map<std::pair<adnl::AdnlNodeIdShort, adnl::AdnlNodeIdShort>, std::multiset<td::uint64>> custom_peer_mtu_;
 
   td::actor::ActorId<RldpConnectionActor> create_connection(adnl::AdnlNodeIdShort src, adnl::AdnlNodeIdShort dst);
+  td::uint64 get_peer_mtu(adnl::AdnlNodeIdShort local_id, adnl::AdnlNodeIdShort peer_id);
 };
 
 }  // namespace rldp2

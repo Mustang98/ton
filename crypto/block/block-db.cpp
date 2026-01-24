@@ -16,21 +16,22 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
-#include "block-db.h"
-#include "block-db-impl.h"
-#include "block-binlog.h"
+#include <limits>
+
 #include "td/utils/common.h"
 #include "td/utils/crypto.h"
+#include "td/utils/filesystem.h"
 #include "td/utils/format.h"
 #include "td/utils/misc.h"
 #include "td/utils/port/FileFd.h"
 #include "td/utils/port/path.h"
-#include "td/utils/filesystem.h"
-#include "vm/cellslice.h"
 #include "vm/boc.h"
+#include "vm/cellslice.h"
 #include "vm/db/StaticBagOfCellsDb.h"
 
-#include <limits>
+#include "block-binlog.h"
+#include "block-db-impl.h"
+#include "block-db.h"
 
 namespace block {
 
@@ -123,9 +124,9 @@ FileHash compute_file_hash(td::Slice data) {
 }
 
 /*
- * 
+ *
  *   ZEROSTATE CONFIGURATION
- * 
+ *
  */
 
 td::Status ZerostateInfo::base_check() {
@@ -153,9 +154,9 @@ td::Status ZerostateInfo::base_check() {
 }
 
 /*
- * 
- *   BLOCK DATABASE 
- * 
+ *
+ *   BLOCK DATABASE
+ *
  */
 
 std::string compute_db_filename(std::string base_dir, const FileHash& file_hash, int depth) {

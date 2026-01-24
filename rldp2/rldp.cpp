@@ -16,12 +16,13 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
-#include "rldp-in.hpp"
 #include "auto/tl/ton_api.h"
 #include "auto/tl/ton_api.hpp"
-#include "td/utils/Random.h"
 #include "fec/fec.h"
+#include "td/utils/Random.h"
+
 #include "RldpConnection.h"
+#include "rldp-in.hpp"
 
 namespace ton {
 
@@ -31,7 +32,7 @@ class RldpConnectionActor : public td::actor::Actor, private ConnectionCallback 
  public:
   RldpConnectionActor(td::actor::ActorId<RldpIn> rldp, adnl::AdnlNodeIdShort src, adnl::AdnlNodeIdShort dst,
                       td::actor::ActorId<adnl::Adnl> adnl)
-      : rldp_(std::move(rldp)), src_(src), dst_(dst), adnl_(std::move(adnl)){};
+      : rldp_(std::move(rldp)), src_(src), dst_(dst), adnl_(std::move(adnl)) {};
 
   void send(TransferId transfer_id, td::BufferSlice query, td::Timestamp timeout = td::Timestamp::never()) {
     connection_.send(transfer_id, std::move(query), timeout);
@@ -132,12 +133,19 @@ td::actor::ActorId<RldpConnectionActor> RldpIn::create_connection(adnl::AdnlNode
     return it->second.get();
   }
   auto connection = td::actor::create_actor<RldpConnectionActor>("RldpConnection", actor_id(this), src, dst, adnl_);
-  if (custom_default_mtu_) {
-    td::actor::send_closure(connection, &RldpConnectionActor::set_default_mtu, custom_default_mtu_.value());
-  }
+  td::actor::send_closure(connection, &RldpConnectionActor::set_default_mtu, get_peer_mtu(src, dst));
   auto res = connection.get();
   connections_[std::make_pair(src, dst)] = std::move(connection);
   return res;
+}
+
+td::uint64 RldpIn::get_peer_mtu(adnl::AdnlNodeIdShort local_id, adnl::AdnlNodeIdShort peer_id) {
+  td::uint64 mtu = custom_default_mtu_ ? custom_default_mtu_.value() : RldpConnection::DEFAULT_MTU;
+  auto it = custom_peer_mtu_.find({local_id, peer_id});
+  if (it != custom_peer_mtu_.end()) {
+    mtu = std::max(mtu, *it->second.rbegin());
+  }
+  return mtu;
 }
 
 void RldpIn::receive_message(adnl::AdnlNodeIdShort source, adnl::AdnlNodeIdShort local_id, TransferId transfer_id,
@@ -229,8 +237,32 @@ void RldpIn::get_conn_ip_str(adnl::AdnlNodeIdShort l_id, adnl::AdnlNodeIdShort p
 
 void RldpIn::set_default_mtu(td::uint64 mtu) {
   custom_default_mtu_ = mtu;
-  for (auto &connection : connections_) {
-    td::actor::send_closure(connection.second, &RldpConnectionActor::set_default_mtu, mtu);
+  for (auto &[p, connection] : connections_) {
+    td::actor::send_closure(connection, &RldpConnectionActor::set_default_mtu, get_peer_mtu(p.first, p.second));
+  }
+}
+
+void RldpIn::add_peer_mtu_limit(adnl::AdnlNodeIdShort local_id, adnl::AdnlNodeIdShort peer_id, td::uint64 mtu) {
+  custom_peer_mtu_[{local_id, peer_id}].insert(mtu);
+  auto it = connections_.find({local_id, peer_id});
+  if (it != connections_.end()) {
+    auto &[p, connection] = *it;
+    td::actor::send_closure(connection, &RldpConnectionActor::set_default_mtu, get_peer_mtu(p.first, p.second));
+  }
+}
+
+void RldpIn::remove_peer_mtu_limit(adnl::AdnlNodeIdShort local_id, adnl::AdnlNodeIdShort peer_id, td::uint64 mtu) {
+  auto &map = custom_peer_mtu_[{local_id, peer_id}];
+  auto it = map.find(mtu);
+  CHECK(it != map.end());
+  map.erase(it);
+  if (map.empty()) {
+    custom_peer_mtu_.erase({local_id, peer_id});
+  }
+  auto it2 = connections_.find({local_id, peer_id});
+  if (it2 != connections_.end()) {
+    auto &[p, connection] = *it2;
+    td::actor::send_closure(connection, &RldpConnectionActor::set_default_mtu, get_peer_mtu(p.first, p.second));
   }
 }
 

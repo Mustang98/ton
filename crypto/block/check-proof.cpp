@@ -16,17 +16,16 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
-#include "check-proof.h"
-#include "block/block.h"
-#include "block/block-parse.h"
 #include "block/block-auto.h"
+#include "block/block-parse.h"
+#include "block/block.h"
 #include "block/mc-config.h"
-
-#include "ton/ton-shard.h"
-
-#include "vm/cells/MerkleProof.h"
 #include "openssl/digest.hpp"
+#include "ton/ton-shard.h"
+#include "vm/cells/MerkleProof.h"
+
 #include "Ed25519.h"
+#include "check-proof.h"
 
 namespace block {
 using namespace std::literals::string_literals;
@@ -73,7 +72,7 @@ td::Status check_block_header_proof(td::Ref<vm::Cell> root, ton::BlockIdExt blki
 
 td::Result<td::Bits256> check_state_proof(ton::BlockIdExt blkid, td::Slice proof) {
   TRY_RESULT(proof_root, vm::std_boc_deserialize(proof));
-  auto virt_root = vm::MerkleProof::virtualize(std::move(proof_root), 1);
+  auto virt_root = vm::MerkleProof::virtualize(std::move(proof_root));
   if (virt_root.is_null()) {
     return td::Status::Error("account state proof is invalid");
   }
@@ -86,7 +85,7 @@ td::Result<Ref<vm::Cell>> check_extract_state_proof(ton::BlockIdExt blkid, td::S
   try {
     TRY_RESULT(state_hash, check_state_proof(blkid, proof));
     TRY_RESULT(state_root, vm::std_boc_deserialize(data));
-    auto state_virt_root = vm::MerkleProof::virtualize(std::move(state_root), 1);
+    auto state_virt_root = vm::MerkleProof::virtualize(std::move(state_root));
     if (state_virt_root.is_null()) {
       return td::Status::Error("account state proof is invalid");
     }
@@ -118,13 +117,13 @@ td::Status check_shard_proof(ton::BlockIdExt blk, ton::BlockIdExt shard_blk, td:
     return td::Status::Error("shard configuration proof must have exactly two roots");
   }
   try {
-    auto mc_state_root = vm::MerkleProof::virtualize(std::move(P_roots[1]), 1);
+    auto mc_state_root = vm::MerkleProof::virtualize(std::move(P_roots[1]));
     if (mc_state_root.is_null()) {
       return td::Status::Error("shard configuration proof is invalid");
     }
     ton::Bits256 mc_state_hash = mc_state_root->get_hash().bits();
     TRY_STATUS_PREFIX(
-        check_block_header_proof(vm::MerkleProof::virtualize(std::move(P_roots[0]), 1), blk, &mc_state_hash, true),
+        check_block_header_proof(vm::MerkleProof::virtualize(std::move(P_roots[0])), blk, &mc_state_hash, true),
         "error in shard configuration block header proof :");
     block::gen::ShardStateUnsplit::Record sstate;
     if (!(tlb::unpack_cell(mc_state_root, sstate))) {
@@ -171,12 +170,12 @@ td::Status check_account_proof(td::Slice proof, ton::BlockIdExt shard_blk, const
   }
 
   try {
-    auto state_root = vm::MerkleProof::virtualize(std::move(Q_roots[1]), 1);
+    auto state_root = vm::MerkleProof::virtualize(std::move(Q_roots[1]));
     if (state_root.is_null()) {
       return td::Status::Error("account state proof is invalid");
     }
     ton::Bits256 state_hash = state_root->get_hash().bits();
-    TRY_STATUS_PREFIX(check_block_header_proof(vm::MerkleProof::virtualize(std::move(Q_roots[0]), 1), shard_blk,
+    TRY_STATUS_PREFIX(check_block_header_proof(vm::MerkleProof::virtualize(std::move(Q_roots[0])), shard_blk,
                                                &state_hash, true, save_utime, save_lt),
                       "error in account shard block header proof : ");
     block::gen::ShardStateUnsplit::Record sstate;
@@ -223,7 +222,7 @@ td::Result<AccountState::Info> AccountState::validate(ton::BlockIdExt ref_blk, b
   Ref<vm::Cell> root;
 
   if (is_virtualized && true_root.not_null()) {
-    root = vm::MerkleProof::virtualize(true_root, 1);
+    root = vm::MerkleProof::virtualize(true_root);
     if (root.is_null()) {
       return td::Status::Error("account state proof is invalid");
     }
@@ -321,8 +320,8 @@ td::Result<BlockTransaction::Info> BlockTransaction::validate(bool check_proof) 
   }
   if (check_proof && proof->get_hash().bits().compare(root->get_hash().bits(), 256)) {
     return td::Status::Error(PSLICE() << "transaction hash mismatch: Merkle proof expects "
-                                      << proof->get_hash().bits().to_hex(256)
-                                      << " but received data has " << root->get_hash().bits().to_hex(256));
+                                      << proof->get_hash().bits().to_hex(256) << " but received data has "
+                                      << root->get_hash().bits().to_hex(256));
   }
   block::gen::Transaction::Record trans;
   if (!tlb::unpack_cell(root, trans)) {
@@ -340,13 +339,14 @@ td::Result<BlockTransaction::Info> BlockTransaction::validate(bool check_proof) 
 td::Result<BlockTransactionList::Info> BlockTransactionList::validate(bool check_proof) const {
   constexpr int max_answer_transactions = 256;
 
-  TRY_RESULT_PREFIX(list, vm::std_boc_deserialize_multi(std::move(transactions_boc)), "cannot deserialize transactions boc: ");  
+  TRY_RESULT_PREFIX(list, vm::std_boc_deserialize_multi(std::move(transactions_boc)),
+                    "cannot deserialize transactions boc: ");
   std::vector<td::Ref<vm::Cell>> tx_proofs(list.size());
 
   if (check_proof) {
     try {
       TRY_RESULT(proof_cell, vm::std_boc_deserialize(std::move(proof_boc)));
-      auto virt_root = vm::MerkleProof::virtualize(proof_cell, 1);
+      auto virt_root = vm::MerkleProof::virtualize(proof_cell);
 
       if (blkid.root_hash != virt_root->get_hash().bits()) {
         return td::Status::Error("Invalid block proof root hash");
@@ -357,7 +357,7 @@ td::Result<BlockTransactionList::Info> BlockTransactionList::validate(bool check
         return td::Status::Error("Error unpacking proof cell");
       }
       vm::AugmentedDictionary acc_dict{vm::load_cell_slice_ref(extra.account_blocks), 256,
-                  block::tlb::aug_ShardAccountBlocks};
+                                       block::tlb::aug_ShardAccountBlocks};
 
       bool eof = false;
       ton::LogicalTime reverse = reverse_mode ? ~0ULL : 0;
@@ -367,7 +367,7 @@ td::Result<BlockTransactionList::Info> BlockTransactionList::validate(bool check
       int count = 0;
       while (!eof && count < req_count && count < max_answer_transactions) {
         auto value = acc_dict.extract_value(
-              acc_dict.vm::DictionaryFixed::lookup_nearest_key(cur_addr.bits(), 256, !reverse, allow_same));
+            acc_dict.vm::DictionaryFixed::lookup_nearest_key(cur_addr.bits(), 256, !reverse, allow_same));
         if (value.is_null()) {
           eof = true;
           break;
@@ -382,11 +382,11 @@ td::Result<BlockTransactionList::Info> BlockTransactionList::validate(bool check
           return td::Status::Error("Error unpacking proof account block");
         }
         vm::AugmentedDictionary trans_dict{vm::DictNonEmpty(), std::move(acc_blk.transactions), 64,
-                    block::tlb::aug_AccountTransactions};
+                                           block::tlb::aug_AccountTransactions};
         td::BitArray<64> cur_trans{(long long)trans_lt};
         while (count < req_count && count < max_answer_transactions) {
           auto tvalue = trans_dict.extract_value_ref(
-                trans_dict.vm::DictionaryFixed::lookup_nearest_key(cur_trans.bits(), 64, !reverse));
+              trans_dict.vm::DictionaryFixed::lookup_nearest_key(cur_trans.bits(), 64, !reverse));
           if (tvalue.is_null()) {
             trans_lt = reverse;
             break;
@@ -398,7 +398,8 @@ td::Result<BlockTransactionList::Info> BlockTransactionList::validate(bool check
         }
       }
       if (static_cast<size_t>(count) != list.size()) {
-        return td::Status::Error(PSLICE() << "Txs count mismatch in proof (" << count << ") and response (" << list.size() << ")");
+        return td::Status::Error(PSLICE() << "Txs count mismatch in proof (" << count << ") and response ("
+                                          << list.size() << ")");
       }
     } catch (vm::VmError& err) {
       return err.as_status("Couldn't verify proof: ");
@@ -446,13 +447,13 @@ td::Status BlockProofLink::validate(td::uint32* save_utime) const {
   if (!is_fwd && state_proof.is_null()) {
     return td::Status::Error("a backward BlockProofLink contains no proof for the source state of "s + from.to_str());
   }
-  if (is_fwd && signatures.empty()) {
+  if (is_fwd && sig_set.is_null()) {
     return td::Status::Error("a forward BlockProofLink from "s + from.to_str() + " to " + to.to_str() +
                              " contains no signatures");
   }
   try {
     // virtualize Merkle proof roots
-    auto vs_root = vm::MerkleProof::virtualize(proof, 1);
+    auto vs_root = vm::MerkleProof::virtualize(proof);
     if (vs_root.is_null()) {
       return td::Status::Error("BlockProofLink contains an invalid Merkle proof for source block "s + from.to_str());
     }
@@ -460,7 +461,7 @@ td::Status BlockProofLink::validate(td::uint32* save_utime) const {
     if (from.seqno()) {
       TRY_STATUS(check_block_header(vs_root, from, is_fwd ? nullptr : &state_hash));
     }
-    auto vd_root = dest_proof.not_null() ? vm::MerkleProof::virtualize(dest_proof, 1) : Ref<vm::Cell>{};
+    auto vd_root = dest_proof.not_null() ? vm::MerkleProof::virtualize(dest_proof) : Ref<vm::Cell>{};
     if (vd_root.is_null() && to.seqno()) {
       return td::Status::Error("BlockProofLink contains an invalid Merkle proof for destination block "s + to.to_str());
     }
@@ -483,7 +484,7 @@ td::Status BlockProofLink::validate(td::uint32* save_utime) const {
     }
     if (!is_fwd) {
       // check a backward link
-      auto vstate_root = vm::MerkleProof::virtualize(state_proof, 1);
+      auto vstate_root = vm::MerkleProof::virtualize(state_proof);
       if (vstate_root.is_null()) {
         return td::Status::Error("backward BlockProofLink contains an invalid Merkle proof for source state "s +
                                  from.to_str());
@@ -517,20 +518,21 @@ td::Status BlockProofLink::validate(td::uint32* save_utime) const {
                                  << to.to_str() << " with utime " << info.gen_utime << " and cc_seqno "
                                  << info.gen_catchain_seqno << " starting from previous key block " << from.to_str());
       }
+      td::Ref<ValidatorSet> vset{true, sig_set->get_catchain_seqno(), shard, std::move(nodes)};
       // check computed validator set hash
-      auto vset_hash = compute_validator_set_hash(cc_seqno, shard, nodes);
-      if (vset_hash != info.gen_validator_list_hash_short) {
-        return td::Status::Error(
-            PSTRING() << "while checking a forward BlockProofLink: computed validator set for block " << to.to_str()
-                      << " with utime " << info.gen_utime << " and cc_seqno " << info.gen_catchain_seqno
-                      << " starting from previous key block " << from.to_str() << " has hash " << vset_hash
-                      << " different from " << info.gen_validator_list_hash_short << " stated in block header");
+      if (vset->get_validator_set_hash() != info.gen_validator_list_hash_short) {
+        return td::Status::Error(PSTRING()
+                                 << "while checking a forward BlockProofLink: computed validator set for block "
+                                 << to.to_str() << " with utime " << info.gen_utime << " and cc_seqno "
+                                 << info.gen_catchain_seqno << " starting from previous key block " << from.to_str()
+                                 << " has hash " << vset->get_validator_set_hash() << " different from "
+                                 << info.gen_validator_list_hash_short << " stated in block header");
       }
       // check signatures
-      auto err = check_block_signatures(nodes, signatures, to);
-      if (err.is_error()) {
-        return td::Status::Error("error checking signatures for block "s + to.to_str() +
-                                 " in a forward BlockProofLink: " + err.to_string());
+      auto result = sig_set->check_signatures(vset, to);
+      if (result.is_error()) {
+        return result.move_as_error_prefix(PSTRING() << "error checking signatures for block " << to.to_str()
+                                                     << " in a forward BlockProofLink: ");
       }
       return td::Status::OK();
     }
@@ -602,65 +604,6 @@ td::Bits256 compute_node_id_short(td::Bits256 ed25519_pubkey) {
   td::Bits256 hash;
   digest::hash_str<digest::SHA256>(hash.data(), (void*)&PK, sizeof(pubkey));
   return hash;
-}
-
-td::Status check_block_signatures(const std::vector<ton::ValidatorDescr>& nodes,
-                                  const std::vector<ton::BlockSignature>& signatures, const ton::BlockIdExt& blkid) {
-  if (nodes.empty()) {
-    return td::Status::Error("empty validator public keys set");
-  }
-  if (signatures.empty()) {
-    return td::Status::Error("empty validator signature set");
-  }
-  // compute the string to be signed and its hash
-  unsigned char to_sign[68];
-  td::as<td::uint32>(to_sign) = 0xc50b6e70;  // ton.blockId root_cell_hash:int256 file_hash:int256 = ton.BlockId;
-  memcpy(to_sign + 4, blkid.root_hash.data(), 32);
-  memcpy(to_sign + 36, blkid.file_hash.data(), 32);
-  // unsigned char hash[32];
-  // digest::hash_str<digest::SHA256>(hash, (void*)to_sign, sizeof(to_sign));
-
-  ton::ValidatorWeight total_weight = 0, signed_weight = 0;
-  std::vector<std::pair<td::Bits256, unsigned>> node_map;
-  for (unsigned i = 0; i < nodes.size(); i++) {
-    total_weight += nodes[i].weight;
-    node_map.emplace_back(compute_node_id_short(nodes[i].key), i);
-  }
-  std::sort(node_map.begin(), node_map.end());
-  std::vector<unsigned> seen;
-  for (auto& sig : signatures) {
-    // lookup node in validator set
-    auto& id = sig.node;
-    auto it = std::lower_bound(node_map.begin(), node_map.end(), id,
-                               [](const auto& p, const auto& x) { return p.first < x; });
-    if (it == node_map.end() || it->first != id) {
-      return td::Status::Error("signature set contains unknown NodeIdShort "s + id.to_hex());
-    }
-    unsigned i = it->second;
-    seen.emplace_back(i);
-    // check one signature
-    td::Ed25519::PublicKey pub_key{td::SecureString{nodes.at(i).key.as_slice()}};
-    auto res = pub_key.verify_signature(td::Slice{to_sign, 68}, sig.signature.as_slice());
-    if (res.is_error()) {
-      return res;
-    }
-    signed_weight += nodes[i].weight;
-    if (signed_weight > total_weight) {
-      break;
-    }
-  }
-  std::sort(seen.begin(), seen.end());
-  for (std::size_t i = 1; i < seen.size(); i++) {
-    if (seen[i] == seen[i - 1]) {
-      return td::Status::Error("signature set contains duplicate signature for NodeIdShort "s +
-                               compute_node_id_short(nodes.at(seen[i]).key).to_hex());
-    }
-  }
-  if (3 * signed_weight <= 2 * total_weight) {
-    return td::Status::Error(PSTRING() << "insufficient total signature weight: only " << signed_weight << " out of "
-                                       << total_weight);
-  }
-  return td::Status::OK();
 }
 
 }  // namespace block

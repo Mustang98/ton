@@ -14,20 +14,18 @@
     You should have received a copy of the GNU Lesser General Public License
     along with TON Blockchain Library.  If not, see <http://www.gnu.org/licenses/>.
 */
-#include "query-utils.hpp"
+#include <ton/ton-tl.hpp>
 
-#include "block-parse.h"
+#include "auto/tl/lite_api.hpp"
+#include "block/block-auto.h"
 #include "td/utils/overloaded.h"
 #include "tl-utils/common-utils.hpp"
-
-#include "block/block-auto.h"
-#include "auto/tl/lite_api.hpp"
-#include "overlay/overlay-broadcast.hpp"
 #include "tl-utils/lite-utils.hpp"
 #include "ton/lite-tl.hpp"
 #include "ton/ton-shard.h"
 
-#include <ton/ton-tl.hpp>
+#include "block-parse.h"
+#include "query-utils.hpp"
 
 namespace liteclient {
 
@@ -211,6 +209,7 @@ QueryInfo get_query_info(const lite_api::Function& f) {
                      [&](const lite_api::liteServer_getShardBlockProof& q) { from_block_id(q.id_); },
                      [&](const lite_api::liteServer_nonfinal_getCandidate& q) { /* t_simple */ },
                      [&](const lite_api::liteServer_nonfinal_getValidatorGroups& q) { /* t_simple */ },
+                     [&](const lite_api::liteServer_nonfinal_getPendingShardBlocks& q) { /* t_simple */ },
                      [&](const lite_api::liteServer_getOutMsgQueueSizes& q) {
                        // This query is expected to be removed, as it is not fully compatible with separated liteservers
                        /* t_simple */

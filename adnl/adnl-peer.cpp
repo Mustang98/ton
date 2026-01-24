@@ -16,17 +16,16 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include "auto/tl/ton_api.h"
+#include "td/actor/PromiseFuture.h"
+#include "td/utils/Random.h"
+#include "td/utils/base64.h"
+#include "td/utils/overloaded.h"
+
+#include "adnl-local-id.h"
 #include "adnl-peer.h"
 #include "adnl-peer.hpp"
-#include "adnl-local-id.h"
-
 #include "utils.hpp"
-
-#include "td/actor/PromiseFuture.h"
-#include "td/utils/base64.h"
-#include "td/utils/Random.h"
-#include "auto/tl/ton_api.h"
-#include "td/utils/overloaded.h"
 
 namespace ton {
 
@@ -77,6 +76,17 @@ void AdnlPeerPairImpl::alarm() {
   }
   alarm_timestamp().relax(next_db_update_at_);
   alarm_timestamp().relax(retry_send_at_);
+
+  while (!peer_node_waiters_.empty()) {
+    auto &[promise, timeout] = peer_node_waiters_.front();
+    if (timeout.is_in_past()) {
+      promise.set_error(td::Status::Error(ErrorCode::timeout, "timeout"));
+      peer_node_waiters_.pop();
+    } else {
+      alarm_timestamp().relax(timeout);
+      break;
+    }
+  }
 }
 
 void AdnlPeerPairImpl::discover() {
@@ -473,11 +483,20 @@ void AdnlPeerPairImpl::alarm_query(AdnlQueryId id) {
   out_queries_.erase(id);
 }
 
+void AdnlPeerPairImpl::get_peer_node(td::Promise<AdnlNode> promise) {
+  if (!peer_id_.empty() && !addr_list_.empty()) {
+    promise.set_value(AdnlNode{peer_id_, addr_list_});
+    return;
+  }
+  disable_dht_query_ = false;
+  peer_node_waiters_.emplace(std::move(promise), td::Timestamp::in(10.0));
+  alarm_timestamp().relax(peer_node_waiters_.back().second);
+}
+
 AdnlPeerPairImpl::AdnlPeerPairImpl(td::actor::ActorId<AdnlNetworkManager> network_manager,
                                    td::actor::ActorId<AdnlPeerTable> peer_table, td::uint32 local_mode,
-                                   td::actor::ActorId<AdnlLocalId> local_actor,
-                                   td::actor::ActorId<dht::Dht> dht_node, AdnlNodeIdShort local_id,
-                                   AdnlNodeIdShort peer_id) {
+                                   td::actor::ActorId<AdnlLocalId> local_actor, td::actor::ActorId<dht::Dht> dht_node,
+                                   AdnlNodeIdShort local_id, AdnlNodeIdShort peer_id) {
   network_manager_ = network_manager;
   peer_table_ = peer_table;
   local_actor_ = local_actor;
@@ -797,6 +816,13 @@ void AdnlPeerPairImpl::update_addr_list(AdnlAddressList addr_list) {
 
   old_conns = std::move(conns);
   (priority ? priority_addr_list_ : addr_list_) = addr_list;
+
+  if (!peer_id_.empty() && !addr_list_.empty()) {
+    while (!peer_node_waiters_.empty()) {
+      peer_node_waiters_.front().first.set_value(AdnlNode{peer_id_, addr_list_});
+      peer_node_waiters_.pop();
+    }
+  }
 }
 
 void AdnlPeerPairImpl::get_conn_ip_str(td::Promise<td::string> promise) {
@@ -886,10 +912,12 @@ void AdnlPeerPairImpl::conn_change_state(AdnlConnectionIdShort id, bool ready) {
   }
 }
 
-td::actor::ActorOwn<AdnlPeerPair> AdnlPeerPair::create(
-    td::actor::ActorId<AdnlNetworkManager> network_manager, td::actor::ActorId<AdnlPeerTable> peer_table,
-    td::uint32 local_mode, td::actor::ActorId<AdnlLocalId> local_actor,
-    td::actor::ActorId<dht::Dht> dht_node, AdnlNodeIdShort local_id, AdnlNodeIdShort peer_id) {
+td::actor::ActorOwn<AdnlPeerPair> AdnlPeerPair::create(td::actor::ActorId<AdnlNetworkManager> network_manager,
+                                                       td::actor::ActorId<AdnlPeerTable> peer_table,
+                                                       td::uint32 local_mode,
+                                                       td::actor::ActorId<AdnlLocalId> local_actor,
+                                                       td::actor::ActorId<dht::Dht> dht_node, AdnlNodeIdShort local_id,
+                                                       AdnlNodeIdShort peer_id) {
   auto X = td::actor::create_actor<AdnlPeerPairImpl>("peerpair", network_manager, peer_table, local_mode, local_actor,
                                                      dht_node, local_id, peer_id);
   return td::actor::ActorOwn<AdnlPeerPair>(std::move(X));

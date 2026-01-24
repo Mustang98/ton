@@ -18,20 +18,20 @@
 */
 #pragma once
 
-#include <vector>
 #include <utility>
+#include <vector>
 
-#include "ton/ton-types.h"
-
-#include "td/actor/actor.h"
-
+#include "adnl/adnl-ext-client.h"
 #include "adnl/adnl.h"
-#include "rldp/rldp.h"
-#include "rldp2/rldp.h"
 #include "dht/dht.h"
 #include "overlay/overlays.h"
+#include "rldp/rldp.h"
+#include "rldp2/rldp.h"
+#include "td/actor/actor.h"
+#include "ton/ton-types.h"
 #include "validator/validator.h"
-#include "adnl/adnl-ext-client.h"
+
+#include "types.h"
 
 namespace ton {
 
@@ -40,6 +40,7 @@ namespace validator {
 namespace fullnode {
 
 constexpr int VERBOSITY_NAME(FULL_NODE_WARNING) = verbosity_WARNING;
+constexpr int VERBOSITY_NAME(FULL_NODE_BENCHMARK) = verbosity_WARNING;
 constexpr int VERBOSITY_NAME(FULL_NODE_NOTICE) = verbosity_INFO;
 constexpr int VERBOSITY_NAME(FULL_NODE_INFO) = verbosity_DEBUG;
 constexpr int VERBOSITY_NAME(FULL_NODE_DEBUG) = verbosity_DEBUG;
@@ -49,8 +50,7 @@ struct FullNodeConfig {
   FullNodeConfig() = default;
   FullNodeConfig(const tl_object_ptr<ton_api::engine_validator_fullNodeConfig>& obj);
   tl_object_ptr<ton_api::engine_validator_fullNodeConfig> tl() const;
-  bool operator==(const FullNodeConfig& rhs) const;
-  bool operator!=(const FullNodeConfig& rhs) const;
+  bool operator==(const FullNodeConfig& rhs) const = default;
 
   bool ext_messages_broadcast_disabled_ = false;
 };
@@ -59,6 +59,10 @@ struct FullNodeOptions {
   FullNodeConfig config_;
   double public_broadcast_speed_multiplier_ = 1.0;
   double private_broadcast_speed_multiplier_ = 1.0;
+  double fast_sync_broadcast_speed_multiplier_ = 1.0;
+  double initial_sync_delay_ = 60.0;
+  double ratelimit_window_size_ = 0;
+  size_t ratelimit_global_ = 0, ratelimit_heavy_ = 0, ratelimit_medium_ = 0;
 };
 
 struct CustomOverlayParams {
@@ -84,9 +88,8 @@ class FullNode : public td::actor::Actor {
   virtual void add_collator_adnl_id(adnl::AdnlNodeIdShort id) = 0;
   virtual void del_collator_adnl_id(adnl::AdnlNodeIdShort id) = 0;
 
-  virtual void sign_shard_overlay_certificate(ShardIdFull shard_id, PublicKeyHash signed_key,
-                                              td::uint32 expiry_at, td::uint32 max_size,
-                                              td::Promise<td::BufferSlice> promise) = 0;
+  virtual void sign_shard_overlay_certificate(ShardIdFull shard_id, PublicKeyHash signed_key, td::uint32 expiry_at,
+                                              td::uint32 max_size, td::Promise<td::BufferSlice> promise) = 0;
   virtual void import_shard_overlay_certificate(ShardIdFull shard_id, PublicKeyHash signed_key,
                                                 std::shared_ptr<ton::overlay::Certificate> cert,
                                                 td::Promise<td::Unit> promise) = 0;
@@ -97,15 +100,17 @@ class FullNode : public td::actor::Actor {
   virtual void add_custom_overlay(CustomOverlayParams params, td::Promise<td::Unit> promise) = 0;
   virtual void del_custom_overlay(std::string name, td::Promise<td::Unit> promise) = 0;
 
-  virtual void process_block_broadcast(BlockBroadcast broadcast) = 0;
+  virtual void process_block_broadcast(BlockBroadcast broadcast, bool signatures_checked = false) = 0;
   virtual void process_block_candidate_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
                                                  td::uint32 validator_set_hash, td::BufferSlice data) = 0;
+  virtual void process_shard_block_info_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
+                                                  td::BufferSlice data) = 0;
   virtual void get_out_msg_queue_query_token(td::Promise<std::unique_ptr<ActionToken>> promise) = 0;
 
   virtual void set_validator_telemetry_filename(std::string value) = 0;
 
   virtual void import_fast_sync_member_certificate(adnl::AdnlNodeIdShort local_id,
-                                                    overlay::OverlayMemberCertificate cert) = 0;
+                                                   overlay::OverlayMemberCertificate cert) = 0;
 
   static constexpr td::uint32 max_block_size() {
     return 4 << 20;
@@ -116,7 +121,7 @@ class FullNode : public td::actor::Actor {
   static constexpr td::uint64 max_state_size() {
     return 4ull << 30;
   }
-  enum { broadcast_mode_public = 1, broadcast_mode_private_block = 2, broadcast_mode_custom = 4 };
+  enum { broadcast_mode_public = 1, broadcast_mode_fast_sync = 2, broadcast_mode_custom = 4 };
 
   static constexpr td::int32 MAX_FAST_SYNC_OVERLAY_CLIENTS = 5;
 

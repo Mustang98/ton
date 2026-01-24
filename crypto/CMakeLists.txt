@@ -1,7 +1,3 @@
-if (NOT OPENSSL_FOUND)
-  find_package(OpenSSL REQUIRED)
-endif()
-
 set(TON_CRYPTO_CORE_SOURCE
   Ed25519.cpp
   common/bigint.cpp
@@ -14,7 +10,6 @@ set(TON_CRYPTO_CORE_SOURCE
   openssl/residue.cpp
   openssl/rand.cpp
   vm/boc.cpp
-  vm/boc-compression.cpp
   vm/large-boc-serializer.cpp
   tl/tlblib.cpp
 
@@ -70,7 +65,6 @@ set(TON_CRYPTO_CORE_SOURCE
   vm/cells/PrunnedCell.h
   vm/cells/UsageCell.h
   vm/cells/VirtualCell.h
-  vm/cells/VirtualizationParameters.h
 
   vm/cells.h
   vm/cellslice.h
@@ -87,6 +81,7 @@ set(TON_CRYPTO_CORE_SOURCE
   ellcurve/p256.cpp)
 
 set(TON_CRYPTO_SOURCE
+  vm/boc-compression.cpp
   vm/stack.cpp
   vm/atom.cpp
   vm/continuation.cpp
@@ -220,6 +215,11 @@ set(BLOCK_SOURCE
   block/transaction.h
   block/precompiled-smc/PrecompiledSmartContract.h
   block/precompiled-smc/common.h
+
+  block/validator-set.h
+  block/validator-set.cpp
+  block/signature-set.h
+  block/signature-set.cpp
 )
 
 set(SMC_ENVELOPE_SOURCE

@@ -18,8 +18,9 @@
 */
 #pragma once
 
-#include "archive-slice.hpp"
 #include "interfaces/persistent-state.h"
+
+#include "archive-slice.hpp"
 
 namespace ton {
 
@@ -204,10 +205,10 @@ class ArchiveManager : public td::actor::Actor {
   void deleted_package(PackageId seqno, td::Promise<td::Unit> promise);
   void get_handle_cont(BlockIdExt block_id, PackageId id, td::Promise<BlockHandle> promise);
   void get_handle_finish(BlockHandle handle, td::Promise<BlockHandle> promise);
-  void get_file_short_cont(FileReference ref_id, PackageId idx, td::Promise<td::BufferSlice> promise);
+  void get_temp_file_short_cont(FileReference ref_id, PackageId idx, td::Promise<td::BufferSlice> promise);
 
-  const FileDescription *get_file_desc(ShardIdFull shard, PackageId id, BlockSeqno seqno, UnixTime ts, LogicalTime lt,
-                                       bool force);
+  td::Result<const FileDescription *> get_file_desc(ShardIdFull shard, PackageId id, BlockSeqno seqno, UnixTime ts,
+                                                    LogicalTime lt, bool force);
   const FileDescription *add_file_desc(ShardIdFull shard, PackageId id, BlockSeqno seqno, UnixTime ts, LogicalTime lt);
   void update_desc(FileMap &f, const FileDescription &desc, ShardIdFull shard, BlockSeqno seqno, UnixTime ts,
                    LogicalTime lt);
@@ -222,7 +223,7 @@ class ArchiveManager : public td::actor::Actor {
   PackageId get_max_temp_file_desc_idx();
   PackageId get_prev_temp_file_desc_idx(PackageId id);
 
-  void add_persistent_state_impl(FileReferenceShort const &id, td::Promise<td::Unit> promise,
+  void add_persistent_state_impl(const FileReferenceShort &id, td::Promise<td::Unit> promise,
                                  std::function<void(std::string, td::Promise<std::string>)> create_writer);
   void register_perm_state(FileReferenceShort id);
 

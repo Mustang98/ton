@@ -27,22 +27,22 @@ if [ ! -d "build" ]; then
   mkdir build
   cd build
 else
-  cd build
+  cd build || exit
   rm -rf .ninja* CMakeCache.txt
 fi
 
-export CC=$(which clang-16)
-export CXX=$(which clang++-16)
+export CC=$(which clang-21)
+export CXX=$(which clang++-21)
 
 if [ ! -d "../openssl_3" ]; then
   git clone https://github.com/openssl/openssl ../openssl_3
-  cd ../openssl_3
+  cd ../openssl_3 || exit
   opensslPath=`pwd`
   git checkout openssl-3.1.4
   ./config
   make build_libs -j$(nproc)
   test $? -eq 0 || { echo "Can't compile openssl_3"; exit 1; }
-  cd ../build
+  cd ../build || exit
 else
   opensslPath=$(pwd)/../openssl_3
   echo "Using compiled openssl_3"
@@ -62,10 +62,7 @@ if [ "$with_tests" = true ]; then
 ninja storage-daemon storage-daemon-cli fift func tolk tonlib tonlibjson tonlib-cli \
       validator-engine lite-client validator-engine-console blockchain-explorer \
       generate-random-id json2tlo dht-server http-proxy rldp-http-proxy dht-ping-servers dht-resolve \
-      adnl-proxy create-state emulator test-ed25519 test-bigint \
-      test-vm test-fift test-cells test-smartcont test-net test-tdactor test-tdutils \
-      test-tonlib-offline test-adnl test-dht test-rldp test-rldp2 test-catchain \
-      test-fec test-tddb test-db test-validator-session-state test-emulator proxy-liteserver
+      adnl-proxy create-state emulator proxy-liteserver all-tests
       test $? -eq 0 || { echo "Can't compile ton"; exit 1; }
 else
 ninja storage-daemon storage-daemon-cli fift func tolk tonlib tonlibjson tonlib-cli \
@@ -113,6 +110,6 @@ if [ "$with_artifacts" = true ]; then
 fi
 
 if [ "$with_tests" = true ]; then
-  cd build
+  cd build || exit
   ctest --output-on-failure --timeout 1800
 fi

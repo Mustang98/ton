@@ -34,9 +34,10 @@ class Db : public td::actor::Actor {
   virtual void store_block_data(BlockHandle handle, td::Ref<BlockData> data, td::Promise<td::Unit> promise) = 0;
   virtual void get_block_data(ConstBlockHandle handle, td::Promise<td::Ref<BlockData>> promise) = 0;
 
-  virtual void store_block_signatures(BlockHandle handle, td::Ref<BlockSignatureSet> data,
-                                      td::Promise<td::Unit> promise) = 0;
-  virtual void get_block_signatures(ConstBlockHandle handle, td::Promise<td::Ref<BlockSignatureSet>> promise) = 0;
+  virtual void store_block_signatures(BlockHandle handle, td::Ref<block::BlockSignatureSet> data,
+                                      Ref<block::ValidatorSet> vset, td::Promise<td::Unit> promise) = 0;
+  virtual void get_block_signatures(ConstBlockHandle handle,
+                                    td::Promise<td::Ref<block::BlockSignatureSet>> promise) = 0;
 
   virtual void store_block_proof(BlockHandle handle, td::Ref<Proof> proof, td::Promise<td::Unit> promise) = 0;
   virtual void get_block_proof(ConstBlockHandle handle, td::Promise<td::Ref<Proof>> promise) = 0;
@@ -54,7 +55,7 @@ class Db : public td::actor::Actor {
   virtual void store_block_state_from_data(BlockHandle handle, td::Ref<BlockData> block,
                                            td::Promise<td::Ref<ShardState>> promise) = 0;
   virtual void store_block_state_from_data_preliminary(std::vector<td::Ref<BlockData>> blocks,
-                                                 td::Promise<td::Unit> promise) = 0;
+                                                       td::Promise<td::Unit> promise) = 0;
   virtual void get_block_state(ConstBlockHandle handle, td::Promise<td::Ref<ShardState>> promise) = 0;
   virtual void store_block_state_part(BlockId effective_block, td::Ref<vm::Cell> cell,
                                       td::Promise<td::Ref<vm::DataCell>> promise) = 0;
@@ -65,7 +66,7 @@ class Db : public td::actor::Actor {
                                            td::Promise<td::Unit> promise) = 0;
   virtual void store_persistent_state_file_gen(BlockIdExt block_id, BlockIdExt masterchain_block_id,
                                                PersistentStateType type,
-                                               std::function<td::Status(td::FileFd&)> write_data,
+                                               std::function<td::Status(td::FileFd &)> write_data,
                                                td::Promise<td::Unit> promise) = 0;
   virtual void get_persistent_state_file(BlockIdExt block_id, BlockIdExt masterchain_block_id, PersistentStateType type,
                                          td::Promise<td::BufferSlice> promise) = 0;
@@ -88,7 +89,6 @@ class Db : public td::actor::Actor {
   virtual void store_block_handle(BlockHandle handle, td::Promise<td::Unit> promise) = 0;
   virtual void get_block_handle(BlockIdExt id, td::Promise<BlockHandle> promise) = 0;
 
-  virtual void apply_block(BlockHandle handle, td::Promise<td::Unit> promise) = 0;
   virtual void get_block_by_lt(AccountIdPrefixFull account, LogicalTime lt, td::Promise<ConstBlockHandle> promise) = 0;
   virtual void get_block_by_unix_time(AccountIdPrefixFull account, UnixTime ts,
                                       td::Promise<ConstBlockHandle> promise) = 0;

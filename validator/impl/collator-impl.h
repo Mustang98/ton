@@ -17,24 +17,26 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #pragma once
-#include "block-parse.h"
-#include "interfaces/validator-manager.h"
-#include "shard.hpp"
-#include "top-shard-descr.hpp"
-#include "common/refcnt.hpp"
-#include "vm/cells.h"
-#include "vm/dict.h"
-#include "block/mc-config.h"
-#include "block/block.h"
-#include "block/transaction.h"
-#include "block/block-db.h"
-#include "block/output-queue-merger.h"
-#include "vm/cells/MerkleProof.h"
-#include "vm/cells/MerkleUpdate.h"
 #include <map>
 #include <queue>
+
+#include "block/block-db.h"
+#include "block/block.h"
+#include "block/mc-config.h"
+#include "block/output-queue-merger.h"
+#include "block/transaction.h"
 #include "common/global-version.h"
+#include "common/refcnt.hpp"
+#include "interfaces/validator-manager.h"
+#include "vm/cells.h"
+#include "vm/cells/MerkleProof.h"
+#include "vm/cells/MerkleUpdate.h"
+#include "vm/dict.h"
+
+#include "block-parse.h"
 #include "fabric.h"
+#include "shard.hpp"
+#include "top-shard-descr.hpp"
 
 namespace ton {
 
@@ -76,7 +78,7 @@ class Collator final : public td::actor::Actor {
   std::vector<Ref<BlockData>> prev_block_data;
   Ed25519_PublicKey created_by_;
   Ref<CollatorOptions> collator_opts_;
-  Ref<ValidatorSet> validator_set_;
+  Ref<block::ValidatorSet> validator_set_;
   td::actor::ActorId<ValidatorManager> manager;
   td::Timestamp timeout;
   td::Timestamp queue_cleanup_timeout_, soft_timeout_, medium_timeout_;
@@ -84,6 +86,9 @@ class Collator final : public td::actor::Actor {
   adnl::AdnlNodeIdShort collator_node_id_ = adnl::AdnlNodeIdShort::zero();
   bool skip_store_candidate_ = false;
   Ref<BlockData> optimistic_prev_block_;
+  std::vector<Ref<BlockData>> preloaded_prev_block_data_;
+  std::vector<Ref<vm::Cell>> preloaded_prev_block_state_roots_;
+  bool is_new_consensus_ = false;
   int attempt_idx_;
   bool allow_repeat_collation_ = false;
   ton::BlockSeqno last_block_seqno{0};
@@ -132,6 +137,7 @@ class Collator final : public td::actor::Actor {
   ton::UnixTime now_;
   ton::UnixTime prev_now_;
   ton::UnixTime now_upper_limit_{~0U};
+  td::uint64 now_ms_;
   unsigned out_msg_queue_ops_{}, in_descr_cnt_{}, out_descr_cnt_{};
   Ref<MasterchainStateQ> mc_state_;
   Ref<BlockData> prev_mc_block;
@@ -171,6 +177,7 @@ class Collator final : public td::actor::Actor {
   bool skip_topmsgdescr_{false};
   bool skip_extmsg_{false};
   bool short_dequeue_records_{false};
+  bool allow_same_timestamp_{false};
   td::uint64 overload_history_{0}, underload_history_{0};
   td::uint64 block_size_estimate_{};
   Ref<block::WorkchainInfo> wc_info_;
@@ -343,7 +350,8 @@ class Collator final : public td::actor::Actor {
   bool is_our_address(Ref<vm::CellSlice> addr_ref) const;
   bool is_our_address(ton::AccountIdPrefixFull addr_prefix) const;
   bool is_our_address(const ton::StdSmcAddress& addr) const;
-  void after_get_external_messages(td::Result<std::vector<std::pair<Ref<ExtMessage>, int>>> res, td::PerfLogAction token);
+  void after_get_external_messages(td::Result<std::vector<std::pair<Ref<ExtMessage>, int>>> res,
+                                   td::PerfLogAction token);
   td::Result<bool> register_external_message_cell(Ref<vm::Cell> ext_msg, const ExtMessage::Hash& ext_hash,
                                                   int priority);
   // td::Result<bool> register_external_message(td::Slice ext_msg_boc);

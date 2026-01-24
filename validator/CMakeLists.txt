@@ -1,7 +1,3 @@
-if (NOT OPENSSL_FOUND)
-  find_package(OpenSSL REQUIRED)
-endif()
-
 #add_subdirectory(dummy0)
 add_subdirectory(impl)
 
@@ -27,12 +23,15 @@ set(VALIDATOR_DB_SOURCE
   db/staticfilesdb.hpp
   db/db-utils.cpp
   db/db-utils.h
+  db/db-event-publisher.cpp
+  db/db-event-publisher.hpp
 
   db/package.hpp
   db/package.cpp
 )
 
 set(VALIDATOR_HEADERS
+  types.h
   block-handle.hpp
   get-next-key-blocks.h
 
@@ -49,12 +48,10 @@ set(VALIDATOR_HEADERS
   interfaces/out-msg-queue-proof.h
   interfaces/proof.h
   interfaces/shard.h
-  interfaces/signature-set.h
   interfaces/validator-full-id.h
   interfaces/validator-manager.h
-  interfaces/validator-set.h
   invariants.hpp
-  
+
   import-db-slice.hpp
   import-db-slice-local.hpp
   queue-size-counter.hpp
@@ -110,7 +107,22 @@ set(VALIDATOR_SOURCE
   manager-init.cpp
   manager.cpp
 
-  ${VALIDATOR_DB_SOURCE}
+  consensus/null/consensus.cpp
+  consensus/simplex/bus.cpp
+  consensus/simplex/candidate-resolver.cpp
+  consensus/simplex/certificate.cpp
+  consensus/simplex/consensus.cpp
+  consensus/simplex/pool.cpp
+  consensus/simplex/votes.cpp
+  consensus/block-accepter.cpp
+  consensus/block-producer.cpp
+  consensus/block-validator.cpp
+  consensus/bridge.cpp
+  consensus/bus.cpp
+  consensus/private-overlay.cpp
+  consensus/stats-collector.cpp
+  consensus/types.cpp
+  consensus/utils.cpp
 
   ${VALIDATOR_HEADERS}
 )
@@ -131,8 +143,6 @@ set(DISK_VALIDATOR_SOURCE
 
   manager-init.cpp
   manager-disk.cpp
-
-  ${VALIDATOR_DB_SOURCE}
 )
 
 set(HARDFORK_VALIDATOR_SOURCE
@@ -151,8 +161,6 @@ set(HARDFORK_VALIDATOR_SOURCE
 
   manager-init.cpp
   manager-hardfork.cpp
-
-  ${VALIDATOR_DB_SOURCE}
 )
 
 set(FULL_NODE_SOURCE
@@ -165,8 +173,8 @@ set(FULL_NODE_SOURCE
   full-node-master.h
   full-node-master.hpp
   full-node-master.cpp
-  full-node-private-overlay.hpp
-  full-node-private-overlay.cpp
+  full-node-custom-overlays.hpp
+  full-node-custom-overlays.cpp
   full-node-serializer.hpp
   full-node-serializer.cpp
   full-node-fast-sync-overlays.hpp
@@ -188,43 +196,47 @@ set(FULL_NODE_SOURCE
   net/get-next-key-blocks.cpp
 )
 
+add_library(validator-db OBJECT ${VALIDATOR_DB_SOURCE})
+target_include_directories(validator-db PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+target_link_libraries(validator-db PUBLIC tdactor adnl rldp tl_api dht tdfec overlay catchain validatorsession ton_db)
+
 add_library(validator STATIC ${VALIDATOR_SOURCE})
 add_library(validator-disk STATIC ${DISK_VALIDATOR_SOURCE})
 add_library(validator-hardfork STATIC ${HARDFORK_VALIDATOR_SOURCE})
 add_library(full-node STATIC ${FULL_NODE_SOURCE})
 
-target_include_directories(validator PUBLIC 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/.. 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/../crypto 
+target_include_directories(validator PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/..
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/../crypto
   ${OPENSSL_INCLUDE_DIR}
 )
 
-target_include_directories(validator-disk PUBLIC 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/.. 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/../crypto 
+target_include_directories(validator-disk PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/..
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/../crypto
   ${OPENSSL_INCLUDE_DIR}
   )
 
-target_include_directories(validator-hardfork PUBLIC 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/.. 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/../crypto 
+target_include_directories(validator-hardfork PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/..
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/../crypto
   ${OPENSSL_INCLUDE_DIR}
   )
 
-target_include_directories(full-node PUBLIC 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/.. 
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/../crypto 
+target_include_directories(full-node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/..
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>/../crypto
   ${OPENSSL_INCLUDE_DIR}
   )
 
-target_link_libraries(validator PRIVATE tdactor adnl rldp tl_api dht tdfec overlay catchain validatorsession ton_db)
+target_link_libraries(validator PRIVATE validator-db)
 
-target_link_libraries(validator-disk PRIVATE tdactor adnl rldp tl_api dht tdfec overlay catchain validatorsession ton_db)
+target_link_libraries(validator-disk PRIVATE validator-db)
 
-target_link_libraries(validator-hardfork PRIVATE tdactor adnl rldp tl_api dht tdfec overlay catchain validatorsession ton_db)
+target_link_libraries(validator-hardfork PRIVATE validator-db)
 
 target_link_libraries(full-node PRIVATE tdactor adnl rldp rldp2 tl_api dht tdfec overlay catchain validatorsession ton_db)

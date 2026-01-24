@@ -18,8 +18,9 @@
 */
 #pragma once
 
-#include "adnl-network-manager.h"
 #include "crypto/common/refcnt.hpp"
+
+#include "adnl-network-manager.h"
 
 namespace ton {
 
@@ -41,6 +42,9 @@ class AdnlAddressImpl : public td::CntObject {
       std::unique_ptr<AdnlNetworkConnection::Callback> callback) const = 0;
   virtual bool is_reverse() const {
     return false;
+  }
+  virtual td::Result<td::IPAddress> to_ip_address() const {
+    return td::Status::Error("not an ip");
   }
 
   static td::Ref<AdnlAddressImpl> create(const tl_object_ptr<ton_api::adnl_Address> &addr);

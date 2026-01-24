@@ -14,15 +14,16 @@
     You should have received a copy of the GNU Lesser General Public License
     along with TON Blockchain Library.  If not, see <http://www.gnu.org/licenses/>.
 */
-#include "collator-node.hpp"
-#include "ton/ton-tl.hpp"
-#include "fabric.h"
-#include "block-auto.h"
-#include "block-db.h"
-#include "td/utils/lz4.h"
-#include "checksum.h"
 #include "impl/collator-impl.h"
 #include "impl/shard.hpp"
+#include "td/utils/lz4.h"
+#include "ton/ton-tl.hpp"
+
+#include "block-auto.h"
+#include "block-db.h"
+#include "checksum.h"
+#include "collator-node.hpp"
+#include "fabric.h"
 #include "utils.hpp"
 
 namespace ton::validator {
@@ -126,7 +127,7 @@ void CollatorNode::new_masterchain_block_notification(td::Ref<MasterchainState> 
 
     validator_adnl_ids_.clear();
     for (int next : {-1, 0, 1}) {
-      td::Ref<ValidatorSet> vals = state->get_total_validator_set(next);
+      td::Ref<block::ValidatorSet> vals = state->get_total_validator_set(next);
       if (vals.not_null()) {
         for (const ValidatorDescr& descr : vals->export_vector()) {
           if (descr.addr.is_zero()) {

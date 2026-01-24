@@ -25,7 +25,7 @@ enum EFits8Bits {
 }
 
 const MAX_UINT = 115792089237316195423570985008687907853269984665640564039457584007913129639935
-    
+
 enum EMinMax {
     MIN_INT = -115792089237316195423570985008687907853269984665640564039457584007913129639935 - 1,
     MAX_INT = +115792089237316195423570985008687907853269984665640564039457584007913129639935,
@@ -39,7 +39,7 @@ enum E0Max {
 struct WithEnumsUnion {
     u: EFits8Bits | EStartFromM2
 }
-    
+
 enum Role: int8 {
     Admin, User,
 }
@@ -52,6 +52,20 @@ enum EncodedVari : varint16 {
     ONE = 1,
     TWO = 2,
     MANY = 1<<100,
+}
+
+enum EOfCrc32: uint32 {
+    hello = stringCrc32("hello")
+    world = stringCrc32("world")
+}
+
+enum Amounts: coins {
+    zero = ton("0"),
+    nanoton = 1,
+    small = ton("0.0001"),
+    more = ton("0.05"),
+    more1,
+    one = ton("1"),
 }
 
 
@@ -79,7 +93,7 @@ fun test3() {
 fun test4(v: EFillsAllUint3) {
     return EFillsAllUint3.fromCell(v.toCell())
 }
-    
+
 @method_id(105)
 fun test5(s: slice) {
     return EStartFromM2.fromSlice(s, {assertEndAfterReading: false})
@@ -131,7 +145,7 @@ fun test10() {
         w3.u is EStartFromM2 && w3.u == EStartFromM2.ZERO,
         w4.u is EStartFromM2 && w4.u == EStartFromM2.P3,
         w4.u is EFits8Bits && w4.u == EFits8Bits.E220,
-    ) 
+    )
 }
 
 @method_id(111)
@@ -149,8 +163,34 @@ fun test12() {
     return (c3_one, c3_one == EncodedVari.MANY, c3_many == EncodedVari.MANY);
 }
 
+@method_id(113)
+fun test13() {
+    return (
+        EOfCrc32.world.toCell().beginParse().loadUint(32),
+        EOfCrc32.fromSlice(stringHexToSlice("3610a686")) == EOfCrc32.hello
+    )
+}
+
+@method_id(114)
+fun test14() {
+    var ex = 0;
+    try { ex = Amounts.fromSlice(stringHexToSlice("32dc6c08_")) as int }
+    catch (no) { ex = no }
+    return (
+        Amounts.one.toCell().hash() == 101872335586569371892273454115677983665588664548247484580448471612407076042677,
+        Amounts.more.toCell().hash() == 82789494441528276360388239783934598298305390626975708015812230018243378632521,
+        beginCell().storeAny(Amounts.zero).bitsCount(),
+        beginCell().storeAny(Amounts.more).bitsCount(),
+        Amounts.fromSlice(stringHexToSlice("402faf080")) as int64,
+        Amounts.fromSlice(stringHexToSlice("402faf080")) as coins == ton("0.05"),
+        Amounts.fromSlice(stringHexToSlice("402faf080")) == Amounts.more,
+        Amounts.more1,
+        ex,
+    )
+}
+
 fun main() {
-    
+
 }
 
 /**
@@ -174,10 +214,12 @@ fun main() {
 @testcase | 110 |               | -1 -1 -1 -1 0
 @testcase | 111 |               | 0 0 0 1 -1 0 0 -1
 @testcase | 112 |               | 1 0 -1
+@testcase | 113 |               | 980881731 -1
+@testcase | 114 |               | -1 -1 4 36 50000000 -1 -1 50000001 5
 
 @fif_codegen
 """
-  test1() PROC:<{ 
+  test1() PROC:<{
     b{00} PUSHSLICE
     2 LDU
     OVER
@@ -191,8 +233,7 @@ fun main() {
   test4() PROC:<{               //  v
     NEWC                        //  v b
     3 STU                       //  b
-    ENDC                        //  '4
-    CTOS                        //  s
+    BTOS                        //  s
     3 LDU                       //  '9 s
     ENDS                        //  '9
   }>

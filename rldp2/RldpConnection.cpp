@@ -17,20 +17,17 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 
-#include "RldpConnection.h"
-#include "rldp.hpp"
-
-#include "td/utils/overloaded.h"
-#include "td/utils/Random.h"
-#include "td/utils/tl_helpers.h"
-
-#include "tl-utils/tl-utils.hpp"
 #include "auto/tl/ton_api.h"
 #include "auto/tl/ton_api.hpp"
-
 #include "common/errorcode.h"
-
 #include "td/actor//actor.h"
+#include "td/utils/Random.h"
+#include "td/utils/overloaded.h"
+#include "td/utils/tl_helpers.h"
+#include "tl-utils/tl-utils.hpp"
+
+#include "RldpConnection.h"
+#include "rldp.hpp"
 
 namespace ton {
 namespace rldp2 {
@@ -105,8 +102,9 @@ void RldpConnection::set_receive_limits(TransferId transfer_id, td::Timestamp ti
 RldpConnection::RldpConnection() {
   bdw_stats_.on_update(td::Timestamp::now(), 0);
 
-  rtt_stats_.windowed_min_rtt = 0.5;
-  bdw_stats_.windowed_max_bdw = 10;
+  // Conservative initial estimates - BBR will ramp up based on measurements
+  rtt_stats_.windowed_min_rtt = RldpSender::Config::DEFAULT_INITIAL_RTT;
+  bdw_stats_.windowed_max_bdw = 100;
 }
 
 void RldpConnection::send(TransferId transfer_id, td::BufferSlice data, td::Timestamp timeout) {

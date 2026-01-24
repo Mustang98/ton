@@ -18,11 +18,11 @@
 */
 #pragma once
 
-#include "td/utils/common.h"
-#include "td/utils/Status.h"
-
 #include <type_traits>
 #include <utility>
+
+#include "td/utils/Status.h"
+#include "td/utils/common.h"
 
 namespace td {
 
@@ -90,15 +90,15 @@ class optional {
   }
 
   template <class... ArgsT>
-  void emplace(ArgsT &&... args) {
+  void emplace(ArgsT &&...args) {
     impl_.emplace(std::forward<ArgsT>(args)...);
   }
 
-  bool operator==(const optional& other) const {
+  bool operator==(const optional &other) const {
     return (bool)*this == (bool)other && (!(bool)*this || value() == other.value());
   }
 
-  bool operator!=(const optional& other) const {
+  bool operator!=(const optional &other) const {
     return !(*this == other);
   }
 
@@ -118,5 +118,13 @@ struct optional<T, false> : optional<T, true> {
   optional &operator=(optional &&) = default;
   ~optional() = default;
 };
+
+template <class T>
+StringBuilder &operator<<(StringBuilder &sb, const optional<T> &v) {
+  if (v) {
+    return sb << "Some{" << v.value() << "}";
+  }
+  return sb << "None";
+}
 
 }  // namespace td

@@ -26,7 +26,7 @@ struct Point3d {
 }
 
 struct DataWithCell {
-    a: address
+    a: address?
     v: coins
     p: Cell<Point>?
     payload: cell? = null
@@ -117,7 +117,7 @@ fun test6() {
     m.set(2, 20);
     m.set(3, 30);
     return (
-        m.findKeyGreater(1).getKey(), m.findKeyGreaterOrEqual(1).getKey(), 
+        m.findKeyGreater(1).getKey(), m.findKeyGreaterOrEqual(1).getKey(),
         m.findKeyLess(3).getKey(), m.findKeyLessOrEqual(3).getKey(),
         m.findKeyLess(3).loadValue(), m.findKeyLessOrEqual(3).loadValue(),
         m.findKeyLessOrEqual(3).isFound, m.findKeyGreater(4).isFound,
@@ -135,10 +135,15 @@ fun test7() {
 
 @method_id(108)
 fun test8() {
-    var (a, m: map<int8, address>) = (1, createEmptyMap());
-    val prev1 = m.setAndGetPrevious(a, createAddressNone());
+    var (a, m: map<int8, address?>, m2: map<int8, any_address>) = (1, createEmptyMap(), createEmptyMap());
+    val prev1 = m.setAndGetPrevious(a, null);
     val prev2 = m.setAndGetPrevious(a, address("EQCRDM9h4k3UJdOePPuyX40mCgA4vxge5Dc5vjBR8djbEKC5"));
-    return (prev1.isFound, prev2.isFound, prev2.loadValue().isNone(), prev2.loadValue().isNone(), m.get(a).loadValue().getWorkchain());
+    val prev3 = m2.setAndGetPrevious(a, createAddressNone());
+    val prev4 = m2.setAndGetPrevious(a, address("EQCRDM9h4k3UJdOePPuyX40mCgA4vxge5Dc5vjBR8djbEKC5") as any_address);
+    return (
+        prev1.isFound, prev2.isFound, prev2.loadValue() == null, prev2.loadValue() == null, m.get(a).loadValue()!.getWorkchain(),
+        prev3.isFound, prev4.isFound, prev4.loadValue().isNone(), prev4.loadValue().isNone(), m2.get(a).loadValue()!.getWorkchain(),
+    );
 }
 
 @method_id(109)
@@ -280,18 +285,18 @@ fun test22() {
 @method_id(123)
 fun test23() {
     var m: map<Point, DataWithCell> = createEmptyMap();
-    val p1 = m.setAndGetPrevious({x:1,y:1}, {a: createAddressNone(), v: ton("0.05"), p: Point{x:10,y:10}.toCell(), payload: null});
-    val p2 = m.setAndGetPrevious({x:1,y:1}, {a: createAddressNone(), v: ton("0.1"), p: null, payload: createEmptyCell()});
-    return (p1.isFound, p2.isFound, p2.loadValue().p!.load(), m.mustGet({x:1,y:1}).a.isNone(), m.get({x:1,y:1}).loadValue().payload.depth());
+    val p1 = m.setAndGetPrevious({x:1,y:1}, {a: null, v: ton("0.05"), p: Point{x:10,y:10}.toCell(), payload: null});
+    val p2 = m.setAndGetPrevious({x:1,y:1}, {a: null, v: ton("0.1"), p: null, payload: createEmptyCell()});
+    return (p1.isFound, p2.isFound, p2.loadValue().p!.load(), m.mustGet({x:1,y:1}).a == null, m.get({x:1,y:1}).loadValue().payload.depth());
 }
 
 @method_id(124)
 fun test24() {
     var m = createEmptyMap<Point, DataWithCell>();
     val p1 = m.deleteAndGetDeleted({x: 1, y: 1});
-    m.set({x: 3, y: 3}, {a: createAddressNone(), v: ton("0.05"), p: Point{x:30,y:30}.toCell(), payload: createEmptyCell()});
-    m.set({x: 1, y: 1}, {a: createAddressNone(), v: ton("0.05"), p: Point{x:10,y:10}.toCell(), payload: null});
-    m.set({x: 2, y: 2}, {a: createAddressNone(), v: ton("0.05"), p: null, payload: null});
+    m.set({x: 3, y: 3}, {a: null, v: ton("0.05"), p: Point{x:30,y:30}.toCell(), payload: createEmptyCell()});
+    m.set({x: 1, y: 1}, {a: null, v: ton("0.05"), p: Point{x:10,y:10}.toCell(), payload: null});
+    m.set({x: 2, y: 2}, {a: null, v: ton("0.05"), p: null, payload: null});
     val k2 = m.findKeyGreaterOrEqual({x: 2, y: 2}).getKey();
     var r = m.findFirst();
     var t = createEmptyTuple();
@@ -319,7 +324,7 @@ fun test26() {
     val f2 = m.deleteAndGetDeleted(1);
     val f3 = m.setAndGetPrevious(1, stringHexToSlice("01010101"));
     return (
-        f1.isFound, f2.isFound, f3.isFound, 
+        f1.isFound, f2.isFound, f3.isFound,
         f1.loadValue().remainingBitsCount(), f2.loadValue().remainingBitsCount(),
         m.mustGet(1).remainingBitsCount(),
     );
@@ -350,13 +355,13 @@ fun test28() {
 @method_id(129)
 fun test29() {
     var m = createEmptyMap<int32, slice>();
-    val a1 = m.addIfNotExists(1, DataWithCell{a: createAddressNone(), v: 0, p: null, payload: null}.toCell().beginParse());
-    val a2 = m.addIfNotExists(2, DataWithCell{a: createAddressNone(), v: 0, p: Point{x:20,y:20}.toCell(), payload: null}.toCell().beginParse());
-    val a3 = m.addIfNotExists(3, DataWithCell{a: createAddressNone(), v: 0, p: Point{x:30,y:30}.toCell(), payload: createEmptyCell()}.toCell().beginParse());
+    val a1 = m.addIfNotExists(1, DataWithCell{a: null, v: 0, p: null, payload: null}.toCell().beginParse());
+    val a2 = m.addIfNotExists(2, DataWithCell{a: null, v: 0, p: Point{x:20,y:20}.toCell(), payload: null}.toCell().beginParse());
+    val a3 = m.addIfNotExists(3, DataWithCell{a: null, v: 0, p: Point{x:30,y:30}.toCell(), payload: createEmptyCell()}.toCell().beginParse());
     val r4 = m.replaceAndGetPrevious(4, "");
     return (
-        a1, a2, a3, r4, 
-        DataWithCell.fromSlice(m.mustGet(2)).payload, 
+        a1, a2, a3, r4,
+        DataWithCell.fromSlice(m.mustGet(2)).payload,
         m.get(3).loadValue().loadAny<DataWithCell>().p!.load(),
         m.get(3).loadValue().remainingRefsCount(),
         m.findLast().getKey(),
@@ -431,14 +436,14 @@ fun test35() {
     assert (!f1.isFound) throw 123;
     m.get(1).loadValue().set(10, 100);
     assert (m.mustGet(1).isEmpty()) throw 123;      // the previous set() changed a copy
-    
+
     var nested = createEmptyMap<int8, int32>();
     nested.set(1,10).set(2, 20);
     m.replaceIfExists(1, nested);
     nested.set(3, 30);
     assert (nested.calculateSize() == 3) throw 123;
     assert (m.mustGet(1).calculateSize() == 2) throw 123;
-    
+
     val (k1, v2) = (m.mustGet(1).findFirst().getKey(), m.get(1).loadValue().findLast().loadValue());
     val s1 = m.findFirst().loadValue().calculateSize();
     m.mustGet(1).delete(10);
@@ -495,13 +500,13 @@ fun test39() {
 @method_id(140)
 fun test40() {
     var `m!empty` = createEmptyMap() as map<int32, int64>?;
-    var `m!filled` = createEmptyMap() as map<int32, int64>?;
+    var `m filled` = createEmptyMap() as map<int32, int64>?;
     var `m_null` = null as map<int32, int64>?;
 
-    `m!filled`!.set(10, 20);
+    `m filled`!.set(10, 20);
     return (
-        `m!empty` == null, `m!filled` == null, `m_null` == null, 777,
-        `m!empty`!.isEmpty(), `m!filled`!.isEmpty(), 777,
+        `m!empty` == null, `m filled` == null, `m_null` == null, 777,
+        `m!empty`!.isEmpty(), `m filled`!.isEmpty(), 777,
         `m!empty`, `m_null`,
     );
 }
@@ -515,9 +520,26 @@ fun test41() {
 
     val k7 = m.get(-7);
     return (
-        m.exists(8), m.mustGet(111) == HashMode.TotalHash, 
+        m.exists(8), m.mustGet(111) == HashMode.TotalHash,
         k7.isFound, k7.loadValue() == HashMode.NoHash, k7.loadValue() == HashMode.PartialHash
     );
+}
+
+@method_id(142)
+fun test42(dyn: int) {
+    var m = createEmptyMap<int8, int8>();
+    var t = createEmptyTuple();
+
+    try { m.mustGet(1, 123); }
+    catch (ex) { t.push(ex) }
+    try { m.mustGet(1, 12345); }
+    catch (ex) { t.push(ex) }
+    try { m.mustGet(1, dyn); }
+    catch (ex) { t.push(ex) }
+    try { m.mustGet(1, dyn * 10); }
+    catch (ex) { t.push(ex) }
+
+    return t;
 }
 
 
@@ -534,7 +556,7 @@ fun main() {
 @testcase | 105 |            | [ 1 10 2 20 3 30 30 30 20 10 ]
 @testcase | 106 |            | 2 1 2 3 20 30 -1 0
 @testcase | 107 |            | -1 0 0
-@testcase | 108 |            | 0 -1 -1 -1 0
+@testcase | 108 |            | 0 -1 -1 -1 0 0 -1 -1 -1 0
 @testcase | 109 |            | -1 50000000 (null) 0 10000000
 @testcase | 110 |            | -1 0 1024 0 -1 20
 @testcase | 111 |            | -1 -1 (null) 1 -1 (null) (null) 0
@@ -568,10 +590,11 @@ fun main() {
 @testcase | 139 |            | 0 -1 2
 @testcase | 140 |            | 0 0 -1 777 -1 0 777 (null) typeid-1 (null) 0
 @testcase | 141 |            | 0 -1 -1 0 -1
+@testcase | 142 | 80         | [ 123 12345 80 800 ]
 
 @fif_codegen
 """
-  test1() PROC:<{               // 
+  test1() PROC:<{               //
     NEWDICT                     //  m
     1 PUSHINT                   //  m '2=1
     x{0000000a} PUSHSLICE
@@ -615,7 +638,7 @@ fun main() {
     SWAP
     267 PUSHINT
     DICTGET
-    9 THROWIFNOT 
+    9 THROWIFNOT
     8 LDI
     ENDS
   }>
@@ -623,7 +646,7 @@ fun main() {
 
 @fif_codegen
 """
-  test16() PROC:<{ 
+  test16() PROC:<{
     NEWDICT
     100 PUSHINT
     x{0a14} PUSHSLICE
@@ -634,7 +657,7 @@ fun main() {
 
 @fif_codegen
 """
-  test25() PROC:<{              // 
+  test25() PROC:<{              //
     NEWDICT                     //  m
     1 PUSHINT                   //  m '2=1
     x{0101} PUSHSLICE           //  m '2=1 '3
@@ -646,7 +669,7 @@ fun main() {
 
 @fif_codegen
 """
-  test30() PROC:<{ 
+  test30() PROC:<{
     NEWDICT
     1 PUSHINT
     <b b> PUSHREF
@@ -657,7 +680,7 @@ fun main() {
 
 @fif_codegen
 """
-  test33() PROC:<{ 
+  test33() PROC:<{
     NEWDICT
     123 PUSHINT
     x{0a0a} PUSHSLICE
@@ -691,7 +714,7 @@ fun main() {
 
 @fif_codegen
 """
-  test36() PROC:<{              // 
+  test36() PROC:<{              //
     x{9FFDE075922FCD6EC7F0A0F3E32D6828C8AE03395763E4C5ECF19503052F1829F45_} PUSHSLICE   //  k
     NEWDICT                     //  k m
     x{0000000a} PUSHSLICE

@@ -25,40 +25,35 @@
 
     Copyright 2019-2020 Telegram Systems LLP
 */
-#include "auto/tl/tonlib_api.h"
-#include "block/block.h"
-#include "common/bigint.hpp"
-#include "common/refint.h"
-#include "td/actor/actor.h"
-
-#include "td/actor/common.h"
-#include "td/utils/Time.h"
-#include "td/utils/filesystem.h"
-#include "td/utils/OptionParser.h"
-#include "td/utils/overloaded.h"
-#include "td/utils/Parser.h"
-#include "td/utils/port/signals.h"
-#include "td/utils/port/path.h"
-#include "td/utils/Random.h"
-#include "td/utils/as.h"
-
-#include "terminal/terminal.h"
-
-#include "tonlib/TonlibClient.h"
-#include "tonlib/TonlibCallback.h"
-
-#include "smc-envelope/ManualDns.h"
-#include "smc-envelope/PaymentChannel.h"
-
-#include "auto/tl/tonlib_api.hpp"
-
-#include "vm/boc.h"
-#include "vm/cells/CellBuilder.h"
-#include "lite-client/ext-client.h"
-
 #include <cinttypes>
 #include <iostream>
 #include <map>
+
+#include "auto/tl/tonlib_api.h"
+#include "auto/tl/tonlib_api.hpp"
+#include "block/block.h"
+#include "common/bigint.hpp"
+#include "common/refint.h"
+#include "lite-client/ext-client.h"
+#include "smc-envelope/ManualDns.h"
+#include "smc-envelope/PaymentChannel.h"
+#include "td/actor/actor.h"
+#include "td/actor/common.h"
+#include "td/utils/OptionParser.h"
+#include "td/utils/Parser.h"
+#include "td/utils/Random.h"
+#include "td/utils/Time.h"
+#include "td/utils/as.h"
+#include "td/utils/filesystem.h"
+#include "td/utils/overloaded.h"
+#include "td/utils/port/path.h"
+#include "td/utils/port/signals.h"
+#include "terminal/terminal.h"
+#include "tonlib/TonlibCallback.h"
+#include "tonlib/TonlibClient.h"
+#include "vm/boc.h"
+#include "vm/cells/CellBuilder.h"
+
 #include "git.h"
 
 using tonlib_api::make_object;
@@ -230,14 +225,14 @@ class TonlibCli : public td::actor::Actor {
         td::actor::ActorShared<> parent_;
       };
       ref_cnt_++;
-      raw_client_ = liteclient::ExtClient::create(config.lite_servers,
-                                                  td::make_unique<Callback>(td::actor::actor_shared()));
+      raw_client_ =
+          liteclient::ExtClient::create(config.lite_servers, td::make_unique<Callback>(td::actor::actor_shared()));
     }
 
     auto config = !options_.config.empty()
-                  ? make_object<tonlib_api::config>(options_.config, options_.name,
-                                                    options_.use_callbacks_for_network, options_.ignore_cache)
-                  : nullptr;
+                      ? make_object<tonlib_api::config>(options_.config, options_.name,
+                                                        options_.use_callbacks_for_network, options_.ignore_cache)
+                      : nullptr;
 
     tonlib_api::object_ptr<tonlib_api::KeyStoreType> ks_type;
     if (options_.in_memory) {
@@ -284,7 +279,7 @@ class TonlibCli : public td::actor::Actor {
     }
   }
   void tear_down() override {
-    td::actor::SchedulerContext::get()->stop();
+    td::actor::SchedulerContext::get().stop();
   }
 
   void on_wait() {
@@ -378,8 +373,10 @@ class TonlibCli : public td::actor::Actor {
       td::TerminalIO::out() << "runmethod <addr> <name> <params>...\tRuns GET method <name> of account "
                                "<addr> with specified parameters\n";
       td::TerminalIO::out() << "getstate <key_id>\tget state of wallet with requested key\n";
-      td::TerminalIO::out() << "getstatebytransaction <key_id> <lt> <hash>\tget state of wallet with requested key after transaction with local time <lt> and hash <hash> (base64url)\n";
-      td::TerminalIO::out() << "getconfig <param>\tshow specified configuration parameter from the latest masterchain state\n";
+      td::TerminalIO::out() << "getstatebytransaction <key_id> <lt> <hash>\tget state of wallet with requested key "
+                               "after transaction with local time <lt> and hash <hash> (base64url)\n";
+      td::TerminalIO::out()
+          << "getconfig <param>\tshow specified configuration parameter from the latest masterchain state\n";
       td::TerminalIO::out() << "guessrevision <key_id>\tsearch of existing accounts corresponding to the given key\n";
       td::TerminalIO::out() << "guessaccount <key_id>\tsearch of existing accounts corresponding to the given key\n";
       td::TerminalIO::out() << "getaddress <key_id>\tget address of wallet with requested key\n";
@@ -1028,8 +1025,8 @@ class TonlibCli : public td::actor::Actor {
         TRY_RESULT_PROMISE(promise, data, tonlib::to_tonlib_api(action.data.value()));
         sb << action.data.value();
         TRY_STATUS_PROMISE(promise, std::move(error));
-        td::TerminalIO::out() << "Set dns entry: " << action.name << ":" << action.category << " "
-                              << sb.as_cslice() << "\n";
+        td::TerminalIO::out() << "Set dns entry: " << action.name << ":" << action.category << " " << sb.as_cslice()
+                              << "\n";
         actions.push_back(make_object<tonlib_api::dns_actionSet>(
             make_object<tonlib_api::dns_entry>(action.name, action.category, std::move(data))));
       }
@@ -1936,11 +1933,26 @@ class TonlibCli : public td::actor::Actor {
   void run_get_masterchain_block_signatures(td::Slice seqno_s, td::Promise<td::Unit> promise) {
     TRY_RESULT_PROMISE(promise, seqno, td::to_integer_safe<td::int32>(seqno_s));
     send_query(make_object<tonlib_api::blocks_getMasterchainBlockSignatures>(seqno), promise.wrap([](auto signatures) {
-      td::TerminalIO::out() << "Signatures: " << signatures->signatures_.size() << "\n";
-      for (const auto& s : signatures->signatures_) {
-        td::TerminalIO::out() << "  " << s->node_id_short_ << " : " << td::base64_encode(td::Slice(s->signature_))
-                              << "\n";
-      }
+      ton::tonlib_api::downcast_call(
+          *signatures,
+          td::overloaded(
+              [&](const tonlib_api::blocks_blockSignatures& obj) {
+                td::TerminalIO::out() << "Ordinary signatures: " << obj.signatures_.size() << "\n";
+                for (const auto& s : obj.signatures_) {
+                  td::TerminalIO::out() << "  " << s->node_id_short_ << " : "
+                                        << td::base64_encode(td::Slice(s->signature_)) << "\n";
+                }
+              },
+              [&](const tonlib_api::blocks_blockSignatures_simplex& obj) {
+                td::TerminalIO::out() << "Simplex signatures: " << obj.signatures_.size() << "\n";
+                for (const auto& s : obj.signatures_) {
+                  td::TerminalIO::out() << "  " << s->node_id_short_ << " : "
+                                        << td::base64_encode(td::Slice(s->signature_)) << "\n";
+                }
+                td::TerminalIO::out() << "session_id = " << td::base64_encode(obj.session_id_.as_slice()) << "\n";
+                td::TerminalIO::out() << "slot = " << obj.slot_;
+                td::TerminalIO::out() << "candidate = " << td::base64_encode(td::Slice(obj.candidate_)) << "\n";
+              }));
       return td::Unit();
     }));
   }
@@ -2233,7 +2245,8 @@ int main(int argc, char* argv[]) {
     return (verbosity >= 0 && verbosity <= 20) ? td::Status::OK() : td::Status::Error("verbosity must be 0..20");
   });
   p.add_option('V', "version", "show tonlib-cli build information", [&]() {
-    std::cout << "tonlib-cli build information: [ Commit: " << GitMetadata::CommitSHA1() << ", Date: " << GitMetadata::CommitDate() << "]\n";
+    std::cout << "tonlib-cli build information: [ Commit: " << GitMetadata::CommitSHA1()
+              << ", Date: " << GitMetadata::CommitDate() << "]\n";
     std::exit(0);
   });
   p.add_checked_option('C', "config-force", "set lite server config, drop config related blockchain cache",
