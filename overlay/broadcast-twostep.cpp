@@ -33,6 +33,7 @@
 #include "td/fec/raptorq/Encoder.h"
 #include "td/utils/List.h"
 #include "td/utils/Status.h"
+#include "td/utils/Timer.h"
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
 #include "td/utils/int_types.h"
@@ -124,6 +125,7 @@ BroadcastsTwostep::~BroadcastsTwostep() = default;
 
 void BroadcastsTwostep::send(OverlayImpl *overlay, PublicKeyHash send_as, td::BufferSlice data, td::uint32 flags) {
   std::size_t data_size = data.size();
+  td::RealCpuTimer total_timer;
   td::Bits256 data_hash = sha256_bits256(data.as_slice());
   td::uint32 date = static_cast<td::uint32>(td::Clocks::system());
   std::vector<adnl::AdnlNodeIdShort> other_nodes;
@@ -150,7 +152,10 @@ void BroadcastsTwostep::send(OverlayImpl *overlay, PublicKeyHash send_as, td::Bu
       return;
     }
     auto encoder = R.move_as_ok();
+    td::RealCpuTimer precalc_timer;
     encoder->precalc();
+    auto precalc_time = precalc_timer.elapsed_both();
+    td::RealCpuTimer gen_timer;
     for (std::size_t i = 0; i < other_nodes.size(); i++) {
       td::uint32 seqno = static_cast<std::uint32_t>(i);
       td::BufferSlice part(part_size);
@@ -177,6 +182,15 @@ void BroadcastsTwostep::send(OverlayImpl *overlay, PublicKeyHash send_as, td::Bu
       td::actor::send_closure(overlay->keyring(), &keyring::Keyring::sign_add_get_public_key, send_as,
                               std::move(to_sign), std::move(P));
     }
+    auto gen_time = gen_timer.elapsed_both();
+    auto total_time = total_timer.elapsed_both();
+    LOG(WARNING) << "PERF twostep send fec ts=" << td::Clocks::system() << " bcast_id=" << broadcast_id.to_hex()
+                 << " data_size=" << data_size << " part_size=" << part_size << " recipients=" << other_nodes.size()
+                 << " flags=" << flags
+                 << " precalc_real=" << precalc_time.real << " precalc_cpu=" << precalc_time.cpu
+                 << " gen_real=" << gen_time.real << " gen_cpu=" << gen_time.cpu
+                 << " total_real=" << total_time.real << " total_cpu=" << total_time.cpu
+                 << " sign_requests=" << other_nodes.size();
   } else {
     broadcast_id = get_tl_object_sha_bits256(create_tl_object<ton_api::overlay_broadcastTwostep_id>(
         flags, date, send_as.bits256_value(), overlay->local_id().bits256_value(), data_hash,
@@ -198,6 +212,10 @@ void BroadcastsTwostep::send(OverlayImpl *overlay, PublicKeyHash send_as, td::Bu
     });
     td::actor::send_closure(overlay->keyring(), &keyring::Keyring::sign_add_get_public_key, send_as, std::move(to_sign),
                             std::move(P));
+    auto total_time = total_timer.elapsed_both();
+    LOG(WARNING) << "PERF twostep send simple ts=" << td::Clocks::system() << " bcast_id=" << broadcast_id.to_hex()
+                 << " data_size=" << data_size << " recipients=" << other_nodes.size() << " flags=" << flags
+                 << " total_real=" << total_time.real << " total_cpu=" << total_time.cpu << " sign_requests=1";
   }
   if (!overlay->is_delivered(broadcast_id)) {
     overlay->register_delivered_broadcast(broadcast_id);
@@ -269,12 +287,18 @@ static td::Result<BroadcastCheckResult> check_signature_and_certificate(
 
 void BroadcastsTwostep::rebroadcast(OverlayImpl *overlay, const adnl::AdnlNodeIdShort &bcast_src_adnl_id,
                                     const td::BufferSlice &data) {
+  td::RealCpuTimer timer;
+  std::size_t peers = 0;
   overlay->iterate_all_peers([&](const adnl::AdnlNodeIdShort &peer_id, OverlayPeer &) {
     if (peer_id != bcast_src_adnl_id && peer_id != overlay->local_id()) {
+      ++peers;
       td::actor::send_closure(overlay->overlay_manager(), &Overlays::send_message_via, peer_id, overlay->local_id(),
                               overlay->overlay_id(), data.clone(), sender_);
     }
   });
+  auto elapsed = timer.elapsed_both();
+  LOG(WARNING) << "PERF twostep rebroadcast ts=" << td::Clocks::system() << " data_size=" << data.size()
+               << " peers=" << peers << " real=" << elapsed.real << " cpu=" << elapsed.cpu;
 }
 
 static void check_and_deliver(OverlayImpl *overlay, PublicKeyHash src, BroadcastCheckResult check_result,
@@ -307,9 +331,15 @@ td::Status BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adnl::Adnl
                      << " from=" << src_peer_id << " will_rebroadcast=" << will_rebroadcast;
   td::BufferSlice to_sign = create_serialize_tl_object<ton_api::overlay_broadcastTwostepSimple_toSign>(
       broadcast_id, broadcast->data_.clone());
+  td::RealCpuTimer check_timer;
   TRY_RESULT(check_result, check_signature_and_certificate(overlay, src_key, src_keyhash, to_sign,
                                                            broadcast->signature_, broadcast->certificate_,
                                                            static_cast<td::uint32>(broadcast->data_.size())));
+  auto check_elapsed = check_timer.elapsed_both();
+  LOG(WARNING) << "PERF twostep check simple ts=" << td::Clocks::system() << " bcast_id=" << broadcast_id.to_hex()
+               << " data_size=" << broadcast->data_.size() << " will_rebroadcast=" << will_rebroadcast
+               << " result=" << static_cast<int>(check_result) << " real=" << check_elapsed.real
+               << " cpu=" << check_elapsed.cpu;
   if (will_rebroadcast) {
     rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));
   }
@@ -337,12 +367,18 @@ td::Status BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adnl::Adnl
   td::Bits256 broadcast_id = get_tl_object_sha_bits256(create_tl_object<ton_api::overlay_broadcastTwostep_id>(
       broadcast->flags_, broadcast->date_, src_keyhash.bits256_value(), bcast_src_adnl_id.bits256_value(),
       broadcast->data_hash_, static_cast<td::int32>(part_size)));
+  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id;
   td::BufferSlice to_sign = create_serialize_tl_object<ton_api::overlay_broadcastTwostepFec_toSign>(
       broadcast_id, broadcast->data_size_, broadcast->seqno_, broadcast->part_.clone());
+  td::RealCpuTimer check_timer;
   TRY_RESULT(check_result,
              check_signature_and_certificate(overlay, src_key, src_keyhash, to_sign, broadcast->signature_,
                                              broadcast->certificate_, static_cast<td::uint32>(data_size)));
-  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id;
+  auto check_elapsed = check_timer.elapsed_both();
+  LOG(WARNING) << "PERF twostep check fec ts=" << td::Clocks::system() << " bcast_id=" << broadcast_id.to_hex()
+               << " data_size=" << data_size << " part_size=" << part_size << " seqno=" << broadcast->seqno_
+               << " will_rebroadcast=" << will_rebroadcast << " result=" << static_cast<int>(check_result)
+               << " real=" << check_elapsed.real << " cpu=" << check_elapsed.cpu;
   if (will_rebroadcast) {
     rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));
   }
@@ -355,11 +391,17 @@ td::Status BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adnl::Adnl
       return td::Status::Error(ErrorCode::notready, "duplicate broadcast");
     }
     td::Result<std::unique_ptr<td::raptorq::Decoder>> R;
+    td::RealCpuTimer decoder_timer;
     if (part_size == 0 ||
         (R = td::raptorq::Decoder::create({(data_size + part_size - 1) / part_size, part_size, data_size}))
             .is_error()) {
       return td::Status::Error(ErrorCode::protoviolation, "invalid FEC parameters");
     }
+    auto decoder_elapsed = decoder_timer.elapsed_both();
+    LOG(WARNING) << "PERF twostep decoder_create ts=" << td::Clocks::system()
+                 << " bcast_id=" << broadcast_id.to_hex() << " data_size=" << data_size
+                 << " part_size=" << part_size << " symbols_needed=" << ((data_size + part_size - 1) / part_size)
+                 << " real=" << decoder_elapsed.real << " cpu=" << decoder_elapsed.cpu;
     td::uint32 symbols_needed = static_cast<td::uint32>((data_size + part_size - 1) / part_size);
     std::unique_ptr<BroadcastTwostep> bcast(
         new BroadcastTwostep{.broadcast_id = broadcast_id,

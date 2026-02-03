@@ -3316,10 +3316,24 @@ bool Collator::create_ticktock_transaction(const ton::StdSmcAddress& smc_addr, t
       *acc, mask == 2 ? block::transaction::Transaction::tr_tick : block::transaction::Transaction::tr_tock,
       req_start_lt, now_);
   td::RealCpuTimer timer;
+  bool ok = false;
+  double wall_ts = td::Clocks::system();
+  LOG(WARNING) << "PERF trx_other begin ts=" << wall_ts << " type=" << (mask == 2 ? "tick" : "tock")
+               << " addr=" << smc_addr.to_hex() << " lt=" << req_start_lt << " wc=" << workchain();
   SCOPE_EXIT {
+    auto total = timer.elapsed_both();
+    auto other = total - trans->time_tvm - trans->time_storage_stat;
+    double wall_end = td::Clocks::system();
+    LOG(WARNING) << "PERF trx_other end ts=" << wall_end << " type=" << (mask == 2 ? "tick" : "tock")
+                 << " addr=" << smc_addr.to_hex() << " ok=" << ok
+                 << " total_real=" << total.real << " total_cpu=" << total.cpu
+                 << " tvm_real=" << trans->time_tvm.real << " tvm_cpu=" << trans->time_tvm.cpu
+                 << " storage_real=" << trans->time_storage_stat.real
+                 << " storage_cpu=" << trans->time_storage_stat.cpu << " other_real=" << other.real
+                 << " other_cpu=" << other.cpu;
     stats_.work_time.trx_tvm += trans->time_tvm;
     stats_.work_time.trx_storage_stat += trans->time_storage_stat;
-    stats_.work_time.trx_other += timer.elapsed_both() - trans->time_tvm - trans->time_storage_stat;
+    stats_.work_time.trx_other += other;
   };
   if (!trans->prepare_storage_phase(storage_phase_cfg_, true)) {
     return fatal_error(td::Status::Error(
@@ -3357,6 +3371,7 @@ bool Collator::create_ticktock_transaction(const ton::StdSmcAddress& smc_addr, t
   block::MsgMetadata new_msg_metadata{0, acc->workchain, acc->addr, trans->start_lt};
   register_new_msgs(*trans, std::move(new_msg_metadata));
   ++stats_.transactions;
+  ok = true;
   return true;
 }
 
@@ -3505,11 +3520,24 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
       *acc, block::transaction::Transaction::tr_ord, trans_min_lt + 1, utime, msg_root);
   {
     td::RealCpuTimer timer;
+    bool ok = false;
+    double wall_ts = td::Clocks::system();
+    LOG(WARNING) << "PERF trx_other begin ts=" << wall_ts << " type=ordinary addr=" << acc->addr.to_hex()
+                 << " lt=" << trans_min_lt + 1 << " external=" << external;
     SCOPE_EXIT {
       if (stats) {
+        auto total = timer.elapsed_both();
+        auto other = total - trans->time_tvm - trans->time_storage_stat;
+        double wall_end = td::Clocks::system();
+        LOG(WARNING) << "PERF trx_other end ts=" << wall_end << " type=ordinary addr=" << acc->addr.to_hex()
+                     << " ok=" << ok << " total_real=" << total.real << " total_cpu=" << total.cpu
+                     << " tvm_real=" << trans->time_tvm.real << " tvm_cpu=" << trans->time_tvm.cpu
+                     << " storage_real=" << trans->time_storage_stat.real
+                     << " storage_cpu=" << trans->time_storage_stat.cpu << " other_real=" << other.real
+                     << " other_cpu=" << other.cpu;
         stats->work_time.trx_tvm += trans->time_tvm;
         stats->work_time.trx_storage_stat += trans->time_storage_stat;
-        stats->work_time.trx_other += timer.elapsed_both() - trans->time_tvm - trans->time_storage_stat;
+        stats->work_time.trx_other += other;
       }
     };
     bool ihr_delivered = false;  // FIXME
@@ -3570,6 +3598,7 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
     if (!trans->serialize(*serialize_cfg)) {
       return td::Status::Error(-669, "cannot serialize new transaction for smart contract "s + acc->addr.to_hex());
     }
+    ok = true;
   }
   return std::move(trans);
 }

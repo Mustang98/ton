@@ -18,6 +18,8 @@
 */
 
 #include "keys/encryptor.h"
+#include "td/utils/ScopeGuard.h"
+#include "td/utils/Timer.h"
 
 #include "broadcast-fec.hpp"
 #include "overlay.hpp"
@@ -212,6 +214,7 @@ void BroadcastFec::broadcast_checked(OverlayImpl *overlay, td::Result<td::Unit> 
 
 // Do we need status here??
 td::Status BroadcastFec::distribute_part(OverlayImpl *overlay, td::uint32 seqno) {
+  td::RealCpuTimer timer;
   auto i = parts_.find(seqno);
   if (i == parts_.end()) {
     VLOG(OVERLAY_WARNING) << "not distibuting empty part " << seqno;
@@ -226,21 +229,32 @@ td::Status BroadcastFec::distribute_part(OverlayImpl *overlay, td::uint32 seqno)
   auto nodes = overlay->get_neighbours(overlay->propagate_broadcast_to());
   auto manager = overlay->overlay_manager();
 
+  std::size_t sent_full = 0;
+  std::size_t sent_short = 0;
+  std::size_t skipped_completed = 0;
   for (auto &n : nodes) {
     if (neighbour_completed(n)) {
+      ++skipped_completed;
       continue;
     }
     if (neighbour_received(n)) {
       td::actor::send_closure(manager, &OverlayManager::send_message, n, overlay->local_id(), overlay->overlay_id(),
                               data_short.clone());
+      ++sent_short;
     } else {
       if (hash_.count_leading_zeroes() >= 12) {
         VLOG(OVERLAY_INFO) << "broadcast " << hash_ << ": sending part " << seqno << " to " << n;
       }
       td::actor::send_closure(manager, &OverlayManager::send_message, n, overlay->local_id(), overlay->overlay_id(),
                               data.clone());
+      ++sent_full;
     }
   }
+  auto elapsed = timer.elapsed_both();
+  LOG(WARNING) << "PERF fec distribute_part ts=" << td::Clocks::system() << " bcast_id=" << hash_.to_hex()
+               << " seqno=" << seqno << " nodes=" << nodes.size() << " sent_full=" << sent_full
+               << " sent_short=" << sent_short << " skipped_completed=" << skipped_completed
+               << " real=" << elapsed.real << " cpu=" << elapsed.cpu;
   return td::Status::OK();
 }
 
@@ -298,21 +312,33 @@ class BroadcastFecPart {
 };
 
 td::Status BroadcastFecPart::run_checks(OverlayImpl *overlay, BroadcastFec *bcast) {
+  td::RealCpuTimer timer;
+  bool ok = false;
+  BroadcastCheckResult eligibility = BroadcastCheckResult::Allowed;
+  SCOPE_EXIT {
+    auto elapsed = timer.elapsed_both();
+    LOG(WARNING) << "PERF fec run_checks ts=" << td::Clocks::system()
+                 << " bcast_id=" << broadcast_hash_.to_hex() << " data_hash=" << broadcast_data_hash_.to_hex()
+                 << " seqno=" << seqno_ << " size=" << data_.size() << " is_short=" << is_short_
+                 << " eligibility=" << static_cast<int>(eligibility) << " untrusted=" << untrusted_
+                 << " ok=" << ok << " real=" << elapsed.real << " cpu=" << elapsed.cpu;
+  };
   if (bcast && bcast->received_part(seqno_)) {
     return td::Status::Error(ErrorCode::notready, "duplicate part");
   }
-  auto r = overlay->check_source_eligible(source_, cert_.get(), broadcast_size_, true);
-  if (r == BroadcastCheckResult::Forbidden) {
+  eligibility = overlay->check_source_eligible(source_, cert_.get(), broadcast_size_, true);
+  if (eligibility == BroadcastCheckResult::Forbidden) {
     return td::Status::Error(ErrorCode::error, "broadcast is forbidden");
   }
 
-  if (r == BroadcastCheckResult::NeedCheck) {
+  if (eligibility == BroadcastCheckResult::NeedCheck) {
     untrusted_ = true;
   } else if (bcast) {
     TRY_STATUS(bcast->is_eligible_sender(source_));
   }
   TRY_RESULT(encryptor, overlay->get_encryptor(source_));
   TRY_STATUS(encryptor->check_signature(to_sign().as_slice(), signature_.as_slice()));
+  ok = true;
   return td::Status::OK();
 }
 
@@ -382,6 +408,9 @@ class BroadcastFecActor : public td::actor::Actor {
   std::unique_ptr<td::fec::Encoder> encoder_;
   td::actor::ActorId<OverlayImpl> overlay_;
   fec::FecType fec_type_;
+  td::RealCpuTimer total_timer_;
+  td::RealCpuTimer::Time alarm_work_total_;
+  td::uint32 alarm_count_{0};
 };
 
 BroadcastFecActor::BroadcastFecActor(td::BufferSlice data, td::uint32 flags, td::actor::ActorId<OverlayImpl> overlay,
@@ -404,20 +433,38 @@ BroadcastFecActor::BroadcastFecActor(td::BufferSlice data, td::uint32 flags, td:
 
 void BroadcastFecActor::start_up() {
   encoder_->prepare_more_symbols();
+  auto elapsed = total_timer_.elapsed_both();
+  LOG(WARNING) << "PERF fec actor start ts=" << td::Clocks::system() << " data_hash=" << data_hash_.to_hex()
+               << " to_send=" << to_send_ << " symbol_size=" << symbol_size_ << " delay=" << delay_
+               << " real=" << elapsed.real << " cpu=" << elapsed.cpu;
   alarm();
 }
 
 void BroadcastFecActor::alarm() {
+  td::RealCpuTimer alarm_timer;
   for (td::uint32 i = 0; i < 4; i++) {
     auto X = encoder_->gen_symbol(seqno_++);
     CHECK(X.data.size() <= 1000);
     td::actor::send_closure(overlay_, &OverlayImpl::send_new_fec_broadcast_part, local_id_, data_hash_,
                             fec_type_.size(), flags_, std::move(X.data), X.id, fec_type_, date_);
   }
+  auto alarm_elapsed = alarm_timer.elapsed_both();
+  alarm_work_total_ += alarm_elapsed;
+  ++alarm_count_;
+  if (alarm_count_ == 1) {
+    LOG(WARNING) << "PERF fec alarm first ts=" << td::Clocks::system() << " data_hash=" << data_hash_.to_hex()
+                 << " seqno=" << seqno_ << " batch=4" << " real=" << alarm_elapsed.real
+                 << " cpu=" << alarm_elapsed.cpu;
+  }
 
   alarm_timestamp() = td::Timestamp::in(delay_);
 
   if (seqno_ >= to_send_) {
+    auto total_elapsed = total_timer_.elapsed_both();
+    LOG(WARNING) << "PERF fec alarm done ts=" << td::Clocks::system() << " data_hash=" << data_hash_.to_hex()
+                 << " seqno=" << seqno_ << " to_send=" << to_send_ << " alarms=" << alarm_count_
+                 << " work_real=" << alarm_work_total_.real << " work_cpu=" << alarm_work_total_.cpu
+                 << " total_real=" << total_elapsed.real << " total_cpu=" << total_elapsed.cpu;
     stop();
   }
 }
