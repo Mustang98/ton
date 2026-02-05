@@ -28,6 +28,10 @@ namespace ton {
 
 namespace overlay {
 
+namespace {
+constexpr double kPerfLogCpuThreshold = 0.001;
+}  // namespace
+
 static Overlay::BroadcastHash compute_broadcast_id(PublicKeyHash source, const fec::FecType &fec_type,
                                                    Overlay::BroadcastDataHash data_hash, td::uint32 size,
                                                    td::uint32 flags) {
@@ -251,10 +255,12 @@ td::Status BroadcastFec::distribute_part(OverlayImpl *overlay, td::uint32 seqno)
     }
   }
   auto elapsed = timer.elapsed_both();
-  LOG(WARNING) << "PERF fec distribute_part ts=" << td::Clocks::system() << " bcast_id=" << hash_.to_hex()
-               << " seqno=" << seqno << " nodes=" << nodes.size() << " sent_full=" << sent_full
-               << " sent_short=" << sent_short << " skipped_completed=" << skipped_completed
-               << " real=" << elapsed.real << " cpu=" << elapsed.cpu;
+  if (elapsed.cpu >= kPerfLogCpuThreshold) {
+    LOG(WARNING) << "PERF fec distribute_part ts=" << td::Clocks::system() << " bcast_id=" << hash_.to_hex()
+                 << " seqno=" << seqno << " nodes=" << nodes.size() << " sent_full=" << sent_full
+                 << " sent_short=" << sent_short << " skipped_completed=" << skipped_completed
+                 << " real=" << elapsed.real << " cpu=" << elapsed.cpu;
+  }
   return td::Status::OK();
 }
 
@@ -317,11 +323,13 @@ td::Status BroadcastFecPart::run_checks(OverlayImpl *overlay, BroadcastFec *bcas
   BroadcastCheckResult eligibility = BroadcastCheckResult::Allowed;
   SCOPE_EXIT {
     auto elapsed = timer.elapsed_both();
-    LOG(WARNING) << "PERF fec run_checks ts=" << td::Clocks::system()
-                 << " bcast_id=" << broadcast_hash_.to_hex() << " data_hash=" << broadcast_data_hash_.to_hex()
-                 << " seqno=" << seqno_ << " size=" << data_.size() << " is_short=" << is_short_
-                 << " eligibility=" << static_cast<int>(eligibility) << " untrusted=" << untrusted_
-                 << " ok=" << ok << " real=" << elapsed.real << " cpu=" << elapsed.cpu;
+    if (elapsed.cpu >= kPerfLogCpuThreshold) {
+      LOG(WARNING) << "PERF fec run_checks ts=" << td::Clocks::system()
+                   << " bcast_id=" << broadcast_hash_.to_hex() << " data_hash=" << broadcast_data_hash_.to_hex()
+                   << " seqno=" << seqno_ << " size=" << data_.size() << " is_short=" << is_short_
+                   << " eligibility=" << static_cast<int>(eligibility) << " untrusted=" << untrusted_
+                   << " ok=" << ok << " real=" << elapsed.real << " cpu=" << elapsed.cpu;
+    }
   };
   if (bcast && bcast->received_part(seqno_)) {
     return td::Status::Error(ErrorCode::notready, "duplicate part");

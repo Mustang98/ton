@@ -50,6 +50,8 @@ constexpr int VERBOSITY_NAME(TWOSTEP_WARNING) = verbosity_WARNING;
 constexpr int VERBOSITY_NAME(TWOSTEP_INFO) = verbosity_INFO;
 constexpr int VERBOSITY_NAME(TWOSTEP_DEBUG) = verbosity_DEBUG;
 
+static constexpr double kPerfLogCpuThreshold = 0.001;
+
 static constexpr std::size_t FEC_MIN_BYTES = 513;
 static constexpr std::size_t FEC_MIN_OTHER_NODES = 4;
 
@@ -336,10 +338,12 @@ td::Status BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adnl::Adnl
                                                            broadcast->signature_, broadcast->certificate_,
                                                            static_cast<td::uint32>(broadcast->data_.size())));
   auto check_elapsed = check_timer.elapsed_both();
-  LOG(WARNING) << "PERF twostep check simple ts=" << td::Clocks::system() << " bcast_id=" << broadcast_id.to_hex()
-               << " data_size=" << broadcast->data_.size() << " will_rebroadcast=" << will_rebroadcast
-               << " result=" << static_cast<int>(check_result) << " real=" << check_elapsed.real
-               << " cpu=" << check_elapsed.cpu;
+  if (check_elapsed.cpu >= kPerfLogCpuThreshold) {
+    LOG(WARNING) << "PERF twostep check simple ts=" << td::Clocks::system() << " bcast_id=" << broadcast_id.to_hex()
+                 << " data_size=" << broadcast->data_.size() << " will_rebroadcast=" << will_rebroadcast
+                 << " result=" << static_cast<int>(check_result) << " real=" << check_elapsed.real
+                 << " cpu=" << check_elapsed.cpu;
+  }
   if (will_rebroadcast) {
     rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));
   }
@@ -375,10 +379,12 @@ td::Status BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adnl::Adnl
              check_signature_and_certificate(overlay, src_key, src_keyhash, to_sign, broadcast->signature_,
                                              broadcast->certificate_, static_cast<td::uint32>(data_size)));
   auto check_elapsed = check_timer.elapsed_both();
-  LOG(WARNING) << "PERF twostep check fec ts=" << td::Clocks::system() << " bcast_id=" << broadcast_id.to_hex()
-               << " data_size=" << data_size << " part_size=" << part_size << " seqno=" << broadcast->seqno_
-               << " will_rebroadcast=" << will_rebroadcast << " result=" << static_cast<int>(check_result)
-               << " real=" << check_elapsed.real << " cpu=" << check_elapsed.cpu;
+  if (check_elapsed.cpu >= kPerfLogCpuThreshold) {
+    LOG(WARNING) << "PERF twostep check fec ts=" << td::Clocks::system() << " bcast_id=" << broadcast_id.to_hex()
+                 << " data_size=" << data_size << " part_size=" << part_size << " seqno=" << broadcast->seqno_
+                 << " will_rebroadcast=" << will_rebroadcast << " result=" << static_cast<int>(check_result)
+                 << " real=" << check_elapsed.real << " cpu=" << check_elapsed.cpu;
+  }
   if (will_rebroadcast) {
     rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));
   }
