@@ -41,7 +41,7 @@ class BlockFullSender : public td::actor::Actor {
   }
   void finish_query() {
     promise_.set_result(
-        serialize_block_full(block_id_, proof_, data_, is_proof_link_, true, StateUsage::DecompressOnly));
+        serialize_block_full(block_id_, proof_, data_, is_proof_link_, true, StateUsage::None));
     stop();
   }
   void start_up() override {

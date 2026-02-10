@@ -257,7 +257,7 @@ void FullNodeFastSyncOverlay::send_broadcast(BlockBroadcast broadcast) {
   }
   VLOG(FULL_NODE_DEBUG) << "Sending block broadcast in fast sync overlay (with compression): "
                         << broadcast.block_id.to_str();
-  auto B = serialize_block_broadcast(broadcast, k_called_from_fast_sync, StateUsage::DecompressOnly);
+  auto B = serialize_block_broadcast(broadcast, k_called_from_fast_sync, StateUsage::None);
   if (B.is_error()) {
     VLOG(FULL_NODE_WARNING) << "failed to serialize block broadcast: " << B.move_as_error();
     return;
