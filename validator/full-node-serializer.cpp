@@ -39,7 +39,7 @@ td::Result<td::BufferSlice> serialize_block_broadcast(const BlockBroadcast& broa
 
   auto t_compression_start = td::Time::now();
   vm::CompressionAlgorithm algorithm;
-  if (state_usage == StateUsage::None) {
+  if (state_usage == StateUsage::None || broadcast.data.size() < 100000) {
     algorithm = vm::CompressionAlgorithm::ImprovedStructureLZ4;
   } else {
     algorithm = vm::CompressionAlgorithm::ImprovedStructureLZ4WithState;
@@ -220,7 +220,7 @@ td::Result<td::BufferSlice> serialize_block_full(const BlockIdExt& id, td::Slice
 
   auto t_compression_start = td::Time::now();
   vm::CompressionAlgorithm algorithm;
-  if (state_usage == StateUsage::None) {
+  if (state_usage == StateUsage::None || data.size() < 100000) {
     algorithm = vm::CompressionAlgorithm::ImprovedStructureLZ4;
   } else {
     algorithm = vm::CompressionAlgorithm::ImprovedStructureLZ4WithState;
