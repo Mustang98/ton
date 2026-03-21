@@ -232,6 +232,7 @@ class ValidatorManagerImpl : public ValidatorManager {
   std::map<ValidatorSessionId, ValidatorGroupEntry> validator_groups_;
   std::map<ValidatorSessionId, ValidatorGroupEntry> next_validator_groups_;
   std::map<adnl::AdnlNodeIdShort, td::actor::ActorOwn<CollationManager>> collation_managers_;
+  std::set<ValidatorSessionId> destroyed_validator_sessions_;
 
  private:
   // MASTERCHAIN LAST BLOCK
@@ -265,8 +266,12 @@ class ValidatorManagerImpl : public ValidatorManager {
   void update_shard_overlays();
   void update_shards();
   void update_shard_blocks();
-  void updated_init_block(BlockIdExt last_rotate_block_id) {
+  void updated_init_block(BlockIdExt last_rotate_block_id,
+                          std::set<ValidatorSessionId> old_destroyed_validator_sessions) {
     last_rotate_block_id_ = last_rotate_block_id;
+    for (const auto &s : old_destroyed_validator_sessions) {
+      destroyed_validator_sessions_.erase(s);
+    }
   }
   void got_next_gc_masterchain_handle(BlockHandle handle);
   void got_next_gc_masterchain_state(BlockHandle handle, td::Ref<MasterchainState> state);
@@ -403,7 +408,7 @@ class ValidatorManagerImpl : public ValidatorManager {
                                    td::Promise<td::Ref<block::BlockSignatureSet>> promise) override;
 
   void set_block_candidate(BlockIdExt id, BlockCandidate candidate, CatchainSeqno cc_seqno,
-                           td::uint32 validator_set_hash, td::Promise<td::Unit> promise) override;
+                           td::uint32 validator_set_hash, bool cache_only, td::Promise<td::Unit> promise) override;
   void send_block_candidate_broadcast(BlockIdExt id, CatchainSeqno cc_seqno, td::uint32 validator_set_hash,
                                       td::BufferSlice data, int mode) override;
 
@@ -522,6 +527,7 @@ class ValidatorManagerImpl : public ValidatorManager {
   void start_up() override;
   void init_last_masterchain_state(td::Ref<MasterchainState> state) override;
   void started(ValidatorManagerInitResult result);
+  void got_destroyed_validator_sessions(std::vector<ValidatorSessionId> sessions);
   void finish_start_up();
 
   bool is_validator();

@@ -19,6 +19,8 @@
 #pragma once
 
 #include "auto/tl/ton_api.hpp"
+#include "common/checksum.h"
+#include "keys/keys.hpp"
 #include "td/utils/overloaded.h"
 
 #include "ton-types.h"
@@ -61,6 +63,22 @@ inline ShardIdFull create_shard_id(const tl_object_ptr<ton_api::tonNode_shardId>
 
 inline tl_object_ptr<ton_api::tonNode_shardId> create_tl_shard_id(const ShardIdFull &s) {
   return create_tl_object<ton_api::tonNode_shardId>(s.workchain, s.shard);
+}
+
+inline td::Result<BlockCandidate> create_block_candidate(const tl_object_ptr<ton_api::db_candidate> &f) {
+  auto hash = td::sha256_bits256(f->collated_data_);
+  auto key = PublicKey{f->source_};
+  if (!key.is_ed25519()) {
+    return td::Status::Error("source is not ed25519 public key");
+  }
+  auto e_key = Ed25519_PublicKey{key.ed25519_value().raw()};
+  return BlockCandidate{e_key, create_block_id(f->id_), hash, f->data_.clone(), f->collated_data_.clone()};
+}
+
+inline tl_object_ptr<ton_api::db_candidate> create_tl_block_candidate(const BlockCandidate &candidate) {
+  auto key = PublicKey{pubkeys::Ed25519{candidate.pubkey.as_bits256()}};
+  return create_tl_object<ton_api::db_candidate>(key.tl(), create_tl_block_id(candidate.id), candidate.data.clone(),
+                                                 candidate.collated_data.clone());
 }
 
 }  // namespace ton

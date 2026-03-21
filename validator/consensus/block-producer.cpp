@@ -17,7 +17,7 @@ namespace ton::validator::consensus {
 
 namespace {
 
-class BlockProducerImpl : public runtime::SpawnsWith<Bus>, public runtime::ConnectsTo<Bus> {
+class BlockProducerImpl : public td::actor::SpawnsWith<Bus>, public td::actor::ConnectsTo<Bus> {
  public:
   TON_RUNTIME_DEFINE_EVENT_HANDLER();
 
@@ -48,17 +48,11 @@ class BlockProducerImpl : public runtime::SpawnsWith<Bus>, public runtime::Conne
 
   template <>
   void handle(BusHandle, std::shared_ptr<const OurLeaderWindowStarted> event) {
+    CHECK(current_leader_window_ < event->start_slot);
+
     current_leader_window_ = event->start_slot;
     cancellation_source_ = td::CancellationTokenSource();
     generate_candidates(event).start().detach();
-  }
-
-  template <>
-  void handle(BusHandle, std::shared_ptr<const OurLeaderWindowAborted> event) {
-    // Sanity check: consensus and us should agree on the start slot.
-    CHECK(current_leader_window_ == event->start_slot);
-    current_leader_window_ = std::nullopt;
-    cancellation_source_ = td::CancellationTokenSource();
   }
 
   template <>
@@ -176,6 +170,8 @@ class BlockProducerImpl : public runtime::SpawnsWith<Bus>, public runtime::Conne
       std::variant<BlockIdExt, BlockCandidate> block;
       std::optional<adnl::AdnlNodeIdShort> collator;
       if (generated_candidate.has_value()) {
+        td::actor::send_closure(bus.manager, &ManagerFacade::cache_block_candidate,
+                                generated_candidate->candidate.clone());
         state = state->apply(generated_candidate->candidate);
         block = std::move(generated_candidate->candidate);
         if (!generated_candidate->collator_node_id.is_zero()) {
@@ -205,6 +201,10 @@ class BlockProducerImpl : public runtime::SpawnsWith<Bus>, public runtime::Conne
       parent = id;
     }
 
+    if (current_leader_window_ == window) {
+      current_leader_window_ = std::nullopt;
+    }
+
     co_return {};
   }
 
@@ -218,7 +218,7 @@ class BlockProducerImpl : public runtime::SpawnsWith<Bus>, public runtime::Conne
 
 }  // namespace
 
-void BlockProducer::register_in(runtime::Runtime& runtime) {
+void BlockProducer::register_in(td::actor::Runtime& runtime) {
   runtime.register_actor<BlockProducerImpl>("BlockProducer");
 }
 

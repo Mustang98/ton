@@ -84,7 +84,7 @@ struct CandidateAndCert {
 struct BlockchainState;
 using BlockchainStateRef = td::Ref<BlockchainState>;
 
-class CandidateResolverImpl : public runtime::SpawnsWith<Bus>, public runtime::ConnectsTo<Bus> {
+class CandidateResolverImpl : public td::actor::SpawnsWith<Bus>, public td::actor::ConnectsTo<Bus> {
  public:
   TON_RUNTIME_DEFINE_EVENT_HANDLER();
 
@@ -177,16 +177,16 @@ class CandidateResolverImpl : public runtime::SpawnsWith<Bus>, public runtime::C
     ResolveState &state = resolve_states_[id];
     if (state.candidate_info_from_db.has_value() && !state.data.candidate.has_value()) {
       ResolveState::CandidateInfo &info = *state.candidate_info_from_db;
-      auto r_candidate =
-          co_await td::actor::ask(owning_bus()->manager, &ManagerFacade::load_block_candidate,
-                                  info.leader_id.get_using(*owning_bus()).key, info.block_id, info.collated_file_hash)
-              .wrap();
-      if (r_candidate.is_error()) {
-        LOG(WARNING) << "Failed to load block candidate data from db: " << r_candidate.move_as_error();
-      } else {
-        state.data.candidate = td::make_ref<Candidate>(id, info.parent, info.leader_id, r_candidate.move_as_ok(),
-                                                       std::move(info.signature));
+      auto maybe_data = owning_bus()->db->get(
+          create_serialize_tl_object<ton_api::consensus_simplex_db_key_candidateResolver_candidateData>(id.to_tl()));
+      if (maybe_data) {
+        auto f = fetch_tl_object<ton_api::db_candidate>(*maybe_data, true).ensure().move_as_ok();
+        BlockCandidate candidate = create_block_candidate(f).ensure().move_as_ok();
+        state.data.candidate =
+            td::make_ref<Candidate>(id, info.parent, info.leader_id, std::move(candidate), std::move(info.signature));
         state.stored_data_to_db = true;
+      } else {
+        LOG(ERROR) << "Failed to load block candidate data from db: not found";
       }
       state.candidate_info_from_db = std::nullopt;
     }
@@ -276,11 +276,7 @@ class CandidateResolverImpl : public runtime::SpawnsWith<Bus>, public runtime::C
         state.stored_data_to_db = true;
       } else {
         state.candidate_info_from_db = ResolveState::CandidateInfo{
-            .leader_id = leader_id,
-            .block_id = block_id,
-            .collated_file_hash = std::get<CandidateHashData::FullCandidate>(hash_data.candidate).collated_file_hash,
-            .parent = hash_data.parent,
-            .signature = std::move(value->signature_)};
+            .leader_id = leader_id, .parent = hash_data.parent, .signature = std::move(value->signature_)};
       }
     }
     LOG(INFO) << "Loaded " << candidates.size() << " candidates from DB";
@@ -294,8 +290,6 @@ class CandidateResolverImpl : public runtime::SpawnsWith<Bus>, public runtime::C
 
     struct CandidateInfo {
       PeerValidatorId leader_id;
-      BlockIdExt block_id;
-      FileHash collated_file_hash;
       ParentId parent;
       td::BufferSlice signature;
     };
@@ -332,8 +326,14 @@ class CandidateResolverImpl : public runtime::SpawnsWith<Bus>, public runtime::C
       if (!state.stored_data_to_db) {
         storing_data = true;
         if (std::holds_alternative<BlockCandidate>(cand->block)) {
-          tasks.push_back(td::actor::ask(owning_bus()->manager, &ManagerFacade::store_block_candidate,
-                                         std::get<BlockCandidate>(cand->block).clone()));
+          auto tl = create_tl_block_candidate(std::get<BlockCandidate>(cand->block));
+          tasks.push_back(
+              owning_bus()
+                  ->db
+                  ->set(create_serialize_tl_object<ton_api::consensus_simplex_db_key_candidateResolver_candidateData>(
+                            id.to_tl()),
+                        serialize_tl_object(tl, true))
+                  .start());
         }
       }
     }
@@ -373,7 +373,7 @@ class CandidateResolverImpl : public runtime::SpawnsWith<Bus>, public runtime::C
 
 }  // namespace
 
-void CandidateResolver::register_in(runtime::Runtime &runtime) {
+void CandidateResolver::register_in(td::actor::Runtime &runtime) {
   runtime.register_actor<CandidateResolverImpl>("CandidateResolver");
 }
 

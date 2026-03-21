@@ -179,8 +179,7 @@ void RootDb::get_block_proof_link(ConstBlockHandle handle, td::Promise<td::Ref<P
 
 void RootDb::store_block_candidate(BlockCandidate candidate, td::Promise<td::Unit> promise) {
   auto source = PublicKey{pubkeys::Ed25519{candidate.pubkey.as_bits256()}};
-  auto obj = create_serialize_tl_object<ton_api::db_candidate>(
-      source.tl(), create_tl_block_id(candidate.id), std::move(candidate.data), std::move(candidate.collated_data));
+  auto obj = serialize_tl_object(create_tl_block_candidate(candidate), true);
   auto P = td::PromiseCreator::lambda(
       [archive_db = archive_db_.get(), promise = std::move(promise), block_id = candidate.id, source,
        collated_file_hash = candidate.collated_file_hash](td::Result<td::Unit> R) mutable {
@@ -201,15 +200,8 @@ void RootDb::get_block_candidate(PublicKey source, BlockIdExt id, FileHash colla
     if (R.is_error()) {
       promise.set_error(R.move_as_error());
     } else {
-      auto f = fetch_tl_object<ton_api::db_candidate>(R.move_as_ok(), true);
-      f.ensure();
-      auto val = f.move_as_ok();
-      auto hash = sha256_bits256(val->collated_data_);
-
-      auto key = ton::PublicKey{val->source_};
-      auto e_key = Ed25519_PublicKey{key.ed25519_value().raw()};
-      promise.set_value(BlockCandidate{e_key, create_block_id(val->id_), hash, std::move(val->data_),
-                                       std::move(val->collated_data_)});
+      auto f = fetch_tl_object<ton_api::db_candidate>(R.move_as_ok(), true).ensure().move_as_ok();
+      promise.set_value(create_block_candidate(f).ensure().move_as_ok());
     }
   });
   td::actor::send_closure(archive_db_, &ArchiveManager::get_temp_file_short,
@@ -549,7 +541,8 @@ void RootDb::get_key_block_proof_link(BlockIdExt block_id, td::Promise<td::Ref<P
       promise.set_result(create_proof_link(block_id, R.move_as_ok()));
     }
   });
-  td::actor::send_closure(archive_db_, &ArchiveManager::get_key_block_proof, fileref::Proof{block_id}, std::move(P));
+  td::actor::send_closure(archive_db_, &ArchiveManager::get_key_block_proof, fileref::ProofLink{block_id},
+                          std::move(P));
 }
 
 void RootDb::check_key_block_proof_exists(BlockIdExt block_id, td::Promise<bool> promise) {

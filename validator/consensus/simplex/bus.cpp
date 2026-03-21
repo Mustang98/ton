@@ -44,7 +44,7 @@ std::string ResolveState::contents_to_string() const {
   return PSTRING() << "{id=" << id << "}";
 }
 
-std::string ResolveState::response_to_string(const ReturnType &result) {
+std::string ResolveState::response_to_string(const ReturnType& result) {
   return PSTRING() << "ResolvedState{state=" << *result.state << ", gen_utime_exact="
                    << (result.gen_utime_exact ? (PSTRING() << *result.gen_utime_exact) : "nullopt") << "}";
 }
@@ -82,10 +82,18 @@ void Bus::load_bootstrap_state() {
   }
 
   auto votes = db->get_by_prefix(ton_api::consensus_simplex_db_key_vote::ID);
-  for (auto &[_, data] : votes) {
+  std::vector<std::pair<size_t, Signed<Vote>>> loaded;
+  for (auto& [key, data] : votes) {
+    auto k = fetch_tl_object<ton_api::consensus_simplex_db_key_vote>(key, true);
+    size_t vote_idx = k.is_error() ? 0 : k.ok()->vote_idx_;  // backward compatibility
     auto f = fetch_tl_object<ton_api::consensus_simplex_db_vote>(data, true).ensure().move_as_ok();
     PeerValidatorId validator{static_cast<size_t>(f->node_idx_)};
-    bootstrap_votes.push_back(Signed<Vote>::deserialize(f->data_, validator, *this).move_as_ok());
+    loaded.emplace_back(vote_idx, Signed<Vote>::deserialize(f->data_, validator, *this).move_as_ok());
+  }
+  std::sort(loaded.begin(), loaded.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+  for (auto& [idx, vote] : loaded) {
+    bootstrap_votes.push_back(std::move(vote));
+    next_vote_idx = std::max(next_vote_idx, idx + 1);
   }
 }
 

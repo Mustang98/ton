@@ -100,6 +100,7 @@ class Bus : public consensus::Bus {
   NewConsensusConfig::Simplex simplex_config;
 
   std::vector<Signed<Vote>> bootstrap_votes;
+  size_t next_vote_idx = 1;
   td::uint32 first_nonannounced_window = 0;
 
   // FIXME: These should come from validator options
@@ -113,26 +114,26 @@ class Bus : public consensus::Bus {
   double candidate_resolve_max_timeout_s = 30.0;
 };
 
-using BusHandle = runtime::BusHandle<Bus>;
+using BusHandle = td::actor::BusHandle<Bus>;
 
 struct Pool {
-  static void register_in(runtime::Runtime&);
+  static void register_in(td::actor::Runtime&);
 };
 
 struct Consensus {
-  static void register_in(runtime::Runtime&);
+  static void register_in(td::actor::Runtime&);
 };
 
 struct CandidateResolver {
-  static void register_in(runtime::Runtime&);
+  static void register_in(td::actor::Runtime&);
 };
 
 struct StateResolver {
-  static void register_in(runtime::Runtime&);
+  static void register_in(td::actor::Runtime&);
 };
 
 struct MetricCollector {
-  static void register_in(runtime::Runtime&);
+  static void register_in(td::actor::Runtime&);
 };
 
 }  // namespace ton::validator::consensus::simplex
