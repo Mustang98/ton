@@ -55,7 +55,7 @@ void ValidateBroadcast::start_up() {
                         << " last_key_block_seqno=" << last_known_masterchain_block_handle_->id().seqno();
   alarm_timestamp() = timeout_;
 
-  if (!signatures_only_) {
+  if (!signatures_only_ && !broadcast_.data.empty()) {
     auto hash = sha256_bits256(broadcast_.data.as_slice());
     if (hash != broadcast_.block_id.file_hash) {
       abort_query(td::Status::Error(ErrorCode::protoviolation, "filehash mismatch"));
@@ -265,12 +265,62 @@ void ValidateBroadcast::got_block_handle(BlockHandle handle) {
   VLOG(VALIDATOR_DEBUG) << "got_block_handle " << handle->id().id.to_str();
   handle_ = std::move(handle);
 
+  if (broadcast_.data.empty()) {
+    auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<td::Ref<BlockData>> R) {
+      if (R.is_error()) {
+        td::actor::send_closure(SelfId, &ValidateBroadcast::abort_query, R.move_as_error());
+      } else {
+        td::actor::send_closure(SelfId, &ValidateBroadcast::got_block_data, R.move_as_ok());
+      }
+    });
+    if (handle_->received()) {
+      VLOG(VALIDATOR_DEBUG) << "reading block data from db for " << handle_->id().id.to_str();
+      td::actor::send_closure(manager_, &ValidatorManager::get_block_data_from_db, handle_, std::move(P));
+    } else {
+      VLOG(VALIDATOR_DEBUG) << "loading missing block data for " << handle_->id().id.to_str();
+      td::actor::send_closure(
+          manager_, &ValidatorManager::get_candidate_data_by_block_id_from_db, handle_->id(),
+          [SelfId = actor_id(this), manager = manager_, block_id = handle_->id()](td::Result<td::BufferSlice> R) {
+            if (R.is_ok()) {
+              auto block = create_block(block_id, R.move_as_ok());
+              if (block.is_error()) {
+                td::actor::send_closure(SelfId, &ValidateBroadcast::abort_query,
+                                        block.move_as_error_prefix("bad cached block data: "));
+              } else {
+                td::actor::send_closure(SelfId, &ValidateBroadcast::got_block_data, block.move_as_ok());
+              }
+              return;
+            }
+            auto P_net = td::PromiseCreator::lambda([SelfId](td::Result<ReceivedBlock> R_net) {
+              if (R_net.is_error()) {
+                td::actor::send_closure(SelfId, &ValidateBroadcast::abort_query,
+                                        R_net.move_as_error_prefix("failed to load block data: "));
+                return;
+              }
+              auto block = create_block(R_net.move_as_ok());
+              if (block.is_error()) {
+                td::actor::send_closure(SelfId, &ValidateBroadcast::abort_query,
+                                        block.move_as_error_prefix("bad block data from net: "));
+              } else {
+                td::actor::send_closure(SelfId, &ValidateBroadcast::got_block_data, block.move_as_ok());
+              }
+            });
+            td::actor::send_closure(manager, &ValidatorManager::send_get_block_request, block_id, 0, std::move(P_net));
+          });
+    }
+    return;
+  }
+
   auto dataR = create_block(broadcast_.block_id, broadcast_.data.clone());
   if (dataR.is_error()) {
     abort_query(dataR.move_as_error_prefix("bad block data: "));
     return;
   }
-  data_ = dataR.move_as_ok();
+  got_block_data(dataR.move_as_ok());
+}
+
+void ValidateBroadcast::got_block_data(td::Ref<BlockData> data) {
+  data_ = std::move(data);
 
   if (handle_->received()) {
     written_block_data();

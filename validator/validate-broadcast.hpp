@@ -79,6 +79,7 @@ class ValidateBroadcast : public td::actor::Actor {
   void check_signatures_common(td::Ref<ConfigHolder> conf);
   void checked_signatures();
   void got_block_handle(BlockHandle handle);
+  void got_block_data(td::Ref<BlockData> data);
   void written_block_data();
   void checked_proof();
 

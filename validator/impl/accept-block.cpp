@@ -956,12 +956,15 @@ void AcceptBlockQuery::send_broadcasts() {
   }
   VLOG(VALIDATOR_DEBUG) << "send_broadcasts mode=" << send_broadcast_mode_;
   BlockBroadcast b;
-  b.data = data_->data();
   b.block_id = id_;
   b.sig_set = signatures_;
   if (is_masterchain()) {
+    b.data = data_->data();
     b.proof = proof_->data();
   } else {
+    // Validators already received shard block bodies via validator-session candidate.
+    // Final broadcasts still carry proof-link and signatures, but can skip the duplicate body.
+    b.data = td::BufferSlice();
     b.proof = proof_link_->data();
   }
 
