@@ -391,13 +391,15 @@ void ValidatorGroup::accept_block_candidate(validatorsession::BlockSourceInfo so
 
   // OLD BROADCAST BEHAVIOR:
   // Creator of the block sends broadcast to public overlays
-  // Creator of the block sends broadcast to fast-sync overlay
+  // Creator of the block sends broadcast to fast-sync overlay unless candidate broadcast was sent
   // Any node sends broadcast to custom overlays unless candidate broadcast was sent
   int send_broadcast_mode = 0;
   bool sent_candidate = sent_candidate_broadcasts_.contains(next_block_id);
   if (source_info.source.compute_short_id() == local_id_) {
     send_broadcast_mode |= fullnode::FullNode::broadcast_mode_public;
-    send_broadcast_mode |= fullnode::FullNode::broadcast_mode_fast_sync;
+    if (!sent_candidate) {
+      send_broadcast_mode |= fullnode::FullNode::broadcast_mode_fast_sync;
+    }
   }
   if (!sent_candidate) {
     send_broadcast_mode |= fullnode::FullNode::broadcast_mode_custom;
