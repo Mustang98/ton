@@ -391,15 +391,13 @@ void ValidatorGroup::accept_block_candidate(validatorsession::BlockSourceInfo so
 
   // OLD BROADCAST BEHAVIOR:
   // Creator of the block sends broadcast to public overlays
-  // Creator of the block sends broadcast to private block overlay unless candidate broadcast was sent
+  // Creator of the block sends broadcast to fast-sync overlay
   // Any node sends broadcast to custom overlays unless candidate broadcast was sent
   int send_broadcast_mode = 0;
   bool sent_candidate = sent_candidate_broadcasts_.contains(next_block_id);
   if (source_info.source.compute_short_id() == local_id_) {
     send_broadcast_mode |= fullnode::FullNode::broadcast_mode_public;
-    if (!sent_candidate) {
-      send_broadcast_mode |= fullnode::FullNode::broadcast_mode_fast_sync;
-    }
+    send_broadcast_mode |= fullnode::FullNode::broadcast_mode_fast_sync;
   }
   if (!sent_candidate) {
     send_broadcast_mode |= fullnode::FullNode::broadcast_mode_custom;
@@ -751,8 +749,7 @@ void ValidatorGroup::send_block_candidate_broadcast(BlockIdExt id, td::BufferSli
   if (sent_candidate_broadcasts_.insert(id).second) {
     td::actor::send_closure(manager_, &ValidatorManager::send_block_candidate_broadcast, id,
                             validator_set_->get_catchain_seqno(), validator_set_->get_validator_set_hash(),
-                            std::move(data),
-                            fullnode::FullNode::broadcast_mode_fast_sync | fullnode::FullNode::broadcast_mode_custom);
+                            std::move(data), fullnode::FullNode::broadcast_mode_custom);
   }
 }
 

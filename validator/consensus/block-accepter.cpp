@@ -35,7 +35,8 @@ class BlockAccepterImpl : public td::actor::SpawnsWith<Bus>, public td::actor::C
       broadcast_mode = 0;
     }
     if (sent_candidate_broadcasts_.contains(block.id)) {
-      broadcast_mode &= ~(fullnode::FullNode::broadcast_mode_fast_sync | fullnode::FullNode::broadcast_mode_custom);
+      // Early candidate broadcasts now warm only custom overlays, so keep the final fast-sync broadcast enabled.
+      broadcast_mode &= ~fullnode::FullNode::broadcast_mode_custom;
     }
     co_await td::actor::ask(owning_bus()->manager, &ManagerFacade::accept_block, block.id, block_data,
                             event->candidate->leader.value(), event->signatures, broadcast_mode, true);
@@ -58,8 +59,7 @@ class BlockAccepterImpl : public td::actor::SpawnsWith<Bus>, public td::actor::C
       return;
     }
     td::actor::send_closure(bus->manager, &ManagerFacade::send_block_candidate_broadcast, candidate.id,
-                            candidate.data.clone(),
-                            fullnode::FullNode::broadcast_mode_fast_sync | fullnode::FullNode::broadcast_mode_custom);
+                            candidate.data.clone(), fullnode::FullNode::broadcast_mode_custom);
   }
 
  private:
