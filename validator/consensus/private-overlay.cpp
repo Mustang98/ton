@@ -114,6 +114,7 @@ class PrivateOverlayImpl : public td::actor::SpawnsWith<Bus>, public td::actor::
 
   template <>
   void handle(BusHandle, std::shared_ptr<const CandidateGenerated> event) {
+    owning_bus().publish<TraceEvent>(stats::CandidateBroadcastQueued::create(event->candidate));
     td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_.adnl_id, overlay_id_,
                             local_id_.short_id, 0, event->candidate->serialize());
   }
@@ -171,7 +172,9 @@ class PrivateOverlayImpl : public td::actor::SpawnsWith<Bus>, public td::actor::
                    << maybe_candidate.move_as_error();
       return;
     }
-    owning_bus().publish<CandidateReceived>(maybe_candidate.move_as_ok());
+    auto candidate = maybe_candidate.move_as_ok();
+    candidate.write().overlay_received_at = td::Clocks::system();
+    owning_bus().publish<CandidateReceived>(std::move(candidate));
   }
 
   void on_query(adnl::AdnlNodeIdShort src, td::BufferSlice data, td::Promise<td::BufferSlice> promise) {

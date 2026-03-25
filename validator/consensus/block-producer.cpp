@@ -120,7 +120,7 @@ class BlockProducerImpl : public td::actor::SpawnsWith<Bus>, public td::actor::C
         }
         block_generation = td::actor::ask(bus.manager, &ManagerFacade::collate_block, std::move(params),
                                           cancellation_source_.get_cancellation_token());
-        owning_bus().publish<TraceEvent>(stats::CollateStarted::create(slot));
+        owning_bus().publish<TraceEvent>(stats::CollateStarted::create(slot, slot_start.at_unix()));
       }
       co_await td::actor::coro_sleep(slot_start);
 
@@ -178,7 +178,10 @@ class BlockProducerImpl : public td::actor::SpawnsWith<Bus>, public td::actor::C
           collator = adnl::AdnlNodeIdShort{generated_candidate->collator_node_id};
         }
         id = CandidateHashData::create_full(generated_candidate->candidate, parent).build_id_with(slot);
-        owning_bus().publish<TraceEvent>(stats::CollateFinished::create(slot, id));
+        owning_bus().publish<TraceEvent>(stats::CollateFinished::create(
+            slot, id, generated_candidate->candidate.collate_started_at, generated_candidate->candidate.collated_at,
+            slot_start.at_unix(), generated_candidate->candidate.collate_total_time,
+            generated_candidate->candidate.collate_work_time));
       } else {
         CHECK(parent.has_value());
         auto referenced_block = state->assert_normal();
@@ -192,6 +195,8 @@ class BlockProducerImpl : public td::actor::SpawnsWith<Bus>, public td::actor::C
       auto signature = co_await td::actor::ask(bus.keyring, &keyring::Keyring::sign_message, bus.local_id.short_id,
                                                std::move(data_to_sign));
       auto candidate = td::make_ref<Candidate>(id, parent, bus.local_id.idx, std::move(block), std::move(signature));
+      candidate.write().generated_at = td::Clocks::system();
+      candidate.write().slot_start = slot_start.at_unix();
       if (current_leader_window_ != window) {
         break;
       }

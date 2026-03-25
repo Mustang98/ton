@@ -117,6 +117,8 @@ class BlockValidatorImpl : public td::actor::SpawnsWith<Bus>, public td::actor::
                 << " s";
       co_await td::actor::coro_sleep(ok_from);
     }
+    owning_bus().publish<TraceEvent>(
+        stats::ValidationReady::create(event->candidate->id, validation_result.get<CandidateAccept>().ok_from_utime));
     co_return validation_result;
   }
 

@@ -90,6 +90,7 @@ struct CollationStats {
 
   td::Bits256 collated_data_hash = td::Bits256::zero();
   CatchainSeqno cc_seqno = 0;
+  double started_at = -1.0;
   double collated_at = -1.0;
   td::uint32 actual_bytes = 0, actual_collated_data_bytes = 0;
   int attempt = 0;

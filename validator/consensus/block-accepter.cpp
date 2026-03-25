@@ -26,6 +26,7 @@ class BlockAccepterImpl : public td::actor::SpawnsWith<Bus>, public td::actor::C
   td::actor::Task<> process(BusHandle, std::shared_ptr<FinalizeBlock> event) {
     const auto& block = std::get<BlockCandidate>(event->candidate->block);
     auto block_data = create_block(block.id, block.data.clone()).move_as_ok();
+    double accept_started_at = td::Clocks::system();
 
     int broadcast_mode = fullnode::FullNode::broadcast_mode_custom;
     if (event->candidate->leader == owning_bus()->local_id.idx) {
@@ -39,7 +40,7 @@ class BlockAccepterImpl : public td::actor::SpawnsWith<Bus>, public td::actor::C
     }
     co_await td::actor::ask(owning_bus()->manager, &ManagerFacade::accept_block, block.id, block_data,
                             event->candidate->leader.value(), event->signatures, broadcast_mode, true);
-    owning_bus().publish<TraceEvent>(stats::BlockAccepted::create(event->candidate->id));
+    owning_bus().publish<TraceEvent>(stats::BlockAccepted::create(event->candidate->id, accept_started_at));
     co_return {};
   }
 

@@ -1218,18 +1218,21 @@ consensus.simplex.db.key.candidateResolver.candidateData candidateId:consensus.c
 consensus.stats.block id:tonNode.blockIdExt = consensus.stats.CandidateBlock;
 consensus.stats.empty = consensus.stats.CandidateBlock;
 
-consensus.stats.id workchain:int shard:long cc_seqno:int idx:int total_validators:int weight:long total_weight:long slots_per_leader_window:int = consensus.stats.Event;
-consensus.stats.collateStarted target_slot:int = consensus.stats.Event;
-consensus.stats.collateFinished target_slot:int id:consensus.candidateId = consensus.stats.Event;
+consensus.stats.id workchain:int shard:long cc_seqno:int idx:int total_validators:int weight:long total_weight:long slots_per_leader_window:int target_rate_ms:int max_leader_window_desync:int = consensus.stats.Event;
+consensus.stats.collateStarted target_slot:int slot_start:double = consensus.stats.Event;
+consensus.stats.collateFinished target_slot:int id:consensus.candidateId started_at:double collated_at:double slot_start:double total_time:double work_time:double = consensus.stats.Event;
 consensus.stats.collatedEmpty id:consensus.candidateId = consensus.stats.Event;
-consensus.stats.candidateReceived id:consensus.candidateId parent:consensus.CandidateParent block:consensus.stats.CandidateBlock is_collator:Bool = consensus.stats.Event;
+consensus.stats.candidateBroadcastQueued id:consensus.candidateId generated_at:double slot_start:double = consensus.stats.Event;
+consensus.stats.candidateReceived id:consensus.candidateId parent:consensus.CandidateParent block:consensus.stats.CandidateBlock is_collator:Bool generated_at:double slot_start:double overlay_received_at:double = consensus.stats.Event;
 consensus.stats.validationStarted id:consensus.candidateId = consensus.stats.Event;
 consensus.stats.validationFinished id:consensus.candidateId = consensus.stats.Event;
-consensus.stats.blockAccepted id:consensus.candidateId = consensus.stats.Event;
+consensus.stats.validationReady id:consensus.candidateId ok_from_utime:double = consensus.stats.Event;
+consensus.stats.blockAccepted id:consensus.candidateId accept_started_at:double = consensus.stats.Event;
 consensus.stats.timestampedEvent ts:double event:consensus.stats.Event = consensus.stats.TimestampedEvent;
 consensus.stats.events id:int256 events:(vector consensus.stats.timestampedEvent) = consensus.stats.Events;
 
 consensus.simplex.stats.voted vote:consensus.simplex.UnsignedVote = consensus.stats.Event;
+consensus.simplex.stats.voteSent vote:consensus.simplex.UnsignedVote = consensus.stats.Event;
 consensus.simplex.stats.certObserved vote:consensus.simplex.UnsignedVote = consensus.stats.Event;
 
 ---functions---

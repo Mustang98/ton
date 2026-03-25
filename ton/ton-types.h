@@ -458,10 +458,23 @@ struct BlockCandidate {
 
   // used only locally
   std::vector<td::Ref<OutMsgQueueProofBroadcast>> out_msg_queue_proof_broadcasts = {};
+  double collate_started_at = -1.0;
+  double collated_at = -1.0;
+  double collate_total_time = -1.0;
+  double collate_work_time = -1.0;
 
   BlockCandidate clone() const {
     return BlockCandidate{
-        pubkey, id, collated_file_hash, data.clone(), collated_data.clone(), out_msg_queue_proof_broadcasts};
+        pubkey,
+        id,
+        collated_file_hash,
+        data.clone(),
+        collated_data.clone(),
+        out_msg_queue_proof_broadcasts,
+        collate_started_at,
+        collated_at,
+        collate_total_time,
+        collate_work_time};
   }
 };
 

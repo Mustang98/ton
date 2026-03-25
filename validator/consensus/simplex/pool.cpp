@@ -322,7 +322,8 @@ class PoolImpl : public td::actor::SpawnsWith<Bus>, public td::actor::ConnectsTo
     auto &bus = *owning_bus();
     owning_bus().publish<TraceEvent>(consensus::stats::Id::create(
         bus.shard, bus.cc_seqno, bus.local_id.idx.value(), bus.validator_set.size(), bus.local_id.weight,
-        bus.total_weight, bus.simplex_config.slots_per_leader_window));
+        bus.total_weight, bus.simplex_config.slots_per_leader_window, bus.config.target_rate_ms,
+        bus.simplex_config.max_leader_window_desync));
 
     reschedule_standstill_resolution();
     is_started_ = true;
@@ -561,6 +562,7 @@ class PoolImpl : public td::actor::SpawnsWith<Bus>, public td::actor::ConnectsTo
 
     co_await store_vote_to_db(serialized.clone(), bus.local_id.idx);
     if (handle_vote(bus.local_id, std::move(signed_vote))) {
+      owning_bus().publish<TraceEvent>(stats::VoteSent::create(vote));
       owning_bus().publish(std::make_shared<OutgoingProtocolMessage>(std::nullopt, std::move(serialized)));
     }
 

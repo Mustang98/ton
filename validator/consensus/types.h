@@ -167,6 +167,11 @@ struct Candidate : td::CntObject {
   PeerValidatorId leader;
   std::variant<BlockIdExt, BlockCandidate> block;
   td::BufferSlice signature;
+
+  // used only locally
+  double generated_at = -1.0;
+  double slot_start = -1.0;
+  double overlay_received_at = -1.0;
 };
 
 using CandidateRef = td::Ref<Candidate>;

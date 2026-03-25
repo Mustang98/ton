@@ -137,6 +137,7 @@ Collator::Collator(CollateParams params, td::actor::ActorId<ValidatorManager> ma
 void Collator::start_up() {
   LOG(WARNING) << "Collator for shard " << shard_.to_str() << " started"
                << (params_.attempt_idx ? PSTRING() << " (attempt #" << params_.attempt_idx << ")" : "");
+  stats_.started_at = td::Clocks::system();
   if (!check_cancelled()) {
     return;
   }
@@ -6567,6 +6568,10 @@ void Collator::return_block_candidate(td::Result<td::Unit> saved, td::PerfLogAct
     LOG(WARNING) << "collation took " << perf_timer_.elapsed() << " s";
     LOG(WARNING) << perf_log_;
     finalize_stats();
+    block_candidate->collate_started_at = stats_.started_at;
+    block_candidate->collated_at = stats_.collated_at;
+    block_candidate->collate_total_time = stats_.total_time;
+    block_candidate->collate_work_time = stats_.work_time.total.real;
     stats_.status = td::Status::OK();
     td::actor::send_closure(manager, &ValidatorManager::log_collate_query_stats, std::move(stats_));
     main_promise.set_value(block_candidate->clone());

@@ -28,6 +28,25 @@ void Voted::collect_to(MetricCollector& collector) const {
 Voted::Voted(Vote vote) : vote_(std::move(vote)) {
 }
 
+std::unique_ptr<VoteSent> VoteSent::create(Vote vote) {
+  return std::unique_ptr<VoteSent>(new VoteSent(std::move(vote)));
+}
+
+consensus::stats::tl::EventRef VoteSent::to_tl() const {
+  return create_tl_object<tl::voteSent>(vote_.to_tl());
+}
+
+std::string VoteSent::to_string() const {
+  return PSTRING() << "VoteSent{vote=" << vote_ << "}";
+}
+
+void VoteSent::collect_to(MetricCollector& collector) const {
+  collector.collect_vote_sent(*this);
+}
+
+VoteSent::VoteSent(Vote vote) : vote_(std::move(vote)) {
+}
+
 std::unique_ptr<CertObserved> CertObserved::create(Vote vote) {
   return std::unique_ptr<CertObserved>(new CertObserved(std::move(vote)));
 }
@@ -75,11 +94,16 @@ void MetricCollector::collect_collate_finished(const consensus::stats::CollateFi
     return;
   }
   auto& flow = flows_[event.id()];
-  flow.collate_finished = event.ts();
+  flow.collate_finished = event.collated_at() > 0 ? event.collated_at() : event.ts();
+  if (event.started_at() > 0) {
+    flow.collate_started = event.started_at();
+  }
 
   auto it = collate_started_by_slot_.find(event.target_slot());
-  if (it != collate_started_by_slot_.end()) {
+  if (!flow.collate_started && it != collate_started_by_slot_.end()) {
     flow.collate_started = it->second;
+  }
+  if (it != collate_started_by_slot_.end()) {
     collate_started_by_slot_.erase(it);
   }
 }
@@ -89,7 +113,7 @@ void MetricCollector::collect_candidate_received(const consensus::stats::Candida
     return;
   }
   auto& flow = flows_[event.id()];
-  flow.candidate_received = event.ts();
+  flow.candidate_received = event.is_collator() && event.generated_at() > 0 ? event.generated_at() : event.ts();
   flow.block_id = event.block_id();
   flow.is_collator = event.is_collator();
 }
@@ -106,6 +130,13 @@ void MetricCollector::collect_validation_finished(const consensus::stats::Valida
     return;
   }
   flows_[event.id()].validation_finished = event.ts();
+}
+
+void MetricCollector::collect_validation_ready(const consensus::stats::ValidationReady& event) {
+  if (event.id().slot < first_non_accepted_slot_) {
+    return;
+  }
+  flows_[event.id()].validation_ready = event.ts();
 }
 
 void MetricCollector::collect_block_accepted(const consensus::stats::BlockAccepted& event) {
@@ -151,6 +182,27 @@ void MetricCollector::collect_voted(const Voted& event) {
             flow.notarize_voted = timestamp;
           } else if constexpr (std::is_same_v<T, FinalizeVote>) {
             flow.finalize_voted = timestamp;
+          }
+        }
+      },
+      event.vote().vote);
+}
+
+void MetricCollector::collect_vote_sent(const VoteSent& event) {
+  std::visit(
+      [&]<typename T>(const T& v) {
+        if constexpr (std::is_same_v<T, SkipVote>) {
+          return;
+        } else {
+          if (v.id.slot < first_non_accepted_slot_) {
+            return;
+          }
+          auto& flow = flows_[v.id];
+          double timestamp = event.ts();
+          if constexpr (std::is_same_v<T, NotarizeVote>) {
+            flow.notarize_vote_sent = timestamp;
+          } else if constexpr (std::is_same_v<T, FinalizeVote>) {
+            flow.finalize_vote_sent = timestamp;
           }
         }
       },

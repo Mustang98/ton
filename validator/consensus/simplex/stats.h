@@ -14,6 +14,7 @@ namespace ton::validator::consensus::simplex::stats {
 namespace tl {
 
 using voted = ton_api::consensus_simplex_stats_voted;
+using voteSent = ton_api::consensus_simplex_stats_voteSent;
 using certObserved = ton_api::consensus_simplex_stats_certObserved;
 
 }  // namespace tl
@@ -34,6 +35,24 @@ class Voted : public consensus::stats::CollectibleEvent<MetricCollector> {
 
  private:
   Voted(Vote vote);
+
+  Vote vote_;
+};
+
+class VoteSent : public consensus::stats::CollectibleEvent<MetricCollector> {
+ public:
+  static std::unique_ptr<VoteSent> create(Vote vote);
+
+  consensus::stats::tl::EventRef to_tl() const override;
+  std::string to_string() const override;
+  void collect_to(MetricCollector& collector) const override;
+
+  const Vote& vote() const {
+    return vote_;
+  }
+
+ private:
+  VoteSent(Vote vote);
 
   Vote vote_;
 };
@@ -62,9 +81,12 @@ struct Flow {
   std::optional<double> candidate_received;
   std::optional<double> validation_started;
   std::optional<double> validation_finished;
+  std::optional<double> validation_ready;
   std::optional<double> notarize_voted;
+  std::optional<double> notarize_vote_sent;
   std::optional<double> notarize_cert_observed;
   std::optional<double> finalize_voted;
+  std::optional<double> finalize_vote_sent;
   std::optional<double> finalize_cert_observed;
   std::optional<double> manager_accepted;
   std::optional<BlockIdExt> block_id;
@@ -82,9 +104,11 @@ class MetricCollector final : public consensus::stats::MetricCollector {
   void collect_candidate_received(const consensus::stats::CandidateReceived& event) override;
   void collect_validation_started(const consensus::stats::ValidationStarted& event) override;
   void collect_validation_finished(const consensus::stats::ValidationFinished& event) override;
+  void collect_validation_ready(const consensus::stats::ValidationReady& event) override;
   void collect_block_accepted(const consensus::stats::BlockAccepted& event) override;
 
   void collect_voted(const Voted& event);
+  void collect_vote_sent(const VoteSent& event);
   void collect_cert_observed(const CertObserved& event);
 
  private:
