@@ -84,6 +84,11 @@ class Adnl : public AdnlSenderInterface {
   struct SendFlags {
     enum Flags : td::uint32 { direct_only = 1 };
   };
+  struct PeerAddrLists {
+    AdnlNodeIdFull pub_id;
+    AdnlAddressList addr_list;
+    AdnlAddressList priority_addr_list;
+  };
   virtual void send_message_ex(AdnlNodeIdShort src, AdnlNodeIdShort dst, td::BufferSlice data, td::uint32 flags) = 0;
 
   // adds node to peer table
@@ -120,6 +125,8 @@ class Adnl : public AdnlSenderInterface {
   virtual void get_self_node(AdnlNodeIdShort id, td::Promise<AdnlNode> promise) = 0;
 
   virtual void get_peer_node(AdnlNodeIdShort local_id, AdnlNodeIdShort peer_id, td::Promise<AdnlNode> promise) = 0;
+  virtual void get_peer_addr_lists(AdnlNodeIdShort local_id, AdnlNodeIdShort peer_id,
+                                   td::Promise<PeerAddrLists> promise) = 0;
 
   virtual void create_ext_server(std::vector<AdnlNodeIdShort> ids, std::vector<td::uint16> ports,
                                  td::Promise<td::actor::ActorOwn<AdnlExtServer>> promise) = 0;

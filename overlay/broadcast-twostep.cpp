@@ -318,7 +318,7 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(
     VLOG(TWOSTEP_DEBUG) << "twostep DUPLICATE receiver broadcast_id=" << broadcast_id.to_hex();
     co_return td::Status::Error(ErrorCode::notready, "duplicate broadcast");
   }
-  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id;
+  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id && overlay->should_rebroadcast_received_broadcasts();
   VLOG(TWOSTEP_INFO) << "twostep RECV_SIMPLE receiver broadcast_id=" << broadcast_id.to_hex()
                      << " data_hash=" << data_hash.to_hex() << " data_size=" << broadcast->data_.size()
                      << " from=" << src_peer_id << " will_rebroadcast=" << will_rebroadcast;
@@ -375,7 +375,30 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adn
       broadcast->flags_, broadcast->date_, src_keyhash.bits256_value(), bcast_src_adnl_id.bits256_value(),
       broadcast->data_hash_, broadcast->data_size_, static_cast<td::int32>(part_size), broadcast->extra_.clone()));
   auto it = broadcasts_.find(broadcast_id);
-  if (overlay->is_delivered(broadcast_id) || (it != broadcasts_.end() && it->second->seen_parts.contains(seqno))) {
+  bool duplicate = overlay->is_delivered(broadcast_id) || (it != broadcasts_.end() && it->second->seen_parts.contains(seqno));
+  auto part_data_hash = sha256_bits256(broadcast->part_.as_slice());
+  auto part_hash = get_tl_object_sha_bits256(
+      create_tl_object<ton_api::overlay_broadcastTwostepFec_toSign>(broadcast_id, seqno, broadcast->part_.clone()));
+  FecBroadcastPartInfo info;
+  info.direct_sender = src_peer_id;
+  info.origin_broadcaster = bcast_src_adnl_id;
+  info.source_key_id = src_keyhash;
+  info.overlay_id = overlay->overlay_id();
+  info.broadcast_type = ton_api::overlay_broadcastTwostepFec::ID;
+  info.wire_size = static_cast<td::uint64>(serialize_tl_object(broadcast, true).size());
+  info.broadcast_data_size = broadcast->data_size_;
+  info.part_size = static_cast<td::int32>(broadcast->part_.size());
+  info.seqno = broadcast->seqno_;
+  info.data_hash = broadcast->data_hash_;
+  info.part_hash = part_hash;
+  info.part_data_hash = part_data_hash;
+  info.broadcast_hash = broadcast_id;
+  info.flags = broadcast->flags_;
+  info.date = broadcast->date_;
+  info.signature_size = static_cast<td::uint32>(broadcast->signature_.size());
+  info.duplicate = duplicate;
+  overlay->notify_fec_broadcast_part(std::move(info));
+  if (duplicate) {
     VLOG(TWOSTEP_DEBUG) << "twostep DUPLICATE receiver broadcast_id=" << broadcast_id.to_hex() << " seqno=" << seqno;
     co_return td::Status::Error(ErrorCode::notready, "duplicate broadcast");
   }
@@ -431,7 +454,8 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adn
   }
   auto bcast = it->second.get();
   bcast->seen_parts.insert(seqno);
-  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id && !bcast->rebroadcasted_part;
+  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id && !bcast->rebroadcasted_part &&
+                          overlay->should_rebroadcast_received_broadcasts();
   if (will_rebroadcast) {
     td::uint64 total_size = rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));
     bcast->rebroadcasted_part = true;

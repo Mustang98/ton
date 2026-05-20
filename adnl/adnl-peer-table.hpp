@@ -73,6 +73,8 @@ class AdnlPeerTableImpl : public AdnlPeerTable {
   void get_addr_list(AdnlNodeIdShort id, td::Promise<AdnlAddressList> promise) override;
   void get_self_node(AdnlNodeIdShort id, td::Promise<AdnlNode> promise) override;
   void get_peer_node(AdnlNodeIdShort local_id, AdnlNodeIdShort peer_id, td::Promise<AdnlNode> promise) override;
+  void get_peer_addr_lists(AdnlNodeIdShort local_id, AdnlNodeIdShort peer_id,
+                           td::Promise<Adnl::PeerAddrLists> promise) override;
   void start_up() override;
   void register_channel(AdnlChannelIdShort id, AdnlNodeIdShort local_id,
                         td::actor::ActorId<AdnlChannel> channel) override;

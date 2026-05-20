@@ -35,6 +35,8 @@ namespace ton {
 
 namespace overlay {
 
+constexpr int VERBOSITY_NAME(OVERLAY_PUBLIC_BROADCAST) = verbosity_WARNING;
+
 const OverlayMemberCertificate OverlayNode::empty_certificate_{};
 
 static std::string overlay_actor_name(const OverlayIdFull &overlay_id, const OverlayOptions &opts) {
@@ -42,6 +44,111 @@ static std::string overlay_actor_name(const OverlayIdFull &overlay_id, const Ove
     return PSTRING() << "overlay." << overlay_id.compute_short_id().bits256_value().to_hex().substr(0, 4);
   }
   return PSTRING() << "overlay." << opts.name_;
+}
+
+static adnl::AdnlNodeIdShort get_broadcast_source_id(const tl_object_ptr<ton_api::PublicKey> &src) {
+  if (!src) {
+    return adnl::AdnlNodeIdShort::zero();
+  }
+  return adnl::AdnlNodeIdShort{PublicKey{src}.compute_short_id()};
+}
+
+static void log_public_overlay_broadcast_common(OverlayImpl *overlay, td::Slice type,
+                                                adnl::AdnlNodeIdShort direct_sender, td::uint64 wire_size) {
+  VLOG(OVERLAY_PUBLIC_BROADCAST) << overlay << ": received public overlay broadcast type=" << type
+                                 << " wire_size=" << wire_size << " direct_sender_adnl_id=" << direct_sender;
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_broadcast &broadcast, td::uint64 wire_size) {
+  auto source = get_broadcast_source_id(broadcast.src_);
+  auto data_hash = sha256_bits256(broadcast.data_.as_slice());
+  VLOG(OVERLAY_PUBLIC_BROADCAST)
+      << overlay << ": received public overlay broadcast type=overlay.broadcast wire_size=" << wire_size
+      << " direct_sender_adnl_id=" << direct_sender << " origin_broadcaster_adnl_id=" << source
+      << " source_key_id=" << source << " payload_size=" << broadcast.data_.size()
+      << " data_hash=" << data_hash.to_hex() << " flags=" << broadcast.flags_ << " date=" << broadcast.date_
+      << " signature_size=" << broadcast.signature_.size();
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_broadcastFec &broadcast, td::uint64 wire_size) {
+  auto source = get_broadcast_source_id(broadcast.src_);
+  auto part_data_hash = sha256_bits256(broadcast.data_.as_slice());
+  VLOG(OVERLAY_PUBLIC_BROADCAST)
+      << overlay << ": received public overlay broadcast type=overlay.broadcastFec wire_size=" << wire_size
+      << " direct_sender_adnl_id=" << direct_sender << " origin_broadcaster_adnl_id=" << source
+      << " source_key_id=" << source << " broadcast_data_size=" << broadcast.data_size_
+      << " part_size=" << broadcast.data_.size() << " seqno=" << broadcast.seqno_
+      << " data_hash=" << broadcast.data_hash_.to_hex() << " part_data_hash=" << part_data_hash.to_hex()
+      << " flags=" << broadcast.flags_ << " date=" << broadcast.date_
+      << " signature_size=" << broadcast.signature_.size();
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_broadcastFecShort &broadcast, td::uint64 wire_size) {
+  auto source = get_broadcast_source_id(broadcast.src_);
+  VLOG(OVERLAY_PUBLIC_BROADCAST)
+      << overlay << ": received public overlay broadcast type=overlay.broadcastFecShort wire_size=" << wire_size
+      << " direct_sender_adnl_id=" << direct_sender << " origin_broadcaster_adnl_id=" << source
+      << " source_key_id=" << source << " broadcast_hash=" << broadcast.broadcast_hash_.to_hex()
+      << " part_data_hash=" << broadcast.part_data_hash_.to_hex() << " seqno=" << broadcast.seqno_
+      << " signature_size=" << broadcast.signature_.size();
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_broadcastTwostepSimple &broadcast, td::uint64 wire_size) {
+  auto source = get_broadcast_source_id(broadcast.src_);
+  adnl::AdnlNodeIdShort origin{broadcast.src_adnl_id_};
+  auto data_hash = sha256_bits256(broadcast.data_.as_slice());
+  VLOG(OVERLAY_PUBLIC_BROADCAST)
+      << overlay << ": received public overlay broadcast type=overlay.broadcastTwostepSimple wire_size=" << wire_size
+      << " direct_sender_adnl_id=" << direct_sender << " origin_broadcaster_adnl_id=" << origin
+      << " source_key_id=" << source << " payload_size=" << broadcast.data_.size()
+      << " extra_size=" << broadcast.extra_.size() << " data_hash=" << data_hash.to_hex()
+      << " flags=" << broadcast.flags_ << " date=" << broadcast.date_
+      << " signature_size=" << broadcast.signature_.size();
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_broadcastTwostepFec &broadcast, td::uint64 wire_size) {
+  auto source = get_broadcast_source_id(broadcast.src_);
+  adnl::AdnlNodeIdShort origin{broadcast.src_adnl_id_};
+  auto part_data_hash = sha256_bits256(broadcast.part_.as_slice());
+  VLOG(OVERLAY_PUBLIC_BROADCAST)
+      << overlay << ": received public overlay broadcast type=overlay.broadcastTwostepFec wire_size=" << wire_size
+      << " direct_sender_adnl_id=" << direct_sender << " origin_broadcaster_adnl_id=" << origin
+      << " source_key_id=" << source << " broadcast_data_size=" << broadcast.data_size_
+      << " part_size=" << broadcast.part_.size() << " extra_size=" << broadcast.extra_.size()
+      << " seqno=" << broadcast.seqno_ << " data_hash=" << broadcast.data_hash_.to_hex()
+      << " part_data_hash=" << part_data_hash.to_hex() << " flags=" << broadcast.flags_
+      << " date=" << broadcast.date_ << " signature_size=" << broadcast.signature_.size();
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_fec_received &broadcast, td::uint64 wire_size) {
+  VLOG(OVERLAY_PUBLIC_BROADCAST) << overlay << ": received public overlay broadcast type=overlay.fec.received"
+                                 << " wire_size=" << wire_size << " direct_sender_adnl_id=" << direct_sender
+                                 << " hash=" << broadcast.hash_.to_hex();
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_fec_completed &broadcast, td::uint64 wire_size) {
+  VLOG(OVERLAY_PUBLIC_BROADCAST) << overlay << ": received public overlay broadcast type=overlay.fec.completed"
+                                 << " wire_size=" << wire_size << " direct_sender_adnl_id=" << direct_sender
+                                 << " hash=" << broadcast.hash_.to_hex();
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_broadcastNotFound &/*broadcast*/, td::uint64 wire_size) {
+  log_public_overlay_broadcast_common(overlay, "overlay.broadcastNotFound", direct_sender, wire_size);
+}
+
+static void log_public_overlay_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort direct_sender,
+                                         ton_api::overlay_unicast &broadcast, td::uint64 wire_size) {
+  VLOG(OVERLAY_PUBLIC_BROADCAST) << overlay << ": received public overlay broadcast type=overlay.unicast"
+                                 << " wire_size=" << wire_size << " direct_sender_adnl_id=" << direct_sender
+                                 << " payload_size=" << broadcast.data_.size();
 }
 
 td::actor::ActorOwn<Overlay> Overlay::create_public(td::actor::ActorId<keyring::Keyring> keyring,
@@ -293,6 +400,14 @@ void OverlayImpl::receive_message(adnl::AdnlNodeIdShort src, tl_object_ptr<ton_a
     return;
   }
   auto Q = X.move_as_ok();
+  if (overlay_type_ == OverlayType::Public) {
+    auto wire_size = static_cast<td::uint64>(data.size());
+    ton_api::downcast_call(*Q, [this, &src, wire_size](auto &object) {
+      if (VERBOSITY_NAME(OVERLAY_PUBLIC_BROADCAST) <= td::get_verbosity_level()) {
+        log_public_overlay_broadcast(this, src, object, wire_size);
+      }
+    });
+  }
   ton_api::downcast_call(*Q, [self = this, &Q, &src](auto &object) {
     [](OverlayImpl *self, adnl::AdnlNodeIdShort src, auto obj) -> td::actor::Task<> {
       auto id = obj->get_id();
@@ -661,6 +776,10 @@ void OverlayImpl::broadcast_twostep_signed_fec(BroadcastTwostepDataFec &&data,
 
 void OverlayImpl::deliver_broadcast(PublicKeyHash source, td::BufferSlice data, td::BufferSlice extra) {
   callback_->receive_broadcast_with_extra(source, overlay_id_, std::move(data), std::move(extra));
+}
+
+void OverlayImpl::notify_fec_broadcast_part(FecBroadcastPartInfo info) {
+  callback_->receive_fec_broadcast_part(std::move(info));
 }
 
 void OverlayImpl::register_delivered_broadcast(const BroadcastHash &hash) {

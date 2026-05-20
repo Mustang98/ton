@@ -264,6 +264,7 @@ class OverlayImpl : public Overlay {
                                              adnl::AdnlNodeIdShort message_from = adnl::AdnlNodeIdShort::zero());
 
   void deliver_broadcast(PublicKeyHash source, td::BufferSlice data, td::BufferSlice extra);
+  void notify_fec_broadcast_part(FecBroadcastPartInfo info);
   void register_delivered_broadcast(const BroadcastHash &hash);
   bool is_delivered(const BroadcastHash &hash);
   void check_broadcast(PublicKeyHash src, td::BufferSlice data, td::Promise<td::Unit> promise);
@@ -352,6 +353,9 @@ class OverlayImpl : public Overlay {
 
   td::uint32 propagate_broadcast_to() const {
     return opts_.propagate_broadcast_to_;
+  }
+  bool should_rebroadcast_received_broadcasts() const {
+    return opts_.rebroadcast_received_broadcasts_;
   }
 
   bool has_valid_membership_certificate();

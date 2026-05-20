@@ -101,7 +101,7 @@ class AdnlLocalId : public td::actor::Actor {
   td::uint32 mode_;
 
   struct InboundRateLimiter {
-    RateLimiter rate_limiter = RateLimiter(75, 0.33);
+    RateLimiter rate_limiter = RateLimiter(5000, 0.002);
     td::uint64 currently_decrypting_packets = 0;
     std::set<AdnlNodeIdShort> recent_inbound_peers;
   };
@@ -133,7 +133,7 @@ class AdnlLocalId : public td::actor::Actor {
   td::Timestamp cleanup_rate_limiter_at_ = td::Timestamp::never();
   td::Timestamp cleanup_recent_inbound_peers_at_ = td::Timestamp::never();
 
-  static constexpr size_t UNIQUE_PEERS_PER_IP_LIMIT = 60;
+  static constexpr size_t UNIQUE_PEERS_PER_IP_LIMIT = 5000;
   static constexpr double UNIQUE_PEERS_PER_IP_WINDOW = 60.0;
 };
 

@@ -523,6 +523,15 @@ void AdnlPeerPairImpl::get_peer_node(td::Promise<AdnlNode> promise) {
   alarm();
 }
 
+void AdnlPeerPairImpl::get_peer_addr_lists(td::Promise<Adnl::PeerAddrLists> promise) {
+  set_idle_mark(false);
+  if (!peer_id_.empty() && (!addr_list_.empty() || !priority_addr_list_.empty())) {
+    promise.set_value(Adnl::PeerAddrLists{peer_id_, addr_list_, priority_addr_list_});
+    return;
+  }
+  promise.set_error(td::Status::Error(ErrorCode::notready, "no cached peer address list"));
+}
+
 AdnlPeerPairImpl::AdnlPeerPairImpl(td::actor::ActorId<AdnlNetworkManager> network_manager,
                                    td::actor::ActorId<AdnlPeerTable> peer_table, td::uint32 local_mode,
                                    td::actor::ActorId<AdnlLocalId> local_actor, td::actor::ActorId<dht::Dht> dht_node,

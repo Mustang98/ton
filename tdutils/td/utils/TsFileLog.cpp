@@ -80,7 +80,7 @@ class TsFileLog : public LogInterface {
   }
 
   Status init_info(Info *info) {
-    TRY_STATUS(info->log.init(get_path(info), std::numeric_limits<int64>::max(), info->id == 0 && redirect_stderr_));
+    TRY_STATUS(info->log.init(get_path(info), rotate_threshold_, info->id == 0 && redirect_stderr_));
     info->is_inited = true;
     return Status::OK();
   }

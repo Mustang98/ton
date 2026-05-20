@@ -51,6 +51,7 @@ namespace fullnode {
 namespace {
 
 constexpr const char *k_called_from_public = "public";
+constexpr int VERBOSITY_NAME(FULL_NODE_PUBLIC_BROADCAST) = verbosity_WARNING;
 constexpr td::uint32 k_heavy_request_cost_unit = 1 << 21;
 constexpr size_t k_ed25519_signature_size = 64;
 
@@ -74,6 +75,195 @@ size_t request_cost_for_limiter(ton_api::Function &function) {
                     },
                     [&](const auto &) {}));
   return cost;
+}
+
+td::string signature_set_summary(const tl_object_ptr<ton_api::tonNode_SignatureSet> &signature_set) {
+  if (!signature_set) {
+    return "signature_set=null";
+  }
+  td::string summary;
+  ton_api::downcast_call(
+      *signature_set,
+      td::overloaded(
+          [&](ton_api::tonNode_signatureSet_ordinary &set) {
+            summary = PSTRING() << "signature_set=ordinary cc_seqno=" << set.cc_seqno_
+                                << " validator_set_hash=" << set.validator_set_hash_
+                                << " signatures=" << set.signatures_.size();
+          },
+          [&](ton_api::tonNode_signatureSet_simplex &set) {
+            summary = PSTRING() << "signature_set=simplex final=" << set.final_ << " cc_seqno=" << set.cc_seqno_
+                                << " validator_set_hash=" << set.validator_set_hash_
+                                << " signatures=" << set.signatures_.size() << " session_id="
+                                << set.session_id_.to_hex() << " slot=" << set.slot_;
+          },
+          [&](auto &set) { summary = PSTRING() << "signature_set=unknown id=" << set.get_id(); }));
+  return summary;
+}
+
+td::string out_msg_queue_proof_summary(const tl_object_ptr<ton_api::tonNode_OutMsgQueueProof> &proof) {
+  if (!proof) {
+    return "proof=null";
+  }
+  td::string summary;
+  ton_api::downcast_call(
+      *proof, td::overloaded(
+                  [&](ton_api::tonNode_outMsgQueueProof &p) {
+                    summary = PSTRING() << "proof=outMsgQueueProof queue_proofs_size=" << p.queue_proofs_.size()
+                                        << " block_state_proofs_size=" << p.block_state_proofs_.size()
+                                        << " msg_counts=" << p.msg_counts_.size();
+                  },
+                  [&](ton_api::tonNode_outMsgQueueProofEmpty &) { summary = "proof=empty"; },
+                  [&](auto &p) { summary = PSTRING() << "proof=unknown id=" << p.get_id(); }));
+  return summary;
+}
+
+void log_full_node_broadcast_common(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                                    const td::Bits256 &payload_hash, td::Slice type) {
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "received public overlay high-level broadcast shard=" << shard << " type=" << type
+                                   << " overlay_source_id=" << source << " payload_size=" << payload_size
+                                   << " payload_hash=" << payload_hash.to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, ton_api::tonNode_blockBroadcast &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash, "tonNode.blockBroadcast");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.blockBroadcast"
+                                   << " overlay_source_id=" << source
+                                   << " block_id=" << create_block_id(broadcast.id_).to_str()
+                                   << " cc_seqno=" << broadcast.catchain_seqno_
+                                   << " validator_set_hash=" << broadcast.validator_set_hash_
+                                   << " signatures=" << broadcast.signatures_.size()
+                                   << " proof_size=" << broadcast.proof_.size()
+                                   << " block_data_size=" << broadcast.data_.size()
+                                   << " block_data_hash=" << td::sha256_bits256(broadcast.data_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, ton_api::tonNode_blockBroadcastCompressed &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash, "tonNode.blockBroadcastCompressed");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.blockBroadcastCompressed"
+                                   << " overlay_source_id=" << source
+                                   << " block_id=" << create_block_id(broadcast.id_).to_str()
+                                   << " cc_seqno=" << broadcast.catchain_seqno_
+                                   << " validator_set_hash=" << broadcast.validator_set_hash_
+                                   << " flags=" << broadcast.flags_ << " compressed_size="
+                                   << broadcast.compressed_.size()
+                                   << " compressed_hash="
+                                   << td::sha256_bits256(broadcast.compressed_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, ton_api::tonNode_blockBroadcastCompressedV2 &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash, "tonNode.blockBroadcastCompressedV2");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.blockBroadcastCompressedV2"
+                                   << " overlay_source_id=" << source
+                                   << " block_id=" << create_block_id(broadcast.id_).to_str() << " "
+                                   << signature_set_summary(broadcast.signature_set_) << " flags=" << broadcast.flags_
+                                   << " proof_size=" << broadcast.proof_.size()
+                                   << " compressed_size=" << broadcast.data_compressed_.size()
+                                   << " compressed_hash="
+                                   << td::sha256_bits256(broadcast.data_compressed_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, ton_api::tonNode_ihrMessageBroadcast &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash, "tonNode.ihrMessageBroadcast");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.ihrMessageBroadcast"
+                                   << " overlay_source_id=" << source
+                                   << " message_size=" << broadcast.message_->data_.size()
+                                   << " message_hash="
+                                   << td::sha256_bits256(broadcast.message_->data_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, ton_api::tonNode_externalMessageBroadcast &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash, "tonNode.externalMessageBroadcast");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.externalMessageBroadcast"
+                                   << " overlay_source_id=" << source
+                                   << " message_size=" << broadcast.message_->data_.size()
+                                   << " message_hash="
+                                   << td::sha256_bits256(broadcast.message_->data_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, ton_api::tonNode_newShardBlockBroadcast &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash, "tonNode.newShardBlockBroadcast");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.newShardBlockBroadcast"
+                                   << " overlay_source_id=" << source
+                                   << " block_id=" << create_block_id(broadcast.block_->block_).to_str()
+                                   << " cc_seqno=" << broadcast.block_->cc_seqno_
+                                   << " data_size=" << broadcast.block_->data_.size()
+                                   << " data_hash="
+                                   << td::sha256_bits256(broadcast.block_->data_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, ton_api::tonNode_newBlockCandidateBroadcast &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash, "tonNode.newBlockCandidateBroadcast");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.newBlockCandidateBroadcast"
+                                   << " overlay_source_id=" << source
+                                   << " block_id=" << create_block_id(broadcast.id_).to_str()
+                                   << " cc_seqno=" << broadcast.catchain_seqno_
+                                   << " validator_set_hash=" << broadcast.validator_set_hash_
+                                   << " collator=" << broadcast.collator_signature_->who_.to_hex()
+                                   << " collator_signature_size=" << broadcast.collator_signature_->signature_.size()
+                                   << " block_data_size=" << broadcast.data_.size()
+                                   << " block_data_hash=" << td::sha256_bits256(broadcast.data_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash,
+                             ton_api::tonNode_newBlockCandidateBroadcastCompressed &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash,
+                                 "tonNode.newBlockCandidateBroadcastCompressed");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.newBlockCandidateBroadcastCompressed"
+                                   << " overlay_source_id=" << source
+                                   << " block_id=" << create_block_id(broadcast.id_).to_str()
+                                   << " cc_seqno=" << broadcast.catchain_seqno_
+                                   << " validator_set_hash=" << broadcast.validator_set_hash_
+                                   << " collator=" << broadcast.collator_signature_->who_.to_hex()
+                                   << " collator_signature_size=" << broadcast.collator_signature_->signature_.size()
+                                   << " flags=" << broadcast.flags_ << " compressed_size="
+                                   << broadcast.compressed_.size()
+                                   << " compressed_hash="
+                                   << td::sha256_bits256(broadcast.compressed_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash,
+                             ton_api::tonNode_newBlockCandidateBroadcastCompressedV2 &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash,
+                                 "tonNode.newBlockCandidateBroadcastCompressedV2");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.newBlockCandidateBroadcastCompressedV2"
+                                   << " overlay_source_id=" << source
+                                   << " block_id=" << create_block_id(broadcast.id_).to_str()
+                                   << " cc_seqno=" << broadcast.catchain_seqno_
+                                   << " validator_set_hash=" << broadcast.validator_set_hash_
+                                   << " collator=" << broadcast.collator_signature_->who_.to_hex()
+                                   << " collator_signature_size=" << broadcast.collator_signature_->signature_.size()
+                                   << " flags=" << broadcast.flags_ << " compressed_size="
+                                   << broadcast.compressed_.size()
+                                   << " compressed_hash="
+                                   << td::sha256_bits256(broadcast.compressed_.as_slice()).to_hex();
+}
+
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, ton_api::tonNode_outMsgQueueProofBroadcast &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash, "tonNode.outMsgQueueProofBroadcast");
+  VLOG(FULL_NODE_PUBLIC_BROADCAST) << "public overlay payload detail type=tonNode.outMsgQueueProofBroadcast"
+                                   << " overlay_source_id=" << source
+                                   << " dst_shard=" << create_shard_id(broadcast.dst_shard_).to_str()
+                                   << " block_id=" << create_block_id(broadcast.block_).to_str()
+                                   << " limits_max_bytes=" << broadcast.limits_->max_bytes_
+                                   << " limits_max_msgs=" << broadcast.limits_->max_msgs_ << " "
+                                   << out_msg_queue_proof_summary(broadcast.proof_);
+}
+
+template <class T>
+void log_full_node_broadcast(td::Slice shard, PublicKeyHash source, td::uint64 payload_size,
+                             const td::Bits256 &payload_hash, T &broadcast) {
+  log_full_node_broadcast_common(shard, source, payload_size, payload_hash,
+                                 PSTRING() << "unknown(id=" << broadcast.get_id() << ")");
 }
 
 }  // namespace
@@ -115,6 +305,9 @@ void FullNodeShardImpl::create_overlay() {
     void receive_broadcast(PublicKeyHash src, overlay::OverlayIdShort overlay_id, td::BufferSlice data) override {
       td::actor::send_closure(node_, &FullNodeShardImpl::receive_broadcast, src, std::move(data));
     }
+    void receive_fec_broadcast_part(overlay::FecBroadcastPartInfo info) override {
+      td::actor::send_closure(node_, &FullNodeShardImpl::receive_fec_broadcast_part, std::move(info));
+    }
     void check_broadcast(PublicKeyHash src, overlay::OverlayIdShort overlay_id, td::BufferSlice data,
                          td::Promise<td::Unit> promise) override {
       td::actor::send_closure(node_, &FullNodeShardImpl::check_broadcast, src, std::move(data), std::move(promise));
@@ -132,6 +325,7 @@ void FullNodeShardImpl::create_overlay() {
   opts.name_ = "shard" + shard_.to_str();
   opts.announce_self_ = active_;
   opts.broadcast_speed_multiplier_ = opts_.public_broadcast_speed_multiplier_;
+  opts.rebroadcast_received_broadcasts_ = !opts_.overlay_observer_.enabled_;
   td::actor::send_closure(overlays_, &overlay::Overlays::create_public_overlay_ex, adnl_id_, overlay_id_full_.clone(),
                           std::make_unique<Callback>(actor_id(this)), rules_,
                           PSTRING() << "{ \"type\": \"shard\", \"shard_id\": " << get_shard()
@@ -148,6 +342,17 @@ void FullNodeShardImpl::create_overlay() {
     td::actor::send_closure(overlays_, &overlay::Overlays::update_certificate, adnl_id_, overlay_id_, adnl_source,
                             adnl_source_cert_);
   }
+}
+
+void FullNodeShardImpl::set_overlay_observer_peers(std::vector<adnl::AdnlNodeIdShort> peers) {
+  // Graph entries are ADNL short ids only. Keep them in the full-node observer queue,
+  // because inserting short-only nodes into the overlay peer table makes DB persistence
+  // try to serialize peers without full public keys.
+  (void)peers;
+}
+
+void FullNodeShardImpl::receive_fec_broadcast_part(overlay::FecBroadcastPartInfo info) {
+  td::actor::send_closure(full_node_, &FullNode::receive_fec_broadcast_part, shard_, std::move(info));
 }
 
 void FullNodeShardImpl::check_broadcast(PublicKeyHash src, td::BufferSlice broadcast, td::Promise<td::Unit> promise) {
@@ -912,12 +1117,23 @@ void FullNodeShardImpl::receive_broadcast(PublicKeyHash src, td::BufferSlice bro
   if (!active_) {
     return;
   }
+  auto payload_size = static_cast<td::uint64>(broadcast.size());
+  auto payload_hash = td::sha256_bits256(broadcast.as_slice());
   auto B = fetch_tl_object<ton_api::tonNode_Broadcast>(std::move(broadcast), true);
   if (B.is_error()) {
+    VLOG(FULL_NODE_PUBLIC_BROADCAST) << "received public overlay high-level broadcast parse_error shard="
+                                     << shard_.to_str() << " overlay_source_id=" << src
+                                     << " payload_size=" << payload_size << " payload_hash=" << payload_hash.to_hex()
+                                     << " error=" << B.move_as_error();
     return;
   }
 
-  ton_api::downcast_call(*B.move_as_ok().get(), [src, Self = this](auto &obj) { Self->process_broadcast(src, obj); });
+  auto broadcast_obj = B.move_as_ok();
+  auto shard = shard_.to_str();
+  ton_api::downcast_call(*broadcast_obj, [&](auto &obj) {
+    log_full_node_broadcast(td::Slice(shard), src, payload_size, payload_hash, obj);
+  });
+  ton_api::downcast_call(*broadcast_obj.get(), [src, Self = this](auto &obj) { Self->process_broadcast(src, obj); });
 }
 
 void FullNodeShardImpl::send_ihr_message(td::BufferSlice data) {

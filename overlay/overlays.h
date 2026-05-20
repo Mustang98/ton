@@ -290,6 +290,7 @@ struct OverlayOptions {
   td::uint32 max_neighbours_ = 5;
   td::uint32 nodes_to_send_ = 4;
   td::uint32 propagate_broadcast_to_ = 5;
+  bool rebroadcast_received_broadcasts_ = true;
   td::uint32 default_permanent_members_flags_ = 0;
   double broadcast_speed_multiplier_ = 1.0;
   bool private_ping_peers_ = false;
@@ -310,6 +311,26 @@ struct OverlayManagerBufferLimits {
   td::uint64 max_data_size = 0;
 };
 
+struct FecBroadcastPartInfo {
+  adnl::AdnlNodeIdShort direct_sender;
+  adnl::AdnlNodeIdShort origin_broadcaster;
+  PublicKeyHash source_key_id = PublicKeyHash::zero();
+  OverlayIdShort overlay_id;
+  td::int32 broadcast_type = 0;
+  td::uint64 wire_size = 0;
+  td::int32 broadcast_data_size = 0;
+  td::int32 part_size = 0;
+  td::int32 seqno = 0;
+  td::Bits256 data_hash = td::Bits256::zero();
+  td::Bits256 part_hash = td::Bits256::zero();
+  td::Bits256 part_data_hash = td::Bits256::zero();
+  td::Bits256 broadcast_hash = td::Bits256::zero();
+  td::int32 flags = 0;
+  td::int32 date = 0;
+  td::uint32 signature_size = 0;
+  bool duplicate = false;
+};
+
 class Overlays : public td::actor::Actor {
  public:
   class Callback {
@@ -324,6 +345,8 @@ class Overlays : public td::actor::Actor {
     virtual void receive_broadcast_with_extra(PublicKeyHash src, OverlayIdShort overlay_id, td::BufferSlice data,
                                               td::BufferSlice extra) {
       receive_broadcast(src, overlay_id, std::move(data));
+    }
+    virtual void receive_fec_broadcast_part(FecBroadcastPartInfo info) {
     }
     virtual void check_broadcast(PublicKeyHash src, OverlayIdShort overlay_id, td::BufferSlice data,
                                  td::Promise<td::Unit> promise) {
@@ -425,6 +448,8 @@ class Overlays : public td::actor::Actor {
                                        std::vector<adnl::AdnlNodeIdShort> nodes,
                                        std::vector<PublicKeyHash> root_public_keys,
                                        OverlayMemberCertificate certificate) = 0;
+  virtual void receive_overlay_nodes(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay_id,
+                                     tl_object_ptr<ton_api::overlay_nodes> nodes) = 0;
 
   virtual void get_overlay_random_peers(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay, td::uint32 max_peers,
                                         td::Promise<std::vector<adnl::AdnlNodeIdShort>> promise) = 0;

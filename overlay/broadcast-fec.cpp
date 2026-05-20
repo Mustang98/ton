@@ -241,7 +241,7 @@ class BroadcastFecPart {
                    std::shared_ptr<Certificate> cert, Overlay::BroadcastDataHash data_hash, td::uint32 data_size,
                    td::uint32 flags, Overlay::BroadcastDataHash part_data_hash, td::BufferSlice data, td::uint32 seqno,
                    fec::FecType fec_type, td::uint32 date, td::BufferSlice signature, bool is_short,
-                   adnl::AdnlNodeIdShort src_peer_id)
+                   adnl::AdnlNodeIdShort src_peer_id, bool is_ours)
       : broadcast_hash_(broadcast_hash)
       , part_hash_(part_hash)
       , source_(std::move(source))
@@ -256,7 +256,8 @@ class BroadcastFecPart {
       , date_(date)
       , signature_(std::move(signature))
       , is_short_(is_short)
-      , src_peer_id_(src_peer_id) {
+      , src_peer_id_(src_peer_id)
+      , is_ours_(is_ours) {
   }
 
   td::BufferSlice to_sign();
@@ -284,6 +285,7 @@ class BroadcastFecPart {
   bool untrusted_{false};
 
   adnl::AdnlNodeIdShort src_peer_id_ = adnl::AdnlNodeIdShort::zero();
+  bool is_ours_ = false;
 };
 
 td::Status BroadcastFecPart::run_checks(OverlayImpl *overlay, BroadcastFec *bcast) {
@@ -339,7 +341,7 @@ td::Status BroadcastFecPart::run(OverlayImpl *overlay, BroadcastFec &bcast) {
       }
     }
   }
-  if (!untrusted_ || bcast.is_checked_) {
+  if ((!untrusted_ || bcast.is_checked_) && (is_ours_ || overlay->should_rebroadcast_received_broadcasts())) {
     TRY_STATUS(bcast.distribute_part(overlay, seqno_));
   }
   return td::Status::OK();
@@ -429,7 +431,7 @@ void BroadcastsFec::send_part(OverlayImpl *overlay, PublicKeyHash send_as, Overl
   auto part_hash = compute_broadcast_part_id(broadcast_hash, part_data_hash, seqno);
   auto part_obj = std::make_unique<BroadcastFecPart>(
       broadcast_hash, part_hash, PublicKey{}, overlay->get_certificate(send_as), data_hash, size, flags, part_data_hash,
-      std::move(part), seqno, std::move(fec_type), date, td::BufferSlice{}, false, adnl::AdnlNodeIdShort::zero());
+      std::move(part), seqno, std::move(fec_type), date, td::BufferSlice{}, false, adnl::AdnlNodeIdShort::zero(), true);
   auto to_sign = part_obj->to_sign();
   auto P = td::PromiseCreator::lambda([overlay = actor_id(overlay), part = std::move(part_obj)](
                                           td::Result<std::pair<td::BufferSlice, PublicKey>> R) mutable {
@@ -465,6 +467,7 @@ td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNode
   TRY_STATUS(overlay->check_date(broadcast->date_));
   PublicKey source(broadcast->src_);
   auto part_data_hash = sha256_bits256(broadcast->data_.as_slice());
+  auto wire_size = static_cast<td::uint64>(serialize_tl_object(broadcast, true).size());
   TRY_RESULT(fec_type, fec::FecType::create(std::move(broadcast->fec_)));
   if (fec_type.size() != (td::uint32)broadcast->data_size_) {
     return td::Status::Error("data size mismatch");
@@ -475,19 +478,65 @@ td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNode
   auto broadcast_hash = compute_broadcast_id(source.compute_short_id(), fec_type, broadcast->data_hash_,
                                              broadcast->data_size_, broadcast->flags_);
   auto part_hash = compute_broadcast_part_id(broadcast_hash, part_data_hash, broadcast->seqno_);
+  auto seqno = static_cast<td::uint32>(broadcast->seqno_);
+  auto it = broadcasts_.find(broadcast_hash);
+  bool duplicate = overlay->is_delivered(broadcast_hash) || (it != broadcasts_.end() && it->second->received_part(seqno));
+  FecBroadcastPartInfo info;
+  info.direct_sender = src_peer_id;
+  info.origin_broadcaster = adnl::AdnlNodeIdShort{source.compute_short_id()};
+  info.source_key_id = source.compute_short_id();
+  info.overlay_id = overlay->overlay_id();
+  info.broadcast_type = ton_api::overlay_broadcastFec::ID;
+  info.wire_size = wire_size;
+  info.broadcast_data_size = broadcast->data_size_;
+  info.part_size = static_cast<td::int32>(broadcast->data_.size());
+  info.seqno = broadcast->seqno_;
+  info.data_hash = broadcast->data_hash_;
+  info.part_hash = part_hash;
+  info.part_data_hash = part_data_hash;
+  info.broadcast_hash = broadcast_hash;
+  info.flags = broadcast->flags_;
+  info.date = broadcast->date_;
+  info.signature_size = static_cast<td::uint32>(broadcast->signature_.size());
+  info.duplicate = duplicate;
+  overlay->notify_fec_broadcast_part(std::move(info));
+  if (duplicate) {
+    return td::Status::Error(ErrorCode::notready, "duplicate broadcast");
+  }
   TRY_RESULT(cert, Certificate::create(std::move(broadcast->certificate_)));
   BroadcastFecPart part(broadcast_hash, part_hash, source, std::move(cert), broadcast->data_hash_,
                         static_cast<td::uint32>(broadcast->data_size_), static_cast<td::uint32>(broadcast->flags_),
-                        part_data_hash, std::move(broadcast->data_), static_cast<td::uint32>(broadcast->seqno_),
-                        std::move(fec_type), static_cast<td::uint32>(broadcast->date_),
-                        std::move(broadcast->signature_), false, src_peer_id);
+                        part_data_hash, std::move(broadcast->data_), seqno, std::move(fec_type), static_cast<td::uint32>(broadcast->date_),
+                        std::move(broadcast->signature_), false, src_peer_id, false);
   TRY_STATUS(process(overlay, part, false));
   return td::Status::OK();
 }
 
 td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort src_peer_id,
                                             tl_object_ptr<ton_api::overlay_broadcastFecShort> broadcast) {
+  auto source = PublicKey{broadcast->src_};
+  auto seqno = static_cast<td::uint32>(broadcast->seqno_);
+  auto part_hash = compute_broadcast_part_id(broadcast->broadcast_hash_, broadcast->part_data_hash_, seqno);
   auto it = broadcasts_.find(broadcast->broadcast_hash_);
+  bool duplicate = overlay->is_delivered(broadcast->broadcast_hash_) ||
+                   (it != broadcasts_.end() && it->second->received_part(seqno));
+  FecBroadcastPartInfo info;
+  info.direct_sender = src_peer_id;
+  info.origin_broadcaster = adnl::AdnlNodeIdShort{source.compute_short_id()};
+  info.source_key_id = source.compute_short_id();
+  info.overlay_id = overlay->overlay_id();
+  info.broadcast_type = ton_api::overlay_broadcastFecShort::ID;
+  info.wire_size = static_cast<td::uint64>(serialize_tl_object(broadcast, true).size());
+  info.seqno = broadcast->seqno_;
+  info.part_hash = part_hash;
+  info.part_data_hash = broadcast->part_data_hash_;
+  info.broadcast_hash = broadcast->broadcast_hash_;
+  info.signature_size = static_cast<td::uint32>(broadcast->signature_.size());
+  info.duplicate = duplicate;
+  overlay->notify_fec_broadcast_part(std::move(info));
+  if (duplicate) {
+    return td::Status::Error(ErrorCode::notready, "duplicate broadcast");
+  }
   if (it == broadcasts_.end()) {
     return td::Status::Error(ErrorCode::notready, "short part of unknown broadcast");
   }
@@ -497,19 +546,16 @@ td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNode
   }
   TRY_STATUS(overlay->check_date(bcast.date_));
 
-  auto source = PublicKey{broadcast->src_};
   auto part_data_hash = broadcast->part_data_hash_;
   auto broadcast_hash = bcast.hash_;
-  auto part_hash = compute_broadcast_part_id(broadcast_hash, part_data_hash, broadcast->seqno_);
   TRY_RESULT(cert, Certificate::create(std::move(broadcast->certificate_)));
-  auto seqno = static_cast<td::uint32>(broadcast->seqno_);
   TRY_RESULT(part_data, bcast.get_part(seqno));
   if (part_data_hash != td::sha256_bits256(part_data)) {
     return td::Status::Error(ErrorCode::protoviolation, "wrong part data hash");
   }
   BroadcastFecPart part(broadcast_hash, part_hash, source, std::move(cert), bcast.data_hash_, bcast.fec_type_.size(),
                         bcast.flags_, part_data_hash, std::move(part_data), seqno, bcast.fec_type_, bcast.date_,
-                        std::move(broadcast->signature_), true, src_peer_id);
+                        std::move(broadcast->signature_), true, src_peer_id, false);
   TRY_STATUS(part.run_checks(overlay, &bcast));
   TRY_STATUS(part.run(overlay, bcast));
   return td::Status::OK();

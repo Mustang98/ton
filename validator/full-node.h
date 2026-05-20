@@ -57,7 +57,17 @@ struct FullNodeConfig {
 };
 
 struct FullNodeOptions {
+  struct OverlayObserverOptions {
+    bool enabled_ = false;
+    std::string peers_file_;
+    std::string output_dir_;
+    td::uint32 max_active_queries_ = 5;
+    td::uint32 queries_per_member_ = 20;
+    double query_timeout_ = 5.0;
+  };
+
   FullNodeConfig config_;
+  OverlayObserverOptions overlay_observer_;
   double public_broadcast_speed_multiplier_ = 1.0;
   double private_broadcast_speed_multiplier_ = 1.0;
   double fast_sync_broadcast_speed_multiplier_ = 1.0;
@@ -113,6 +123,7 @@ class FullNode : public td::actor::Actor {
 
   virtual void import_fast_sync_member_certificate(adnl::AdnlNodeIdShort local_id,
                                                    overlay::OverlayMemberCertificate cert) = 0;
+  virtual void receive_fec_broadcast_part(ShardIdFull shard, overlay::FecBroadcastPartInfo info) = 0;
 
   static constexpr td::uint32 max_block_size() {
     return 4 << 20;

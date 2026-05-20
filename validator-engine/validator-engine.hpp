@@ -275,6 +275,7 @@ class ValidatorEngine : public td::actor::Actor {
   bool parallel_validation_ = false;
   std::string db_event_fifo_path_;
   ton::validator::fullnode::FullNodeOptions full_node_options_ = {.config_ = {},
+                                                                  .overlay_observer_ = {},
                                                                   .public_broadcast_speed_multiplier_ = 3.33,
                                                                   .private_broadcast_speed_multiplier_ = 3.33,
                                                                   .fast_sync_broadcast_speed_multiplier_ = 3.33,
@@ -418,6 +419,24 @@ class ValidatorEngine : public td::actor::Actor {
   }
   void set_initial_sync_delay(double value) {
     full_node_options_.initial_sync_delay_ = value;
+  }
+  void set_fullnode_overlay_observer_enabled(bool value) {
+    full_node_options_.overlay_observer_.enabled_ = value;
+  }
+  void set_fullnode_overlay_observer_peers(std::string value) {
+    full_node_options_.overlay_observer_.peers_file_ = std::move(value);
+  }
+  void set_fullnode_overlay_observer_dir(std::string value) {
+    full_node_options_.overlay_observer_.output_dir_ = std::move(value);
+  }
+  void set_fullnode_overlay_observer_max_active(td::uint32 value) {
+    full_node_options_.overlay_observer_.max_active_queries_ = value;
+  }
+  void set_fullnode_overlay_observer_queries_per_member(td::uint32 value) {
+    full_node_options_.overlay_observer_.queries_per_member_ = value;
+  }
+  void set_fullnode_overlay_observer_query_timeout(double value) {
+    full_node_options_.overlay_observer_.query_timeout_ = value;
   }
   void set_ratelimit_window_size(double seconds) {
     full_node_options_.ratelimit_window_size_ = seconds;

@@ -91,6 +91,7 @@ class FullNodeShardImpl : public FullNodeShard {
   void set_config(FullNodeConfig config) override {
     opts_.config_ = config;
   }
+  void set_overlay_observer_peers(std::vector<adnl::AdnlNodeIdShort> peers) override;
 
   void try_get_next_block(td::Timestamp timestamp, td::Promise<ReceivedBlock> promise);
   void got_next_block(td::Result<BlockHandle> block);
@@ -146,6 +147,7 @@ class FullNodeShardImpl : public FullNodeShard {
                      td::Promise<td::BufferSlice> promise);
   void receive_query(adnl::AdnlNodeIdShort src, td::BufferSlice query, td::Promise<td::BufferSlice> promise);
   void receive_message(adnl::AdnlNodeIdShort src, td::BufferSlice data);
+  void receive_fec_broadcast_part(overlay::FecBroadcastPartInfo info);
 
   void process_broadcast(PublicKeyHash src, ton_api::tonNode_blockBroadcast &query);
   void process_broadcast(PublicKeyHash src, ton_api::tonNode_blockBroadcastCompressed &query);

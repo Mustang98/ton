@@ -101,6 +101,8 @@ class AdnlPeerTable : public Adnl {
                                          td::Promise<td::Unit> promise) = 0;
   virtual void get_addr_list_from_db(AdnlNodeIdShort local_id, AdnlNodeIdShort peer_id,
                                      td::Promise<AdnlDbItem> promise) = 0;
+  virtual void get_peer_addr_lists(AdnlNodeIdShort local_id, AdnlNodeIdShort peer_id,
+                                   td::Promise<Adnl::PeerAddrLists> promise) = 0;
 
   virtual void deliver(AdnlNodeIdShort src, AdnlNodeIdShort dst, td::BufferSlice data) = 0;
   virtual void deliver_query(AdnlNodeIdShort src, AdnlNodeIdShort dst, td::BufferSlice data,

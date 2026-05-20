@@ -5664,6 +5664,7 @@ std::atomic<bool> rotate_logs_flags{false};
 void force_rotate_logs(int sig) {
   rotate_logs_flags.store(true);
 }
+constexpr td::int64 VALIDATOR_LOG_ROTATE_THRESHOLD = 5LL << 30;
 std::atomic<bool> need_scheduler_status_flag{false};
 void need_scheduler_status(int sig) {
   need_scheduler_status_flag.store(true);
@@ -5776,7 +5777,7 @@ int main(int argc, char *argv[]) {
     if (session_logs_file.empty()) {
       session_logs_file = fname.str() + ".session-stats";
     }
-    logger_ = td::TsFileLog::create(fname.str()).move_as_ok();
+    logger_ = td::TsFileLog::create(fname.str(), VALIDATOR_LOG_ROTATE_THRESHOLD).move_as_ok();
     td::log_interface = logger_.get();
     td::set_log_fatal_error_callback([](td::CSlice s) { std::cerr << "FATAL_ERROR: " << s.c_str() << std::endl; });
   });
@@ -6072,6 +6073,58 @@ int main(int argc, char *argv[]) {
         acts.push_back([&x, v]() { td::actor::send_closure(x, &ValidatorEngine::set_initial_sync_delay, v); });
         return td::Status::OK();
       });
+  p.add_option('\0', "fullnode-overlay-observer",
+               "enable full-node public overlay observer peer seeding and FEC metadata logging", [&]() {
+                 acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::set_fullnode_overlay_observer_enabled, true); });
+               });
+  p.add_option('\0', "fullnode-overlay-observer-peers",
+               "optional initial peer JSON used by full-node overlay observer",
+               [&](td::Slice s) {
+                 acts.push_back([&x, value = s.str()]() {
+                   td::actor::send_closure(x, &ValidatorEngine::set_fullnode_overlay_observer_peers, value);
+                 });
+               });
+  p.add_option('\0', "fullnode-overlay-observer-dir", "output directory for full-node overlay observer state/logs",
+               [&](td::Slice s) {
+                 acts.push_back([&x, value = s.str()]() {
+                   td::actor::send_closure(x, &ValidatorEngine::set_fullnode_overlay_observer_dir, value);
+                 });
+               });
+  p.add_checked_option('\0', "fullnode-overlay-observer-max-active",
+                       "maximum active full-node overlay observer getRandomPeers requests", [&](td::Slice s) {
+                         TRY_RESULT(v, td::to_integer_safe<td::uint32>(s));
+                         if (v == 0) {
+                           return td::Status::Error("fullnode-overlay-observer-max-active should be positive");
+                         }
+                         acts.push_back([&x, v]() {
+                           td::actor::send_closure(x, &ValidatorEngine::set_fullnode_overlay_observer_max_active, v);
+                         });
+                         return td::Status::OK();
+                       });
+  p.add_checked_option('\0', "fullnode-overlay-observer-queries-per-member",
+                       "getRandomPeers requests sent to each discovered overlay member; default 20", [&](td::Slice s) {
+                         TRY_RESULT(v, td::to_integer_safe<td::uint32>(s));
+                         if (v == 0) {
+                           return td::Status::Error("fullnode-overlay-observer-queries-per-member should be positive");
+                         }
+                         acts.push_back([&x, v]() {
+                           td::actor::send_closure(x,
+                                                   &ValidatorEngine::set_fullnode_overlay_observer_queries_per_member, v);
+                         });
+                         return td::Status::OK();
+                       });
+  p.add_checked_option('\0', "fullnode-overlay-observer-query-timeout",
+                       "timeout for full-node overlay observer getRandomPeers requests, in seconds", [&](td::Slice s) {
+                         auto v = td::to_double(s);
+                         if (v <= 0) {
+                           return td::Status::Error("fullnode-overlay-observer-query-timeout should be positive");
+                         }
+                         acts.push_back([&x, v]() {
+                           td::actor::send_closure(x, &ValidatorEngine::set_fullnode_overlay_observer_query_timeout,
+                                                   v);
+                         });
+                         return td::Status::OK();
+                       });
   p.add_checked_option(
       0, "fullnode-ratelimit-window-size", "ratelimit tracking window size (in seconds)",
       [&](td::Slice s) -> td::Status {

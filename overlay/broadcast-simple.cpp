@@ -123,7 +123,9 @@ void BroadcastSimple::checked(OverlayImpl *overlay, td::Result<td::Unit> R) {
 
 void BroadcastSimple::run_continue(OverlayImpl *overlay) {
   auto B = serialize();
-  auto nodes = overlay->get_neighbours(overlay->propagate_broadcast_to());
+  auto nodes = is_ours_ || overlay->should_rebroadcast_received_broadcasts()
+                   ? overlay->get_neighbours(overlay->propagate_broadcast_to())
+                   : std::vector<adnl::AdnlNodeIdShort>{};
   auto manager = overlay->overlay_manager();
   for (auto &n : nodes) {
     td::actor::send_closure(manager, &OverlayManager::send_message, n, overlay->local_id(), overlay->overlay_id(),

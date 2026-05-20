@@ -519,6 +519,19 @@ void OverlayManager::update_root_member_list(adnl::AdnlNodeIdShort local_id, Ove
   }
 }
 
+void OverlayManager::receive_overlay_nodes(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay_id,
+                                           tl_object_ptr<ton_api::overlay_nodes> nodes) {
+  auto it = overlays_.find(local_id);
+  if (it == overlays_.end()) {
+    return;
+  }
+  auto it2 = it->second.find(overlay_id);
+  if (it2 == it->second.end()) {
+    return;
+  }
+  td::actor::send_closure(it2->second.overlay, &Overlay::receive_nodes_from_db, std::move(nodes));
+}
+
 void OverlayManager::get_overlay_random_peers(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay_id,
                                               td::uint32 max_peers,
                                               td::Promise<std::vector<adnl::AdnlNodeIdShort>> promise) {

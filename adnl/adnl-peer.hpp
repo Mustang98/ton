@@ -80,6 +80,7 @@ class AdnlPeerPairImpl : public AdnlPeerPair {
   void alarm_query(AdnlQueryId id) override;
 
   void get_peer_node(td::Promise<AdnlNode> promise) override;
+  void get_peer_addr_lists(td::Promise<Adnl::PeerAddrLists> promise) override;
 
   void update_dht_node(td::actor::ActorId<dht::Dht> dht_node) override {
     dht_node_ = dht_node;
