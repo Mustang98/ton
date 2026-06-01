@@ -6074,8 +6074,14 @@ int main(int argc, char *argv[]) {
         return td::Status::OK();
       });
   p.add_option('\0', "fullnode-overlay-observer",
-               "enable full-node public overlay observer peer seeding and FEC metadata logging", [&]() {
+               "enable full-node public overlay observer peer seeding and FEC sender tracking", [&]() {
                  acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::set_fullnode_overlay_observer_enabled, true); });
+               });
+  p.add_option('\0', "fullnode-overlay-observer-log-fec-parts",
+               "enable full-node overlay observer per-FEC-part JSONL logging", [&]() {
+                 acts.push_back([&x]() {
+                   td::actor::send_closure(x, &ValidatorEngine::set_fullnode_overlay_observer_log_fec_parts, true);
+                 });
                });
   p.add_option('\0', "fullnode-overlay-observer-peers",
                "optional initial peer JSON used by full-node overlay observer",

@@ -423,6 +423,9 @@ class ValidatorEngine : public td::actor::Actor {
   void set_fullnode_overlay_observer_enabled(bool value) {
     full_node_options_.overlay_observer_.enabled_ = value;
   }
+  void set_fullnode_overlay_observer_log_fec_parts(bool value) {
+    full_node_options_.overlay_observer_.log_fec_parts_ = value;
+  }
   void set_fullnode_overlay_observer_peers(std::string value) {
     full_node_options_.overlay_observer_.peers_file_ = std::move(value);
   }

@@ -49,13 +49,16 @@ namespace validator {
 namespace fullnode {
 
 static const double INACTIVE_SHARD_TTL = (double)overlay::Overlays::overlay_peer_ttl() + 60.0;
-static const td::uint32 OVERLAY_OBSERVER_MAX_ACTIVE_ADDRESS_RESOLVES = 4;
+static const td::uint32 OVERLAY_OBSERVER_MAX_ACTIVE_ADDRESS_RESOLVES = 5;
 static const td::uint32 OVERLAY_OBSERVER_NO_ADDRESS_PROBE_QUERIES = 1;
 static const double OVERLAY_OBSERVER_NO_ADDRESS_PROBE_MIN_INTERVAL = 30.0;
 static const size_t OVERLAY_OBSERVER_RECENT_NEIGHBOURS_LIMIT = 100;
+static const double OVERLAY_OBSERVER_PEER_STATE_TTL = 2.0 * 60.0 * 60.0;
 static const td::uint64 OVERLAY_OBSERVER_MIN_PEER_SHRINK_TO_REFUSE = 100;
 static const td::uint64 OVERLAY_OBSERVER_FEC_PARTS_ROTATE_BYTES = 10ULL * 1024 * 1024 * 1024;
 static const td::uint64 OVERLAY_OBSERVER_FEC_PARTS_RETAIN_BYTES = 100ULL * 1024 * 1024 * 1024;
+static const td::uint64 OVERLAY_OBSERVER_MEMBERS_LOG_ROTATE_BYTES = 1ULL * 1024 * 1024 * 1024;
+static const td::uint64 OVERLAY_OBSERVER_MEMBERS_LOG_RETAIN_BYTES = 32ULL * 1024 * 1024 * 1024;
 
 std::string observer_json_escape(td::Slice s) {
   std::string out;
@@ -874,17 +877,26 @@ void FullNodeImpl::init_overlay_observer() {
   overlay_observer_peers_path_ = overlay_observer_dir_ + "/overlay-peers.json";
   overlay_observer_fec_parts_path_ = overlay_observer_dir_ + "/fec-parts.jsonl";
   overlay_observer_members_log_path_ = overlay_observer_dir_ + "/overlay-members.jsonl";
-  load_overlay_observer_peer_state();
+  bool has_existing_peer_state = td::stat(overlay_observer_peers_path_).is_ok();
+  if (!load_overlay_observer_peer_state() && has_existing_peer_state) {
+    overlay_observer_peer_state_dump_blocked_ = true;
+    LOG(ERROR) << "full-node overlay observer will not overwrite unreadable existing state "
+               << overlay_observer_peers_path_;
+  }
   load_overlay_observer_peers();
 
-  open_overlay_observer_fec_parts_log();
-  rotate_overlay_observer_fec_parts_if_needed();
-  prune_overlay_observer_fec_parts_logs();
-  overlay_observer_members_log_stream_.open(overlay_observer_members_log_path_, std::ios::out | std::ios::app);
-  if (!overlay_observer_members_log_stream_) {
-    LOG(WARNING) << "failed to open overlay members log " << overlay_observer_members_log_path_;
+  if (opts_.overlay_observer_.log_fec_parts_) {
+    open_overlay_observer_fec_parts_log();
+    rotate_overlay_observer_fec_parts_if_needed();
+    prune_overlay_observer_fec_parts_logs();
   }
+  open_overlay_observer_members_log();
+  rotate_overlay_observer_members_log_if_needed();
+  prune_overlay_observer_members_logs();
 
+  for (auto &[shard, info] : shards_) {
+    seed_overlay_observer_peers(shard, info);
+  }
   pump_overlay_observer_address_resolves();
   rebuild_overlay_observer_queue();
   overlay_observer_flush_at_ = td::Timestamp::in(30.0);
@@ -1045,6 +1057,43 @@ bool FullNodeImpl::load_overlay_observer_peer_state() {
     }
   };
 
+  std::vector<const td::JsonValue *> peer_items;
+  std::vector<std::string> peer_ids_by_index;
+  auto collect_peer_id = [&](const td::JsonValue &item) {
+    peer_items.push_back(&item);
+    peer_ids_by_index.emplace_back();
+    if (item.type() != td::JsonValue::Type::Object) {
+      return;
+    }
+    auto id = item.get_object().get_optional_string_field("adnl_id");
+    if (id.is_error()) {
+      return;
+    }
+    auto peer_id = id.move_as_ok();
+    if (observer_is_hex256(peer_id)) {
+      peer_ids_by_index.back() = std::move(peer_id);
+    }
+  };
+  auto load_peer_ref = [&](const td::JsonValue &value) -> std::string {
+    if (value.type() == td::JsonValue::Type::String) {
+      auto peer_id = value.get_string().str();
+      return observer_is_hex256(peer_id) ? std::move(peer_id) : std::string();
+    }
+    if (value.type() == td::JsonValue::Type::Number) {
+      auto index = td::to_integer_safe<td::uint64>(value.get_number());
+      if (index.is_error()) {
+        return {};
+      }
+      auto i = index.move_as_ok();
+      if (i >= peer_ids_by_index.size()) {
+        return {};
+      }
+      return peer_ids_by_index[static_cast<size_t>(i)];
+    }
+    return {};
+  };
+
+  td::uint64 parsed_state_peers = 0;
   auto load_peer = [&](const td::JsonValue &item) {
     if (item.type() != td::JsonValue::Type::Object) {
       return;
@@ -1059,6 +1108,7 @@ bool FullNodeImpl::load_overlay_observer_peer_state() {
     if (member.adnl_id.empty()) {
       return;
     }
+    parsed_state_peers++;
     auto version = obj.get_optional_int_field("version", 0);
     if (version.is_ok()) {
       member.version = version.move_as_ok();
@@ -1173,23 +1223,17 @@ bool FullNodeImpl::load_overlay_observer_peer_state() {
     obj.foreach([&](td::Slice field_name, const td::JsonValue &field_value) {
       if (field_name == "neighbours" && field_value.type() == td::JsonValue::Type::Array) {
         for (const auto &neighbour : field_value.get_array()) {
-          if (neighbour.type() == td::JsonValue::Type::String) {
-            auto value = neighbour.get_string().str();
-            if (!value.empty()) {
-              member.neighbours.insert(std::move(value));
-            }
+          auto value = load_peer_ref(neighbour);
+          if (!value.empty() && value != member.adnl_id) {
+            member.neighbours.insert(std::move(value));
           }
         }
         return;
       }
       if (field_name == "recent_neighbours" && field_value.type() == td::JsonValue::Type::Array) {
         for (const auto &neighbour : field_value.get_array()) {
-          if (neighbour.type() != td::JsonValue::Type::String) {
-            continue;
-          }
-          auto value = neighbour.get_string().str();
-          if (observer_is_hex256(value) &&
-              value != member.adnl_id &&
+          auto value = load_peer_ref(neighbour);
+          if (!value.empty() && value != member.adnl_id &&
               std::find(member.recent_neighbours.begin(), member.recent_neighbours.end(), value) ==
                   member.recent_neighbours.end()) {
             member.recent_neighbours.push_back(std::move(value));
@@ -1283,7 +1327,7 @@ bool FullNodeImpl::load_overlay_observer_peer_state() {
   td::uint64 expected_peers_count = 0;
   if (root.type() == td::JsonValue::Type::Array) {
     for (const auto &item : root.get_array()) {
-      load_peer(item);
+      collect_peer_id(item);
     }
   } else if (root.type() == td::JsonValue::Type::Object) {
     const auto &obj = root.get_object();
@@ -1299,7 +1343,7 @@ bool FullNodeImpl::load_overlay_observer_peer_state() {
     obj.foreach([&](td::Slice field_name, const td::JsonValue &field_value) {
       if (field_name == "peers" && field_value.type() == td::JsonValue::Type::Array) {
         for (const auto &item : field_value.get_array()) {
-          load_peer(item);
+          collect_peer_id(item);
         }
       }
     });
@@ -1307,14 +1351,31 @@ bool FullNodeImpl::load_overlay_observer_peer_state() {
     LOG(WARNING) << "full-node overlay observer peers root is neither object nor array: " << overlay_observer_peers_path_;
     return false;
   }
-  if (expected_peers_count > 0 && overlay_observer_members_.empty()) {
+  for (const auto *item : peer_items) {
+    load_peer(*item);
+  }
+  if (expected_peers_count > 0 && parsed_state_peers == 0) {
     LOG(ERROR) << "refusing to accept empty full-node overlay observer state loaded from non-empty "
                << overlay_observer_peers_path_ << " expected_peers_count=" << expected_peers_count;
     return false;
   }
 
+  auto pruned_peers = prune_overlay_observer_peer_state(td::Clocks::system());
+  if (pruned_peers != 0) {
+    LOG(WARNING) << "full-node overlay observer pruned " << pruned_peers
+                 << " stale peers while loading " << overlay_observer_peers_path_;
+  }
+
   LOG(WARNING) << "full-node overlay observer loaded " << overlay_observer_members_.size() << " peers and "
                << overlay_observer_fec_senders_.size() << " FEC senders from " << overlay_observer_peers_path_;
+  std::set<std::string> loaded_peer_ids;
+  for (const auto &[peer_id, _] : overlay_observer_members_) {
+    loaded_peer_ids.insert(peer_id);
+  }
+  for (const auto &[peer_id, _] : overlay_observer_fec_senders_) {
+    loaded_peer_ids.insert(peer_id);
+  }
+  overlay_observer_last_dump_peer_count_ = loaded_peer_ids.size();
   return true;
 }
 
@@ -1453,6 +1514,94 @@ bool FullNodeImpl::overlay_observer_peer_is_recent(const std::string &peer_hex, 
   }
   auto fec_sender_it = overlay_observer_fec_senders_.find(peer_hex);
   return fec_sender_it != overlay_observer_fec_senders_.end() && fec_sender_it->second.last_seen >= min_version;
+}
+
+bool FullNodeImpl::overlay_observer_peer_has_persisted_activity(const std::string &peer_hex,
+                                                                const OverlayObserverMember &member, double now) const {
+  auto min_time = now - OVERLAY_OBSERVER_PEER_STATE_TTL;
+  if (member.version > 0 && static_cast<double>(member.version) >= min_time) {
+    return true;
+  }
+  auto fec_sender_it = overlay_observer_fec_senders_.find(peer_hex);
+  return fec_sender_it != overlay_observer_fec_senders_.end() && fec_sender_it->second.last_seen >= min_time;
+}
+
+td::uint64 FullNodeImpl::prune_overlay_observer_peer_state(double now) {
+  std::set<std::string> stale_peer_ids;
+  for (const auto &[peer_id, member] : overlay_observer_members_) {
+    if (!overlay_observer_peer_has_persisted_activity(peer_id, member, now)) {
+      stale_peer_ids.insert(peer_id);
+    }
+  }
+  for (const auto &[peer_id, _] : overlay_observer_fec_senders_) {
+    if (stale_peer_ids.contains(peer_id)) {
+      continue;
+    }
+    auto member_it = overlay_observer_members_.find(peer_id);
+    OverlayObserverMember default_member;
+    default_member.adnl_id = peer_id;
+    const auto &member = member_it == overlay_observer_members_.end() ? default_member : member_it->second;
+    if (!overlay_observer_peer_has_persisted_activity(peer_id, member, now)) {
+      stale_peer_ids.insert(peer_id);
+    }
+  }
+  if (stale_peer_ids.empty()) {
+    return 0;
+  }
+
+  for (const auto &peer_id : stale_peer_ids) {
+    overlay_observer_members_.erase(peer_id);
+    overlay_observer_fec_senders_.erase(peer_id);
+  }
+
+  auto is_stale_peer = [&](const adnl::AdnlNodeIdShort &peer) {
+    return stale_peer_ids.contains(observer_adnl_id_hex(peer));
+  };
+  for (auto &[_, peers] : overlay_observer_initial_peers_) {
+    peers.erase(std::remove_if(peers.begin(), peers.end(), is_stale_peer), peers.end());
+  }
+  for (auto &[_, peers] : overlay_observer_known_peers_) {
+    for (auto it = peers.begin(); it != peers.end();) {
+      if (is_stale_peer(*it)) {
+        it = peers.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (size_t i = 0, size = overlay_observer_queue_.size(); i < size; ++i) {
+    auto target = overlay_observer_queue_.front();
+    overlay_observer_queue_.pop_front();
+    if (!is_stale_peer(target.second)) {
+      overlay_observer_queue_.push_back(target);
+    }
+  }
+
+  std::set<std::string> live_peer_ids;
+  for (const auto &[peer_id, _] : overlay_observer_members_) {
+    live_peer_ids.insert(peer_id);
+  }
+  for (const auto &[peer_id, _] : overlay_observer_fec_senders_) {
+    live_peer_ids.insert(peer_id);
+  }
+  for (auto &[_, member] : overlay_observer_members_) {
+    for (auto it = member.neighbours.begin(); it != member.neighbours.end();) {
+      if (!live_peer_ids.contains(*it)) {
+        it = member.neighbours.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    member.recent_neighbours.erase(std::remove_if(member.recent_neighbours.begin(), member.recent_neighbours.end(),
+                                                  [&](const std::string &peer_id) {
+                                                    return !live_peer_ids.contains(peer_id);
+                                                  }),
+                                   member.recent_neighbours.end());
+  }
+
+  overlay_observer_members_dirty_ = true;
+  overlay_observer_fec_senders_dirty_ = true;
+  return stale_peer_ids.size();
 }
 
 bool FullNodeImpl::choose_overlay_observer_oldest_target(OverlayObserverTarget &target) const {
@@ -1661,18 +1810,17 @@ void FullNodeImpl::log_overlay_observer_address_resolve(td::Slice source, double
   if (!overlay_observer_members_log_stream_) {
     return;
   }
-  overlay_observer_members_log_stream_ << std::fixed << std::setprecision(6)
-                                       << "{\"event\":\"overlay_address_resolve\",\"source\":"
-                                       << observer_json_quote(source) << ",\"ts\":" << ts
-                                       << ",\"target_adnl_id\":" << observer_json_quote(peer_hex)
-                                       << ",\"success\":" << (success ? "true" : "false")
-                                       << ",\"addresses\":" << address_count
-                                       << ",\"active_address_resolves\":" << active_resolves;
+  std::ostringstream line;
+  line << std::fixed << std::setprecision(6)
+       << "{\"event\":\"overlay_address_resolve\",\"source\":" << observer_json_quote(source) << ",\"ts\":" << ts
+       << ",\"target_adnl_id\":" << observer_json_quote(peer_hex) << ",\"success\":"
+       << (success ? "true" : "false") << ",\"addresses\":" << address_count
+       << ",\"active_address_resolves\":" << active_resolves;
   if (!error.empty()) {
-    overlay_observer_members_log_stream_ << ",\"error\":" << observer_json_quote(error);
+    line << ",\"error\":" << observer_json_quote(error);
   }
-  overlay_observer_members_log_stream_ << "}\n";
-  overlay_observer_members_log_stream_.flush();
+  line << "}\n";
+  write_overlay_observer_members_log_line(line.str());
 }
 
 void FullNodeImpl::finish_overlay_observer_address_resolve(adnl::AdnlNodeIdShort peer,
@@ -1823,15 +1971,13 @@ void FullNodeImpl::finish_overlay_observer_success_connection_address(adnl::Adnl
       member.last_conn_ip_at = ts;
       bool address_changed = apply_overlay_observer_connection_endpoint(peer, endpoint, ts);
       if (overlay_observer_members_log_stream_ && (endpoint_changed || address_changed)) {
-        overlay_observer_members_log_stream_ << std::fixed << std::setprecision(6)
-                                             << "{\"event\":\"overlay_connection_endpoint\""
-                                             << ",\"ts\":" << ts
-                                             << ",\"target_adnl_id\":" << observer_json_quote(peer_hex)
-                                             << ",\"conn_ip\":" << observer_json_quote(endpoint)
-                                             << ",\"address_source\":" << observer_json_quote(member.address_source)
-                                             << ",\"address_updated\":" << (address_changed ? "true" : "false")
-                                             << "}\n";
-        overlay_observer_members_log_stream_.flush();
+        std::ostringstream line;
+        line << std::fixed << std::setprecision(6) << "{\"event\":\"overlay_connection_endpoint\""
+             << ",\"ts\":" << ts << ",\"target_adnl_id\":" << observer_json_quote(peer_hex)
+             << ",\"conn_ip\":" << observer_json_quote(endpoint)
+             << ",\"address_source\":" << observer_json_quote(member.address_source)
+             << ",\"address_updated\":" << (address_changed ? "true" : "false") << "}\n";
+        write_overlay_observer_members_log_line(line.str());
       }
       overlay_observer_members_dirty_ = true;
       if (!member.addresses.empty()) {
@@ -1845,14 +1991,12 @@ void FullNodeImpl::finish_overlay_observer_success_connection_address(adnl::Adnl
   member.success_query_but_no_ip_at = ts;
   overlay_observer_members_dirty_ = true;
   if (overlay_observer_members_log_stream_) {
-    overlay_observer_members_log_stream_ << std::fixed << std::setprecision(6)
-                                         << "{\"event\":\"overlay_success_query_but_no_ip\""
-                                         << ",\"ts\":" << ts
-                                         << ",\"target_adnl_id\":" << observer_json_quote(peer_hex)
-                                         << ",\"peer_table_error\":" << observer_json_quote(peer_table_error)
-                                         << ",\"connection_error\":" << observer_json_quote(error)
-                                         << "}\n";
-    overlay_observer_members_log_stream_.flush();
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(6) << "{\"event\":\"overlay_success_query_but_no_ip\""
+         << ",\"ts\":" << ts << ",\"target_adnl_id\":" << observer_json_quote(peer_hex)
+         << ",\"peer_table_error\":" << observer_json_quote(peer_table_error)
+         << ",\"connection_error\":" << observer_json_quote(error) << "}\n";
+    write_overlay_observer_members_log_line(line.str());
   }
   pump_overlay_observer_queries();
 }
@@ -1861,6 +2005,18 @@ void FullNodeImpl::dump_overlay_observer_peer_state() {
   if (!opts_.overlay_observer_.enabled_ || overlay_observer_peers_path_.empty()) {
     return;
   }
+  if (overlay_observer_peer_state_dump_blocked_) {
+    LOG(ERROR) << "refusing to overwrite " << overlay_observer_peers_path_
+               << " because existing state failed to load at startup";
+    return;
+  }
+  auto now = td::Clocks::system();
+  auto pruned_peers = prune_overlay_observer_peer_state(now);
+  if (pruned_peers != 0) {
+    LOG(WARNING) << "full-node overlay observer pruned " << pruned_peers << " stale peers before dumping "
+                 << overlay_observer_peers_path_;
+  }
+
   std::set<std::string> peer_ids;
   for (const auto &[peer_id, _] : overlay_observer_members_) {
     peer_ids.insert(peer_id);
@@ -1868,12 +2024,19 @@ void FullNodeImpl::dump_overlay_observer_peer_state() {
   for (const auto &[peer_id, _] : overlay_observer_fec_senders_) {
     peer_ids.insert(peer_id);
   }
+  std::map<std::string, size_t> peer_index_by_id;
+  size_t next_peer_index = 0;
+  for (const auto &peer_id : peer_ids) {
+    peer_index_by_id.emplace(peer_id, next_peer_index++);
+  }
 
   std::ostringstream os;
   os << std::fixed << std::setprecision(6);
-  os << "{\n  \"updated_at\": " << td::Clocks::system() << ",\n  \"peers_count\": " << peer_ids.size()
+  os << "{\n  \"updated_at\": " << now << ",\n  \"peers_count\": " << peer_ids.size()
      << ",\n  \"fec_senders_count\": " << overlay_observer_fec_senders_.size()
-     << ",\n  \"fec_parts_received\": " << overlay_observer_fec_parts_received_ << ",\n  \"peers\": [\n";
+     << ",\n  \"fec_parts_received\": " << overlay_observer_fec_parts_received_
+     << ",\n  \"neighbour_encoding\": \"peer_index\""
+     << ",\n  \"peers\": [\n";
 
   bool first = true;
   for (const auto &peer_id : peer_ids) {
@@ -1910,11 +2073,18 @@ void FullNodeImpl::dump_overlay_observer_peer_state() {
     os << ", \"last_error\": " << observer_json_quote(member.last_error) << ", \"neighbours\": [";
     bool first_neighbour = true;
     for (const auto &neighbour : member.neighbours) {
+      if (neighbour == peer_id) {
+        continue;
+      }
+      auto index_it = peer_index_by_id.find(neighbour);
+      if (index_it == peer_index_by_id.end()) {
+        continue;
+      }
       if (!first_neighbour) {
         os << ", ";
       }
       first_neighbour = false;
-      os << observer_json_quote(neighbour);
+      os << index_it->second;
     }
     os << "]";
     os << ", \"recent_neighbours\": [";
@@ -1923,11 +2093,15 @@ void FullNodeImpl::dump_overlay_observer_peer_state() {
       if (neighbour == peer_id) {
         continue;
       }
+      auto index_it = peer_index_by_id.find(neighbour);
+      if (index_it == peer_index_by_id.end()) {
+        continue;
+      }
       if (!first_recent_neighbour) {
         os << ", ";
       }
       first_recent_neighbour = false;
-      os << observer_json_quote(neighbour);
+      os << index_it->second;
     }
     os << "]";
     os << ", \"addresses\": [";
@@ -2016,44 +2190,18 @@ void FullNodeImpl::dump_overlay_observer_peer_state() {
   }
 
   os << "\n  ]\n}\n";
-  if (td::stat(overlay_observer_peers_path_).is_ok()) {
-    auto existing_data = td::read_file(overlay_observer_peers_path_);
-    if (existing_data.is_error()) {
-      LOG(ERROR) << "refusing to overwrite " << overlay_observer_peers_path_
-                 << " because existing state could not be read: " << existing_data.move_as_error();
-      return;
-    }
-    auto existing_data_buf = existing_data.move_as_ok();
-    auto existing_json = td::json_decode(existing_data_buf.as_slice());
-    if (existing_json.is_error()) {
-      LOG(ERROR) << "refusing to overwrite " << overlay_observer_peers_path_
-                 << " because existing state could not be parsed: " << existing_json.move_as_error();
-      return;
-    }
-    auto existing_root = existing_json.move_as_ok();
-    if (existing_root.type() != td::JsonValue::Type::Object) {
-      LOG(ERROR) << "refusing to overwrite " << overlay_observer_peers_path_
-                 << " because existing state root is not an object";
-      return;
-    }
-    auto existing_peers_count = existing_root.get_object().get_optional_long_field("peers_count", 0);
-    if (existing_peers_count.is_error()) {
-      LOG(ERROR) << "refusing to overwrite " << overlay_observer_peers_path_
-                 << " because existing peers_count could not be read: " << existing_peers_count.move_as_error();
-      return;
-    }
-    auto existing_count = static_cast<td::uint64>(std::max<td::int64>(0, existing_peers_count.move_as_ok()));
-    if (existing_count > peer_ids.size() &&
-        existing_count - peer_ids.size() >= OVERLAY_OBSERVER_MIN_PEER_SHRINK_TO_REFUSE) {
-      LOG(ERROR) << "refusing to overwrite " << overlay_observer_peers_path_ << " with fewer peers: existing="
-                 << existing_count << " new=" << peer_ids.size();
-      return;
-    }
+  if (overlay_observer_last_dump_peer_count_ > peer_ids.size() &&
+      pruned_peers == 0 &&
+      overlay_observer_last_dump_peer_count_ - peer_ids.size() >= OVERLAY_OBSERVER_MIN_PEER_SHRINK_TO_REFUSE) {
+    LOG(ERROR) << "refusing to overwrite " << overlay_observer_peers_path_ << " with fewer peers: existing="
+               << overlay_observer_last_dump_peer_count_ << " new=" << peer_ids.size();
+    return;
   }
   auto S = td::atomic_write_file(overlay_observer_peers_path_, os.str());
   if (S.is_error()) {
     LOG(WARNING) << "failed to write " << overlay_observer_peers_path_ << ": " << S;
   } else {
+    overlay_observer_last_dump_peer_count_ = peer_ids.size();
     overlay_observer_fec_senders_dirty_ = false;
     overlay_observer_members_dirty_ = false;
   }
@@ -2300,47 +2448,40 @@ void FullNodeImpl::finish_overlay_observer_query(overlay::OverlayIdShort overlay
     }
   }
   overlay_observer_members_dirty_ = true;
-  if (new_peers > 0) {
-    dump_overlay_observer_peer_state();
-  }
 
   if (overlay_observer_members_log_stream_) {
-    overlay_observer_members_log_stream_ << std::fixed << std::setprecision(6) << "{\"event\":\"overlay_member_query\""
-                                         << ",\"request_at\":" << request_at << ",\"response_at\":" << response_at
-                                         << ",\"latency\":" << member.last_latency
-                                         << ",\"overlay\":" << observer_json_quote(member.last_overlay)
-                                         << ",\"shard\":" << observer_json_quote(member.last_shard)
-                                         << ",\"target_adnl_id\":" << observer_json_quote(target_hex)
-                                         << ",\"success\":" << (success ? "true" : "false")
-                                         << ",\"returned_peers\":" << returned_peers
-                                         << ",\"valid_returned_peers\":" << valid_returned_peers
-                                         << ",\"returned_peer_ids\":";
-    observer_write_json_string_array(overlay_observer_members_log_stream_, returned_peer_ids);
-    overlay_observer_members_log_stream_ << ",\"new_peer_ids\":";
-    observer_write_json_string_array(overlay_observer_members_log_stream_, new_peer_ids);
-    overlay_observer_members_log_stream_ << std::fixed << std::setprecision(6)
-                                         << ",\"new_peers\":" << new_peers
-                                         << ",\"consecutive_failures\":" << member.consecutive_failures
-                                         << ",\"active_queries\":" << overlay_observer_active_queries_
-                                         << ",\"queued_queries\":" << overlay_observer_queue_.size();
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(6) << "{\"event\":\"overlay_member_query\""
+         << ",\"request_at\":" << request_at << ",\"response_at\":" << response_at
+         << ",\"latency\":" << member.last_latency << ",\"overlay\":" << observer_json_quote(member.last_overlay)
+         << ",\"shard\":" << observer_json_quote(member.last_shard)
+         << ",\"target_adnl_id\":" << observer_json_quote(target_hex)
+         << ",\"success\":" << (success ? "true" : "false") << ",\"returned_peers\":" << returned_peers
+         << ",\"valid_returned_peers\":" << valid_returned_peers << ",\"returned_peer_ids\":";
+    observer_write_json_string_array(line, returned_peer_ids);
+    line << ",\"new_peer_ids\":";
+    observer_write_json_string_array(line, new_peer_ids);
+    line << std::fixed << std::setprecision(6) << ",\"new_peers\":" << new_peers
+         << ",\"consecutive_failures\":" << member.consecutive_failures
+         << ",\"active_queries\":" << overlay_observer_active_queries_
+         << ",\"queued_queries\":" << overlay_observer_queue_.size();
     if (!member.last_conn_ip.empty()) {
-      overlay_observer_members_log_stream_ << ",\"last_conn_ip\":" << observer_json_quote(member.last_conn_ip);
+      line << ",\"last_conn_ip\":" << observer_json_quote(member.last_conn_ip);
     }
     if (member.last_conn_ip_at != 0.0) {
-      overlay_observer_members_log_stream_ << ",\"last_conn_ip_at\":" << member.last_conn_ip_at;
+      line << ",\"last_conn_ip_at\":" << member.last_conn_ip_at;
     }
     if (member.success_query_but_no_ip_at != 0.0) {
-      overlay_observer_members_log_stream_ << ",\"success_query_but_no_ip_at\":"
-                                           << member.success_query_but_no_ip_at;
+      line << ",\"success_query_but_no_ip_at\":" << member.success_query_but_no_ip_at;
     }
     if (!member.address_source.empty()) {
-      overlay_observer_members_log_stream_ << ",\"address_source\":" << observer_json_quote(member.address_source);
+      line << ",\"address_source\":" << observer_json_quote(member.address_source);
     }
     if (!error.empty()) {
-      overlay_observer_members_log_stream_ << ",\"error\":" << observer_json_quote(error);
+      line << ",\"error\":" << observer_json_quote(error);
     }
-    overlay_observer_members_log_stream_ << "}\n";
-    overlay_observer_members_log_stream_.flush();
+    line << "}\n";
+    write_overlay_observer_members_log_line(line.str());
   }
 
   if (success && member.addresses.empty()) {
@@ -2348,6 +2489,138 @@ void FullNodeImpl::finish_overlay_observer_query(overlay::OverlayIdShort overlay
   }
   pump_overlay_observer_address_resolves();
   pump_overlay_observer_queries();
+}
+
+void FullNodeImpl::write_overlay_observer_members_log_line(std::string line) {
+  if (!overlay_observer_members_log_stream_) {
+    return;
+  }
+  overlay_observer_members_log_stream_ << line;
+  if (overlay_observer_members_log_stream_) {
+    overlay_observer_members_log_bytes_ += line.size();
+    rotate_overlay_observer_members_log_if_needed();
+  }
+}
+
+void FullNodeImpl::open_overlay_observer_members_log() {
+  overlay_observer_members_log_stream_.close();
+  overlay_observer_members_log_bytes_ = 0;
+  auto stat = td::stat(overlay_observer_members_log_path_);
+  if (stat.is_ok() && stat.ok().is_reg_ && stat.ok().size_ > 0) {
+    overlay_observer_members_log_bytes_ = static_cast<td::uint64>(stat.ok().size_);
+  }
+  overlay_observer_members_log_stream_.open(overlay_observer_members_log_path_, std::ios::out | std::ios::app);
+  if (!overlay_observer_members_log_stream_) {
+    LOG(WARNING) << "failed to open overlay members log " << overlay_observer_members_log_path_;
+  }
+}
+
+void FullNodeImpl::rotate_overlay_observer_members_log_if_needed() {
+  if (overlay_observer_members_log_bytes_ >= OVERLAY_OBSERVER_MEMBERS_LOG_ROTATE_BYTES) {
+    rotate_overlay_observer_members_log();
+  }
+}
+
+void FullNodeImpl::rotate_overlay_observer_members_log() {
+  if (overlay_observer_members_log_stream_) {
+    overlay_observer_members_log_stream_.flush();
+    overlay_observer_members_log_stream_.close();
+  }
+
+  auto stat = td::stat(overlay_observer_members_log_path_);
+  if (stat.is_error() || !stat.ok().is_reg_ || stat.ok().size_ <= 0) {
+    open_overlay_observer_members_log();
+    return;
+  }
+
+  auto backup_dir = overlay_observer_dir_ + "/backup";
+  auto S = td::mkpath(backup_dir);
+  if (S.is_error()) {
+    LOG(WARNING) << "failed to create overlay members backup dir " << backup_dir << ": " << S;
+    open_overlay_observer_members_log();
+    return;
+  }
+
+  std::string target;
+  auto timestamp = observer_timestamp_utc();
+  for (td::uint32 i = 0; i < 1000; i++) {
+    target = backup_dir + "/overlay-members-" + timestamp + (i == 0 ? "" : PSTRING() << "." << i) + ".jsonl";
+    if (td::stat(target).is_error()) {
+      break;
+    }
+  }
+  auto R = td::rename(overlay_observer_members_log_path_, target);
+  if (R.is_error()) {
+    LOG(WARNING) << "failed to rotate overlay members log " << overlay_observer_members_log_path_ << " to "
+                 << target << ": " << R;
+  } else {
+    LOG(WARNING) << "rotated overlay members log to " << target;
+  }
+
+  open_overlay_observer_members_log();
+  prune_overlay_observer_members_logs();
+}
+
+void FullNodeImpl::prune_overlay_observer_members_logs() {
+  struct MembersLogFile {
+    std::string path;
+    td::uint64 size = 0;
+    td::uint64 mtime_nsec = 0;
+  };
+
+  td::uint64 active_size = overlay_observer_members_log_bytes_;
+  auto active_stat = td::stat(overlay_observer_members_log_path_);
+  if (active_stat.is_ok() && active_stat.ok().is_reg_ && active_stat.ok().size_ > 0) {
+    active_size = static_cast<td::uint64>(active_stat.ok().size_);
+  }
+  auto reserved_active_size = std::max(active_size, OVERLAY_OBSERVER_MEMBERS_LOG_ROTATE_BYTES);
+  td::uint64 rotated_budget = reserved_active_size >= OVERLAY_OBSERVER_MEMBERS_LOG_RETAIN_BYTES
+                                  ? 0
+                                  : OVERLAY_OBSERVER_MEMBERS_LOG_RETAIN_BYTES - reserved_active_size;
+
+  auto backup_dir = overlay_observer_dir_ + "/backup";
+  std::vector<MembersLogFile> files;
+  auto S = td::WalkPath::run(backup_dir, [&](td::CSlice path, td::WalkPath::Type type) {
+    if (type != td::WalkPath::Type::RegularFile) {
+      return;
+    }
+    auto file_path = path.str();
+    auto pos = file_path.find_last_of(TD_DIR_SLASH);
+    auto name = pos == std::string::npos ? file_path : file_path.substr(pos + 1);
+    if (!observer_has_prefix(name, "overlay-members-") || !observer_has_suffix(name, ".jsonl")) {
+      return;
+    }
+    auto file_stat = td::stat(file_path);
+    if (file_stat.is_error() || !file_stat.ok().is_reg_ || file_stat.ok().size_ <= 0) {
+      return;
+    }
+    files.push_back(
+        MembersLogFile{std::move(file_path), static_cast<td::uint64>(file_stat.ok().size_), file_stat.ok().mtime_nsec_});
+  });
+  if (S.is_error()) {
+    return;
+  }
+
+  std::sort(files.begin(), files.end(), [](const MembersLogFile &a, const MembersLogFile &b) {
+    if (a.mtime_nsec != b.mtime_nsec) {
+      return a.mtime_nsec > b.mtime_nsec;
+    }
+    return a.path > b.path;
+  });
+
+  td::uint64 kept_size = 0;
+  for (const auto &file : files) {
+    if (kept_size + file.size <= rotated_budget) {
+      kept_size += file.size;
+      continue;
+    }
+    auto U = td::unlink(file.path);
+    if (U.is_error()) {
+      LOG(WARNING) << "failed to remove old overlay members log " << file.path << ": " << U;
+    } else {
+      LOG(WARNING) << "removed old overlay members log " << file.path;
+    }
+  }
 }
 
 void FullNodeImpl::open_overlay_observer_fec_parts_log() {
@@ -2511,12 +2784,9 @@ void FullNodeImpl::receive_fec_broadcast_part(ShardIdFull shard, overlay::FecBro
   stat.has_last_seqno = true;
   overlay_observer_fec_senders_dirty_ = true;
   if (is_new_sender) {
-    dump_overlay_observer_peer_state();
     rebuild_overlay_observer_queue();
   }
-  if (new_member_from_fec) {
-    dump_overlay_observer_peer_state();
-  }
+  (void)new_member_from_fec;
   pump_overlay_observer_address_resolves();
 
   if (overlay_observer_fec_parts_stream_) {
@@ -2589,7 +2859,6 @@ void FullNodeImpl::tear_down() {
 }
 
 void FullNodeImpl::start_up() {
-  init_overlay_observer();
   update_shard_actor(ShardIdFull{masterchainId}, true);
   if (local_id_.is_zero()) {
     if (adnl_id_.is_zero()) {
@@ -2683,6 +2952,10 @@ void FullNodeImpl::start_up() {
 
   td::actor::send_closure(validator_manager_, &ValidatorManagerInterface::install_callback,
                           std::make_unique<Callback>(actor_id(this)), std::move(started_promise_));
+  if (opts_.overlay_observer_.enabled_) {
+    delay_action([SelfId = actor_id(this)]() { td::actor::send_closure(SelfId, &FullNodeImpl::init_overlay_observer); },
+                 td::Timestamp::in(1.0));
+  }
 }
 
 void FullNodeImpl::update_private_overlays() {

@@ -59,6 +59,7 @@ struct FullNodeConfig {
 struct FullNodeOptions {
   struct OverlayObserverOptions {
     bool enabled_ = false;
+    bool log_fec_parts_ = false;
     std::string peers_file_;
     std::string output_dir_;
     td::uint32 max_active_queries_ = 5;

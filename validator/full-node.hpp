@@ -137,6 +137,7 @@ class FullNodeImpl : public FullNode {
     std::string ip;
     td::int32 port = 0;
   };
+  struct OverlayObserverMember;
 
   void update_shard_actor(ShardIdFull shard, bool active);
   void init_overlay_observer();
@@ -149,6 +150,9 @@ class FullNodeImpl : public FullNode {
   bool overlay_observer_can_query_peer(overlay::OverlayIdShort overlay_id, adnl::AdnlNodeIdShort peer,
                                        bool require_address = true) const;
   bool overlay_observer_peer_is_recent(const std::string &peer_hex, double now) const;
+  bool overlay_observer_peer_has_persisted_activity(const std::string &peer_hex, const OverlayObserverMember &member,
+                                                    double now) const;
+  td::uint64 prune_overlay_observer_peer_state(double now);
   bool queue_overlay_observer_member_queries(adnl::AdnlNodeIdShort peer, td::uint32 count, bool front,
                                              bool require_address);
   bool queue_overlay_observer_probe_queries(adnl::AdnlNodeIdShort peer, bool front);
@@ -181,6 +185,11 @@ class FullNodeImpl : public FullNode {
                                      double request_at, td::Result<td::BufferSlice> result);
   void finish_overlay_observer_query_error(overlay::OverlayIdShort overlay_id, adnl::AdnlNodeIdShort target,
                                            double request_at, std::string error);
+  void write_overlay_observer_members_log_line(std::string line);
+  void open_overlay_observer_members_log();
+  void rotate_overlay_observer_members_log_if_needed();
+  void rotate_overlay_observer_members_log();
+  void prune_overlay_observer_members_logs();
   void open_overlay_observer_fec_parts_log();
   void rotate_overlay_observer_fec_parts_if_needed();
   void rotate_overlay_observer_fec_parts_log();
@@ -267,12 +276,15 @@ class FullNodeImpl : public FullNode {
   td::uint64 overlay_observer_failed_queries_ = 0;
   td::uint64 overlay_observer_fec_parts_received_ = 0;
   td::uint64 overlay_observer_fec_parts_bytes_ = 0;
+  td::uint64 overlay_observer_members_log_bytes_ = 0;
   std::ofstream overlay_observer_fec_parts_stream_;
   std::ofstream overlay_observer_members_log_stream_;
   std::map<std::string, OverlayObserverFecSender> overlay_observer_fec_senders_;
   std::map<std::string, OverlayObserverMember> overlay_observer_members_;
   bool overlay_observer_fec_senders_dirty_ = false;
   bool overlay_observer_members_dirty_ = false;
+  td::uint64 overlay_observer_last_dump_peer_count_ = 0;
+  bool overlay_observer_peer_state_dump_blocked_ = false;
   td::Timestamp overlay_observer_flush_at_ = td::Timestamp::never();
 
   td::actor::ActorId<keyring::Keyring> keyring_;
