@@ -69,15 +69,16 @@ class FullNodeFastSyncOverlay : public td::actor::Actor {
                       std::vector<adnl::AdnlNodeIdShort> current_validators_adnl);
   void set_member_certificate(overlay::OverlayMemberCertificate member_certificate);
   void set_params(bool receive_broadcasts, bool send_twostep_broadcasts, bool enable_plumtree_broadcast,
-                  td::actor::ActorId<adnl::AdnlSenderEx> adnl_sender);
+                  bool is_shard_validator, td::actor::ActorId<adnl::AdnlSenderEx> adnl_sender);
 
   FullNodeFastSyncOverlay(adnl::AdnlNodeIdShort local_id, ShardIdFull shard, FileHash zero_state_file_hash,
                           std::vector<PublicKeyHash> root_public_keys,
                           std::vector<adnl::AdnlNodeIdShort> current_validators_adnl,
                           overlay::OverlayMemberCertificate member_certificate, bool receive_broadcasts,
                           bool send_twostep_broadcasts, bool enable_plumtree_broadcast,
-                          double broadcast_speed_multiplier, td::actor::ActorId<keyring::Keyring> keyring,
-                          td::actor::ActorId<adnl::Adnl> adnl, td::actor::ActorId<adnl::AdnlSenderEx> adnl_sender,
+                          bool is_shard_validator, double broadcast_speed_multiplier,
+                          td::actor::ActorId<keyring::Keyring> keyring, td::actor::ActorId<adnl::Adnl> adnl,
+                          td::actor::ActorId<adnl::AdnlSenderEx> adnl_sender,
                           td::actor::ActorId<quic::QuicSender> quic, td::actor::ActorId<overlay::Overlays> overlays,
                           td::actor::ActorId<ValidatorManagerInterface> validator_manager,
                           td::actor::ActorId<FullNode> full_node)
@@ -89,6 +90,7 @@ class FullNodeFastSyncOverlay : public td::actor::Actor {
       , receive_broadcasts_(receive_broadcasts)
       , send_twostep_broadcasts_(send_twostep_broadcasts)
       , enable_plumtree_broadcast_(enable_plumtree_broadcast)
+      , is_shard_validator_(is_shard_validator)
       , broadcast_speed_multiplier_(broadcast_speed_multiplier)
       , zero_state_file_hash_(zero_state_file_hash)
       , keyring_(keyring)
@@ -109,6 +111,7 @@ class FullNodeFastSyncOverlay : public td::actor::Actor {
   bool receive_broadcasts_;
   bool send_twostep_broadcasts_;
   bool enable_plumtree_broadcast_;
+  bool is_shard_validator_;
   double broadcast_speed_multiplier_;
   FileHash zero_state_file_hash_;
 
@@ -127,6 +130,8 @@ class FullNodeFastSyncOverlay : public td::actor::Actor {
 
   void try_init();
   void init();
+  bool is_validator() const;
+  const char *broadcast_trace_node_role() const;
   void get_stats_extra(td::Promise<std::string> promise);
 
   td::actor::ActorOwn<ValidatorTelemetry> telemetry_sender_;

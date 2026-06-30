@@ -262,6 +262,7 @@ class FullNodeShardImpl : public FullNodeShard {
   bool use_new_download() const {
     return false;
   }
+  const char *broadcast_trace_node_role() const;
 
   ShardIdFull shard_;
   BlockHandle handle_;

@@ -55,6 +55,10 @@ constexpr const char *k_called_from_public = "public";
 constexpr td::uint32 k_heavy_request_cost_unit = 1 << 21;
 constexpr size_t k_ed25519_signature_size = 64;
 
+const char *block_chain(const BlockIdExt &block_id) {
+  return block_id.is_masterchain() ? "mc" : "wc";
+}
+
 size_t heavy_request_cost(td::uint64 requested_max_size) {
   size_t cost = static_cast<size_t>((requested_max_size + k_heavy_request_cost_unit - 1) / k_heavy_request_cost_unit);
   return cost == 0 ? 1 : cost;
@@ -215,6 +219,16 @@ void FullNodeShardImpl::set_params(bool active, bool enable_plumtree_broadcast) 
   }
   td::actor::send_closure(overlays_, &ton::overlay::Overlays::delete_overlay, adnl_id_, overlay_id_);
   create_overlay();
+}
+
+const char *FullNodeShardImpl::broadcast_trace_node_role() const {
+  if (!is_original_sender_) {
+    return "full-node";
+  }
+  if (!shard_.is_masterchain() && active_) {
+    return "shard-validator";
+  }
+  return "mc-validator";
 }
 
 td::actor::Task<> FullNodeShardImpl::get_next_blocks_loop() {
@@ -821,6 +835,15 @@ void FullNodeShardImpl::process_block_candidate_broadcast(PublicKeyHash src, ton
     VLOG(full_node, WARNING) << "received block candidate with incorrect file hash from " << src;
     return;
   }
+  if (enable_plumtree_broadcast_) {
+    VLOG(full_node, WARNING) << "BroadcastTrace event=recv kind=candidate overlay=public transport=plumtree-fec"
+                             << " chain=" << block_chain(block_id) << " shard=" << block_id.shard_full().to_str()
+                             << " block=" << block_id << " cc_seqno=" << cc_seqno
+                             << " validator_set_hash=" << validator_set_hash << " data_size=" << data.size()
+                             << " src=" << src << " local_id=" << adnl_id_
+                             << " node_role=" << broadcast_trace_node_role()
+                             << " is_validator=" << is_original_sender_ << " shard_active=" << active_;
+  }
   VLOG(full_node, DEBUG) << "Received newBlockCandidate from " << src << ": " << block_id;
   td::actor::send_closure(full_node_, &FullNode::process_block_candidate_broadcast, block_id, cc_seqno,
                           validator_set_hash, std::move(data), BroadcastSource::public_overlay);
@@ -864,6 +887,13 @@ void FullNodeShardImpl::process_broadcast(PublicKeyHash src, ton_api::tonNode_bl
   auto block_id = create_block_id(query.id_);
   BlockFinalityBroadcast finality{block_id, block::BlockSignatureSet::fetch(query.signature_set_)};
 
+  if (enable_plumtree_broadcast_) {
+    VLOG(full_node, WARNING) << "BroadcastTrace event=recv kind=finality overlay=public transport=plumtree-simple"
+                             << " chain=" << block_chain(block_id) << " shard=" << block_id.shard_full().to_str()
+                             << " block=" << block_id << " src=" << src << " local_id=" << adnl_id_
+                             << " node_role=" << broadcast_trace_node_role()
+                             << " is_validator=" << is_original_sender_ << " shard_active=" << active_;
+  }
   VLOG(full_node, DEBUG) << "Received blockFinalityBroadcast in public overlay from " << src << ": " << block_id;
   td::actor::send_closure(full_node_, &FullNode::process_block_finality_broadcast, std::move(finality),
                           BroadcastSource::public_overlay);
@@ -875,14 +905,25 @@ void FullNodeShardImpl::process_block_broadcast(PublicKeyHash src, ton_api::tonN
     LOG(DEBUG) << "Failed to deserialize block broadcast: " << B.move_as_error();
     return;
   }
+  auto broadcast = B.move_as_ok();
+  if (enable_plumtree_broadcast_) {
+    VLOG(full_node, WARNING) << "BroadcastTrace event=recv kind=finalized_block overlay=public transport=old-fec"
+                             << " chain=" << block_chain(broadcast.block_id)
+                             << " shard=" << broadcast.block_id.shard_full().to_str()
+                             << " block=" << broadcast.block_id << " data_size=" << broadcast.data.size()
+                             << " proof_size=" << broadcast.proof.size()
+                             << " final_signatures=" << broadcast.sig_set->is_final() << " src=" << src
+                             << " local_id=" << adnl_id_ << " node_role=" << broadcast_trace_node_role()
+                             << " is_validator=" << is_original_sender_ << " shard_active=" << active_;
+  }
   //if (!shard_is_ancestor(shard_, block_id.shard_full())) {
   //  VLOG(full_node, WARNING) << "dropping block broadcast: shard mismatch. overlay=" << shard_.to_str()
   //                         << " block=" << block_id.to_str();
   //  return;
   //}
-  VLOG(full_node, DEBUG) << "Received block broadcast " << (B.ok().sig_set->is_final() ? "" : "(approve signatures) ")
-                         << "from " << src << ": " << B.ok().block_id;
-  td::actor::send_closure(full_node_, &FullNode::process_block_broadcast, B.move_as_ok(), false,
+  VLOG(full_node, DEBUG) << "Received block broadcast " << (broadcast.sig_set->is_final() ? "" : "(approve signatures) ")
+                         << "from " << src << ": " << broadcast.block_id;
+  td::actor::send_closure(full_node_, &FullNode::process_block_broadcast, std::move(broadcast), false,
                           BroadcastSource::public_overlay);
 }
 
@@ -1024,6 +1065,13 @@ void FullNodeShardImpl::send_block_candidate(BlockIdExt block_id, CatchainSeqno 
   VLOG(full_node, DEBUG) << "Sending Plumtree newBlockCandidate: " << block_id;
   auto payload = B.move_as_ok();
   auto source = choose_outbound_source(static_cast<td::uint32>(payload.size()), true);
+  VLOG(full_node, WARNING) << "BroadcastTrace event=send kind=candidate overlay=public transport=plumtree-fec"
+                           << " chain=" << block_chain(block_id) << " shard=" << block_id.shard_full().to_str()
+                           << " block=" << block_id << " cc_seqno=" << cc_seqno
+                           << " validator_set_hash=" << validator_set_hash << " data_size=" << data.size()
+                           << " payload_size=" << payload.size() << " send_as=" << source
+                           << " local_id=" << adnl_id_ << " node_role=" << broadcast_trace_node_role()
+                           << " is_validator=" << is_original_sender_ << " shard_active=" << active_;
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_plumtree_fec, adnl_id_, overlay_id_, source,
                           overlay::Overlays::BroadcastFlagAnySender(), std::move(payload));
 }
@@ -1041,6 +1089,16 @@ void FullNodeShardImpl::send_broadcast(BlockBroadcast broadcast) {
   }
   auto payload = B.move_as_ok();
   auto source = choose_outbound_source(static_cast<td::uint32>(payload.size()), true);
+  if (enable_plumtree_broadcast_) {
+    VLOG(full_node, WARNING) << "BroadcastTrace event=send kind=finalized_block overlay=public transport=old-fec"
+                             << " chain=" << block_chain(broadcast.block_id)
+                             << " shard=" << broadcast.block_id.shard_full().to_str()
+                             << " block=" << broadcast.block_id << " data_size=" << broadcast.data.size()
+                             << " proof_size=" << broadcast.proof.size() << " payload_size=" << payload.size()
+                             << " final_signatures=" << broadcast.sig_set->is_final() << " send_as=" << source
+                             << " local_id=" << adnl_id_ << " node_role=" << broadcast_trace_node_role()
+                             << " is_validator=" << is_original_sender_ << " shard_active=" << active_;
+  }
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, adnl_id_, overlay_id_, source,
                           overlay::Overlays::BroadcastFlagAnySender(), std::move(payload));
 }
@@ -1059,6 +1117,13 @@ void FullNodeShardImpl::send_block_finality_broadcast(BlockFinalityBroadcast fin
   auto payload = create_serialize_tl_object<ton_api::tonNode_blockFinalityBroadcast>(
       create_tl_block_id(finality.block_id), finality.sig_set->tl());
   auto source = choose_outbound_source(static_cast<td::uint32>(payload.size()), true);
+  VLOG(full_node, WARNING) << "BroadcastTrace event=send kind=finality overlay=public transport=plumtree-simple"
+                           << " chain=" << block_chain(finality.block_id)
+                           << " shard=" << finality.block_id.shard_full().to_str() << " block=" << finality.block_id
+                           << " broadcast_id=" << broadcast_id.to_hex() << " payload_size=" << payload.size()
+                           << " send_as=" << source << " local_id=" << adnl_id_
+                           << " node_role=" << broadcast_trace_node_role()
+                           << " is_validator=" << is_original_sender_ << " shard_active=" << active_;
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_plumtree, adnl_id_, overlay_id_, source,
                           overlay::Overlays::BroadcastFlagAnySender(), broadcast_id, std::move(payload));
 }
