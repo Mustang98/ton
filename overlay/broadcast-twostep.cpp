@@ -49,6 +49,7 @@ namespace overlay {
 
 static constexpr size_t FEC_MIN_BYTES = 513;
 static constexpr size_t FEC_MIN_OTHER_NODES = 5;
+static constexpr size_t FEC_SYMBOLS_PER_PEER = 3;
 
 static size_t fec_k(size_t other_nodes) {
   LOG_CHECK(other_nodes > 2) << "other_nodes=" << other_nodes;
@@ -137,7 +138,7 @@ struct BroadcastTwostep : td::ListNode {
   td::uint32 date;
   std::unique_ptr<td::raptorq::Decoder> decoder;
   bool delivered = false;
-  bool rebroadcasted_part = false;
+  std::set<td::uint32> rebroadcasted_parts;
   std::set<td::uint32> seen_parts = {};
   BroadcastTwostepDebugInfo debug;
 };
@@ -187,15 +188,16 @@ void BroadcastsTwostep::send(OverlayImpl *overlay, PublicKeyHash send_as, td::Bu
   td::Bits256 broadcast_id;
   bool use_fec = data_size >= FEC_MIN_BYTES && other_nodes.size() >= FEC_MIN_OTHER_NODES;
   if (use_fec) {
-    size_t k = fec_k(other_nodes.size());
-    size_t part_size = (data_size + k - 1) / k;
+    size_t symbols_needed = fec_k(other_nodes.size()) * FEC_SYMBOLS_PER_PEER;
+    size_t part_size = (data_size + symbols_needed - 1) / symbols_needed;
     CHECK(part_size < data_size);
     broadcast_id = get_tl_object_sha_bits256(create_tl_object<ton_api::overlay_broadcastTwostep_id>(
         flags, date, send_as.bits256_value(), overlay->local_id().bits256_value(), data_hash,
         static_cast<td::int32>(data_size), static_cast<td::int32>(part_size), extra.clone()));
     VLOG(twostep, INFO) << "twostep START sender broadcast_id=" << broadcast_id.to_hex()
                         << " data_hash=" << data_hash.to_hex() << " data_size=" << data_size
-                        << " recipients=" << other_nodes.size() << " mode=FEC";
+                        << " recipients=" << other_nodes.size() << " symbols_per_peer=" << FEC_SYMBOLS_PER_PEER
+                        << " mode=FEC";
     auto R = td::raptorq::Encoder::create(part_size, data.clone());
     if (R.is_error()) {
       VLOG(twostep, WARNING) << "cannot create FEC encoder: " << R.move_as_error();
@@ -204,33 +206,35 @@ void BroadcastsTwostep::send(OverlayImpl *overlay, PublicKeyHash send_as, td::Bu
     auto encoder = R.move_as_ok();
     encoder->precalc();
     for (size_t i = 0; i < other_nodes.size(); i++) {
-      td::uint32 seqno = static_cast<std::uint32_t>(i);
-      td::BufferSlice part(part_size);
-      td::Status S = encoder->gen_symbol(seqno, part.as_slice());
-      if (S.is_error()) {
-        VLOG(twostep, WARNING) << "cannot generate symbol: " << S;
-        continue;
+      for (size_t j = 0; j < FEC_SYMBOLS_PER_PEER; j++) {
+        td::uint32 seqno = static_cast<std::uint32_t>(i * FEC_SYMBOLS_PER_PEER + j);
+        td::BufferSlice part(part_size);
+        td::Status S = encoder->gen_symbol(seqno, part.as_slice());
+        if (S.is_error()) {
+          VLOG(twostep, WARNING) << "cannot generate symbol: " << S;
+          continue;
+        }
+        td::BufferSlice to_sign = create_serialize_tl_object<ton_api::overlay_broadcastTwostepFec_toSign>(
+            broadcast_id, static_cast<std::int32_t>(seqno), part.clone());
+        BroadcastTwostepDataFec passdata{
+            .broadcast_id = broadcast_id,
+            .flags = flags,
+            .date = date,
+            .src = adnl::AdnlNodeIdShort(send_as),
+            .dst = other_nodes[i],
+            .data_hash = data_hash,
+            .data_size = static_cast<td::uint32>(data_size),
+            .seqno = seqno,
+            .part = std::move(part),
+            .extra = extra.clone(),
+        };
+        auto P = td::PromiseCreator::lambda([overlay = actor_id(overlay), data = std::move(passdata)](
+                                                td::Result<std::pair<td::BufferSlice, PublicKey>> R) mutable {
+          td::actor::send_closure(overlay, &OverlayImpl::broadcast_twostep_signed_fec, std::move(data), std::move(R));
+        });
+        td::actor::send_closure(overlay->keyring(), &keyring::Keyring::sign_add_get_public_key, send_as,
+                                std::move(to_sign), std::move(P));
       }
-      td::BufferSlice to_sign = create_serialize_tl_object<ton_api::overlay_broadcastTwostepFec_toSign>(
-          broadcast_id, static_cast<std::int32_t>(seqno), part.clone());
-      BroadcastTwostepDataFec passdata{
-          .broadcast_id = broadcast_id,
-          .flags = flags,
-          .date = date,
-          .src = adnl::AdnlNodeIdShort(send_as),
-          .dst = other_nodes[i],
-          .data_hash = data_hash,
-          .data_size = static_cast<td::uint32>(data_size),
-          .seqno = seqno,
-          .part = std::move(part),
-          .extra = extra.clone(),
-      };
-      auto P = td::PromiseCreator::lambda([overlay = actor_id(overlay), data = std::move(passdata)](
-                                              td::Result<std::pair<td::BufferSlice, PublicKey>> R) mutable {
-        td::actor::send_closure(overlay, &OverlayImpl::broadcast_twostep_signed_fec, std::move(data), std::move(R));
-      });
-      td::actor::send_closure(overlay->keyring(), &keyring::Keyring::sign_add_get_public_key, send_as,
-                              std::move(to_sign), std::move(P));
     }
   } else {
     broadcast_id = get_tl_object_sha_bits256(create_tl_object<ton_api::overlay_broadcastTwostep_id>(
@@ -436,7 +440,7 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adn
     co_return td::Status::Error(ErrorCode::protoviolation, "too big part size");
   }
   td::uint32 seqno = static_cast<td::uint32>(broadcast->seqno_);
-  if (seqno >= overlay->persistent_node_count()) {
+  if (seqno >= overlay->persistent_node_count() * FEC_SYMBOLS_PER_PEER) {
     co_return td::Status::Error(ErrorCode::protoviolation, "too big seqno");
   }
 
@@ -503,11 +507,11 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adn
   }
   auto bcast = it->second.get();
   bcast->seen_parts.insert(seqno);
-  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id && !bcast->rebroadcasted_part;
+  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id && !bcast->rebroadcasted_parts.contains(seqno);
   if (will_rebroadcast) {
     td::uint64 total_size = rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true), broadcast_id,
                                         broadcast->data_hash_, "fec", static_cast<td::uint32>(data_size), seqno, true);
-    bcast->rebroadcasted_part = true;
+    bcast->rebroadcasted_parts.insert(seqno);
     overlay->get_broadcasts_limiter(src_keyhash, cert.get()).register_out_traffic(total_size);
   }
   if (bcast->delivered) {
