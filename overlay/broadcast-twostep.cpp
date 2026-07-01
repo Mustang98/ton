@@ -50,9 +50,57 @@ namespace overlay {
 static constexpr size_t FEC_MIN_BYTES = 513;
 static constexpr size_t FEC_MIN_OTHER_NODES = 5;
 
-static constexpr size_t fec_k(size_t other_nodes) {
+static size_t fec_k(size_t other_nodes) {
   LOG_CHECK(other_nodes > 2) << "other_nodes=" << other_nodes;
   return (other_nodes - 1) / 2;
+}
+
+static double now_ms() {
+  return td::Clocks::system() * 1000.0;
+}
+
+static double age_ms(td::uint32 date) {
+  return (td::Clocks::system() - date) * 1000.0;
+}
+
+static void log_private_send_common(OverlayImpl *overlay, const char *tag, const td::Bits256 &broadcast_id,
+                                    const td::Bits256 &data_hash, const char *mode, td::uint32 data_size,
+                                    const adnl::AdnlNodeIdShort &original_src,
+                                    const adnl::AdnlNodeIdShort &immediate_to, td::uint32 wire_size, td::uint32 seqno,
+                                    bool has_seqno) {
+  if (!overlay->is_private_overlay()) {
+    return;
+  }
+  FLOG(WARNING) {
+    sb << overlay << ": " << tag << " local_id=" << overlay->local_id() << " overlay_id=" << overlay->overlay_id()
+       << " overlay_name=" << overlay->overlay_name() << " broadcast_id=" << broadcast_id.to_hex()
+       << " data_hash=" << data_hash.to_hex() << " mode=" << mode << " data_size=" << data_size
+       << " original_src=" << original_src << " to=" << immediate_to << " wire_size=" << wire_size
+       << " ts_ms=" << now_ms();
+    if (has_seqno) {
+      sb << " seqno=" << seqno;
+    }
+  };
+}
+
+static void log_private_recv_common(OverlayImpl *overlay, const char *tag, const td::Bits256 &broadcast_id,
+                                    const td::Bits256 &data_hash, const char *mode, td::uint32 data_size,
+                                    const adnl::AdnlNodeIdShort &original_src,
+                                    const adnl::AdnlNodeIdShort &immediate_from, td::uint32 wire_size, td::uint32 date,
+                                    td::uint32 seqno, bool has_seqno) {
+  if (!overlay->is_private_overlay()) {
+    return;
+  }
+  FLOG(WARNING) {
+    sb << overlay << ": " << tag << " local_id=" << overlay->local_id() << " overlay_id=" << overlay->overlay_id()
+       << " overlay_name=" << overlay->overlay_name() << " broadcast_id=" << broadcast_id.to_hex()
+       << " data_hash=" << data_hash.to_hex() << " mode=" << mode << " data_size=" << data_size
+       << " original_src=" << original_src << " from=" << immediate_from << " wire_size=" << wire_size
+       << " date=" << date << " age_ms=" << age_ms(date) << " ts_ms=" << now_ms();
+    if (has_seqno) {
+      sb << " seqno=" << seqno;
+    }
+  };
 }
 
 struct BroadcastTwostepDebugInfo {
@@ -236,11 +284,15 @@ void BroadcastsTwostep::signed_simple(OverlayImpl *overlay, BroadcastTwostepData
   auto V = R.move_as_ok();
   VLOG(twostep, INFO) << "twostep SEND_SIMPLE sender broadcast_id=" << data.broadcast_id.to_hex()
                       << " data_size=" << data.data.size() << " recipients=" << data.dsts.size();
+  auto data_size = static_cast<td::uint32>(data.data.size());
+  td::Bits256 data_hash = sha256_bits256(data.data.as_slice());
   auto cert = overlay->get_certificate(data.src.pubkey_hash());
   td::BufferSlice broadcast = create_serialize_tl_object<ton_api::overlay_broadcastTwostepSimple>(
       data.flags, data.date, V.second.tl(), overlay->local_id().bits256_value(),
       cert ? cert->tl() : Certificate::empty_tl(), std::move(data.data), std::move(data.extra), std::move(V.first));
   for (auto &dst : data.dsts) {
+    log_private_send_common(overlay, "TwostepPrivateSend", data.broadcast_id, data_hash, "simple", data_size,
+                            overlay->local_id(), dst, static_cast<td::uint32>(broadcast.size()), 0, false);
     td::actor::send_closure(overlay->overlay_manager(), &Overlays::send_message_via, dst, overlay->local_id(),
                             overlay->overlay_id(), broadcast.clone(), sender_);
   }
@@ -263,6 +315,8 @@ void BroadcastsTwostep::signed_fec(OverlayImpl *overlay, BroadcastTwostepDataFec
       cert ? cert->tl() : Certificate::empty_tl(), data.data_hash, data.data_size, data.seqno, std::move(data.part),
       std::move(data.extra), std::move(V.first));
   overlay->get_broadcasts_limiter(data.src.pubkey_hash(), cert.get()).register_out_traffic(broadcast.size());
+  log_private_send_common(overlay, "TwostepPrivateSend", data.broadcast_id, data.data_hash, "fec", data.data_size,
+                          overlay->local_id(), data.dst, static_cast<td::uint32>(broadcast.size()), data.seqno, true);
   td::actor::send_closure(overlay->overlay_manager(), &Overlays::send_message_via, data.dst, overlay->local_id(),
                           overlay->overlay_id(), std::move(broadcast), sender_);
 }
@@ -279,11 +333,15 @@ static td::Result<BroadcastCheckResult> check_source(OverlayImpl *overlay, const
 }
 
 td::uint64 BroadcastsTwostep::rebroadcast(OverlayImpl *overlay, const adnl::AdnlNodeIdShort &bcast_src_adnl_id,
-                                          const td::BufferSlice &data) {
+                                          const td::BufferSlice &data, const td::Bits256 &broadcast_id,
+                                          const td::Bits256 &data_hash, const char *mode, td::uint32 data_size,
+                                          td::uint32 seqno, bool has_seqno) {
   td::uint64 total_size = 0;
   overlay->iterate_all_peers([&](const adnl::AdnlNodeIdShort &peer_id, OverlayPeer &) {
     if (peer_id != bcast_src_adnl_id && peer_id != overlay->local_id()) {
       total_size += data.size();
+      log_private_send_common(overlay, "TwostepPrivateRebroadcast", broadcast_id, data_hash, mode, data_size,
+                              bcast_src_adnl_id, peer_id, static_cast<td::uint32>(data.size()), seqno, has_seqno);
       td::actor::send_closure(overlay->overlay_manager(), &Overlays::send_message_via, peer_id, overlay->local_id(),
                               overlay->overlay_id(), data.clone(), sender_);
     }
@@ -299,7 +357,7 @@ static td::actor::Task<> check_and_deliver(OverlayImpl *overlay, PublicKeyHash s
     co_await std::move(task);
   }
   overlay->deliver_broadcast(src, std::move(data), std::move(extra));
-  co_return {};
+  co_return td::Unit();
 }
 
 td::actor::Task<> BroadcastsTwostep::process_broadcast(
@@ -314,11 +372,14 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(
       broadcast->flags_, broadcast->date_, src_keyhash.bits256_value(), bcast_src_adnl_id.bits256_value(), data_hash,
       static_cast<std::int32_t>(broadcast->data_.size()), static_cast<std::int32_t>(broadcast->data_.size()),
       broadcast->extra_.clone()));
+  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id;
+  log_private_recv_common(overlay, "TwostepPrivateRecv", broadcast_id, data_hash, "simple",
+                          static_cast<td::uint32>(broadcast->data_.size()), bcast_src_adnl_id, src_peer_id,
+                          static_cast<td::uint32>(broadcast->data_.size()), broadcast->date_, 0, false);
   if (overlay->is_delivered(broadcast_id)) {
     VLOG(twostep, DEBUG) << "twostep DUPLICATE receiver broadcast_id=" << broadcast_id.to_hex();
     co_return td::Status::Error(ErrorCode::notready, "duplicate broadcast");
   }
-  bool will_rebroadcast = src_peer_id == bcast_src_adnl_id;
   VLOG(twostep, INFO) << "twostep RECV_SIMPLE receiver broadcast_id=" << broadcast_id.to_hex()
                       << " data_hash=" << data_hash.to_hex() << " data_size=" << broadcast->data_.size()
                       << " from=" << src_peer_id << " will_rebroadcast=" << will_rebroadcast;
@@ -345,16 +406,21 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(
   }
   CO_TRY(overlay->get_broadcasts_limiter(src_keyhash, cert.get()).try_register_broadcast(broadcast->data_.size()));
   if (will_rebroadcast) {
-    td::uint64 total_size = rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));
+    td::uint64 total_size =
+        rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true), broadcast_id, data_hash, "simple",
+                    static_cast<td::uint32>(broadcast->data_.size()), 0, false);
     overlay->get_broadcasts_limiter(src_keyhash, cert.get()).register_out_traffic(total_size);
   }
   VLOG(twostep, INFO) << "twostep FINISH receiver broadcast_id=" << broadcast_id.to_hex()
                       << " data_hash=" << data_hash.to_hex() << " data_size=" << broadcast->data_.size()
                       << " decoded=true";
+  log_private_recv_common(overlay, "TwostepPrivateFinish", broadcast_id, data_hash, "simple",
+                          static_cast<td::uint32>(broadcast->data_.size()), bcast_src_adnl_id, src_peer_id,
+                          static_cast<td::uint32>(broadcast->data_.size()), broadcast->date_, 0, false);
   overlay->register_delivered_broadcast(broadcast_id);
   co_await check_and_deliver(overlay, src_keyhash, check_result, std::move(broadcast->data_),
                              std::move(broadcast->extra_));
-  co_return {};
+  co_return td::Unit();
 }
 
 td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort src_peer_id,
@@ -377,6 +443,9 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adn
   td::Bits256 broadcast_id = get_tl_object_sha_bits256(create_tl_object<ton_api::overlay_broadcastTwostep_id>(
       broadcast->flags_, broadcast->date_, src_keyhash.bits256_value(), bcast_src_adnl_id.bits256_value(),
       broadcast->data_hash_, broadcast->data_size_, static_cast<td::int32>(part_size), broadcast->extra_.clone()));
+  log_private_recv_common(overlay, "TwostepPrivateRecv", broadcast_id, broadcast->data_hash_, "fec",
+                          static_cast<td::uint32>(data_size), bcast_src_adnl_id, src_peer_id,
+                          static_cast<td::uint32>(broadcast->part_.size()), date, seqno, true);
   auto it = broadcasts_.find(broadcast_id);
   if (overlay->is_delivered(broadcast_id) || (it != broadcasts_.end() && it->second->seen_parts.contains(seqno))) {
     VLOG(twostep, DEBUG) << "twostep DUPLICATE receiver broadcast_id=" << broadcast_id.to_hex() << " seqno=" << seqno;
@@ -436,12 +505,13 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adn
   bcast->seen_parts.insert(seqno);
   bool will_rebroadcast = src_peer_id == bcast_src_adnl_id && !bcast->rebroadcasted_part;
   if (will_rebroadcast) {
-    td::uint64 total_size = rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));
+    td::uint64 total_size = rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true), broadcast_id,
+                                        broadcast->data_hash_, "fec", static_cast<td::uint32>(data_size), seqno, true);
     bcast->rebroadcasted_part = true;
     overlay->get_broadcasts_limiter(src_keyhash, cert.get()).register_out_traffic(total_size);
   }
   if (bcast->delivered) {
-    co_return {};
+    co_return td::Unit();
   }
   bcast->debug.chunk_senders.insert(src_peer_id);
   CO_TRY(bcast->decoder->add_symbol({seqno, std::move(broadcast->part_)}));
@@ -451,6 +521,9 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adn
   if (bcast->decoder->may_try_decode()) {
     auto R = CO_TRY(bcast->decoder->try_decode(false));
     VLOG(twostep, INFO) << "twostep FINISH receiver " << *bcast << " decoded=true elapsed=" << bcast->debug.elapsed();
+    log_private_recv_common(overlay, "TwostepPrivateFinish", broadcast_id, broadcast->data_hash_, "fec",
+                            static_cast<td::uint32>(data_size), bcast_src_adnl_id, src_peer_id,
+                            static_cast<td::uint32>(part_size), date, seqno, true);
     bcast->delivered = true;
     bcast->decoder = {};
     if (broadcast->data_hash_ != td::sha256_bits256(R.data)) {
@@ -458,7 +531,7 @@ td::actor::Task<> BroadcastsTwostep::process_broadcast(OverlayImpl *overlay, adn
     }
     co_await check_and_deliver(overlay, src_keyhash, check_result, std::move(R.data), std::move(broadcast->extra_));
   }
-  co_return {};
+  co_return td::Unit();
 }
 
 void BroadcastsTwostep::gc(OverlayImpl *overlay) {

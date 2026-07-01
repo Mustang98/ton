@@ -324,6 +324,12 @@ class OverlayImpl : public Overlay {
   OverlayIdShort overlay_id() const {
     return overlay_id_;
   }
+  bool is_private_overlay() const {
+    return overlay_type_ == OverlayType::FixedMemberList;
+  }
+  const td::string &overlay_name() const {
+    return opts_.name_;
+  }
   std::shared_ptr<Certificate> get_certificate(PublicKeyHash local_id);
   td::Result<Encryptor *> get_encryptor(PublicKey source);
 

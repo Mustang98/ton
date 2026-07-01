@@ -67,7 +67,8 @@ class BroadcastsTwostep {
   td::ListNode lru_;
 
   td::uint64 rebroadcast(OverlayImpl *overlay, const adnl::AdnlNodeIdShort &bcast_src_adnl_id,
-                         const td::BufferSlice &data);
+                         const td::BufferSlice &data, const td::Bits256 &broadcast_id, const td::Bits256 &data_hash,
+                         const char *mode, td::uint32 data_size, td::uint32 seqno, bool has_seqno);
 };
 }  // namespace overlay
 
