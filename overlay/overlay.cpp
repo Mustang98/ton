@@ -20,6 +20,7 @@
 #include <cmath>
 #include <limits>
 #include <set>
+#include <type_traits>
 
 #include "adnl/utils.hpp"
 #include "auto/tl/ton_api.h"
@@ -53,6 +54,46 @@ static bool is_original_plumtree_sender(adnl::AdnlNodeIdShort local_id, const st
 
 static constexpr td::uint64 plumtree_payload_mtu() {
   return static_cast<td::uint64>(Overlays::max_fec_broadcast_size()) + 4096;
+}
+
+static const char *broadcast_traffic_mode_name(BroadcastTrafficMode mode) {
+  switch (mode) {
+    case BroadcastTrafficMode::ClassicFec:
+      return "classic_fec";
+    case BroadcastTrafficMode::TwostepFec:
+      return "twostep_fec";
+    case BroadcastTrafficMode::TwostepSimple:
+      return "twostep_simple";
+  }
+  UNREACHABLE();
+}
+
+static td::string format_broadcast_traffic_buckets(
+    const std::vector<std::pair<td::uint32, BroadcastTrafficBucket>> &buckets) {
+  if (buckets.empty()) {
+    return "-";
+  }
+  td::StringBuilder sb;
+  bool first = true;
+  for (const auto &[second, bucket] : buckets) {
+    if (!first) {
+      sb << ',';
+    }
+    first = false;
+    sb << second << ':' << bucket.packets << ':' << bucket.broadcast_bytes << ':' << bucket.overlay_message_bytes;
+  }
+  return sb.as_cslice().str();
+}
+
+static BroadcastTrafficBucket sum_broadcast_traffic_buckets(
+    const std::vector<std::pair<td::uint32, BroadcastTrafficBucket>> &buckets) {
+  BroadcastTrafficBucket total;
+  for (const auto &[_, bucket] : buckets) {
+    total.packets += bucket.packets;
+    total.broadcast_bytes += bucket.broadcast_bytes;
+    total.overlay_message_bytes += bucket.overlay_message_bytes;
+  }
+  return total;
 }
 
 td::actor::ActorOwn<Overlay> Overlay::create_public(td::actor::ActorId<keyring::Keyring> keyring,
@@ -246,26 +287,28 @@ td::actor::Task<> OverlayImpl::process_broadcast(adnl::AdnlNodeIdShort message_f
 }
 
 td::actor::Task<> OverlayImpl::process_broadcast(adnl::AdnlNodeIdShort message_from,
-                                                 tl_object_ptr<ton_api::overlay_broadcastFec> b) {
+                                                 tl_object_ptr<ton_api::overlay_broadcastFec> b,
+                                                 BroadcastPacketSizes packet_sizes) {
   if (peer_list_.local_member_flags_ & OverlayMemberFlags::DoNotReceiveBroadcasts) {
     co_return {};
   }
   if (!opts_.allow_old_broadcasts_) {
     co_return td::Status::Error("overlay.broadcastFec not allowed");
   }
-  co_await broadcasts_fec_.process_broadcast(this, message_from, std::move(b));
+  co_await broadcasts_fec_.process_broadcast(this, message_from, std::move(b), packet_sizes);
   co_return {};
 }
 
 td::actor::Task<> OverlayImpl::process_broadcast(adnl::AdnlNodeIdShort message_from,
-                                                 tl_object_ptr<ton_api::overlay_broadcastFecShort> b) {
+                                                 tl_object_ptr<ton_api::overlay_broadcastFecShort> b,
+                                                 BroadcastPacketSizes packet_sizes) {
   if (peer_list_.local_member_flags_ & OverlayMemberFlags::DoNotReceiveBroadcasts) {
     co_return {};
   }
   if (!opts_.allow_old_broadcasts_) {
     co_return td::Status::Error("overlay.broadcastFecShort not allowed");
   }
-  co_await broadcasts_fec_.process_broadcast(this, message_from, std::move(b));
+  co_await broadcasts_fec_.process_broadcast(this, message_from, std::move(b), packet_sizes);
   co_return {};
 }
 
@@ -293,20 +336,22 @@ td::actor::Task<> OverlayImpl::process_broadcast(adnl::AdnlNodeIdShort message_f
 }
 
 td::actor::Task<> OverlayImpl::process_broadcast(adnl::AdnlNodeIdShort message_from,
-                                                 tl_object_ptr<ton_api::overlay_broadcastTwostepSimple> bcast) {
+                                                 tl_object_ptr<ton_api::overlay_broadcastTwostepSimple> bcast,
+                                                 BroadcastPacketSizes packet_sizes) {
   if (opts_.twostep_broadcast_sender_.empty()) {
     co_return td::Status::Error("twostep broadcasts are not enabled");
   }
-  co_await broadcasts_twostep_.process_broadcast(this, message_from, std::move(bcast));
+  co_await broadcasts_twostep_.process_broadcast(this, message_from, std::move(bcast), packet_sizes);
   co_return {};
 }
 
 td::actor::Task<> OverlayImpl::process_broadcast(adnl::AdnlNodeIdShort message_from,
-                                                 tl_object_ptr<ton_api::overlay_broadcastTwostepFec> bcast) {
+                                                 tl_object_ptr<ton_api::overlay_broadcastTwostepFec> bcast,
+                                                 BroadcastPacketSizes packet_sizes) {
   if (opts_.twostep_broadcast_sender_.empty()) {
     co_return td::Status::Error("twostep broadcasts are not enabled");
   }
-  co_await broadcasts_twostep_.process_broadcast(this, message_from, std::move(bcast));
+  co_await broadcasts_twostep_.process_broadcast(this, message_from, std::move(bcast), packet_sizes);
   co_return {};
 }
 
@@ -379,7 +424,7 @@ void OverlayImpl::get_plumtree_stats_records(
 }
 
 void OverlayImpl::receive_message(adnl::AdnlNodeIdShort src, tl_object_ptr<ton_api::overlay_messageExtra> extra,
-                                  td::BufferSlice data) {
+                                  td::BufferSlice data, td::uint64 overlay_message_size) {
   if (!check_src_peer(src, extra ? extra->certificate_.get() : nullptr)) {
     VLOG(overlay, WARNING) << this << ": received message in private overlay from unknown source " << src;
     return;
@@ -391,17 +436,27 @@ void OverlayImpl::receive_message(adnl::AdnlNodeIdShort src, tl_object_ptr<ton_a
     callback_->receive_message(src, overlay_id_, std::move(data));
     return;
   }
+  BroadcastPacketSizes packet_sizes{.broadcast = data.size(), .overlay_message = overlay_message_size};
   auto Q = X.move_as_ok();
-  ton_api::downcast_call(*Q, [self = this, &Q, &src](auto &object) {
-    [](OverlayImpl *self, adnl::AdnlNodeIdShort src, auto obj) -> td::actor::Task<> {
+  ton_api::downcast_call(*Q, [self = this, &Q, &src, packet_sizes](auto &object) {
+    [](OverlayImpl *self, adnl::AdnlNodeIdShort src, auto obj, BroadcastPacketSizes packet_sizes) -> td::actor::Task<> {
       auto id = obj->get_id();
-      auto status = (co_await self->process_broadcast(src, std::move(obj)).wrap()).move_as_status();
+      using Object = std::remove_reference_t<decltype(*obj)>;
+      td::Status status;
+      if constexpr (std::is_same_v<Object, ton_api::overlay_broadcastFec> ||
+                    std::is_same_v<Object, ton_api::overlay_broadcastFecShort> ||
+                    std::is_same_v<Object, ton_api::overlay_broadcastTwostepSimple> ||
+                    std::is_same_v<Object, ton_api::overlay_broadcastTwostepFec>) {
+        status = (co_await self->process_broadcast(src, std::move(obj), packet_sizes).wrap()).move_as_status();
+      } else {
+        status = (co_await self->process_broadcast(src, std::move(obj)).wrap()).move_as_status();
+      }
       LOG_IF(WARNING, status.is_error() && status.code() != ErrorCode::notready)
           << "Failed to process broadcast (type=" << id << ") from " << src << ": " << status;
-      co_return {};
-    }(self, src, move_tl_object_as<std::remove_reference_t<decltype(object)>>(Q))
-                                                                      .start()
-                                                                      .detach();
+      co_return td::Unit{};
+    }(self, src, move_tl_object_as<std::remove_reference_t<decltype(object)>>(Q), packet_sizes)
+                                                                                                         .start()
+                                                                                                         .detach();
   });
 }
 
@@ -444,7 +499,7 @@ void OverlayImpl::alarm() {
     total_traffic_responses.normalize(t_elapsed);
     total_traffic_responses_ctr = {};
 
-    update_throughput_at_ = td::Timestamp::in(50.0);
+    update_throughput_at_ = td::Timestamp::in(1.0);
     last_throughput_update_ = td::Timestamp::now();
   }
 
@@ -525,7 +580,7 @@ void OverlayImpl::alarm() {
 }
 
 void OverlayImpl::start_up() {
-  update_throughput_at_ = td::Timestamp::in(50.0);
+  update_throughput_at_ = td::Timestamp::in(1.0);
   last_throughput_update_ = td::Timestamp::now();
 
   if (overlay_type_ == OverlayType::Public) {
@@ -681,6 +736,7 @@ void OverlayImpl::bcast_gc() {
   broadcasts_fec_.gc(this);
   broadcasts_twostep_.gc(this);
   broadcasts_plumtree_.gc(this);
+  trace_broadcasts_gc();
   while (bcast_lru_.size() > max_bcasts()) {
     auto Id = bcast_lru_.front();
     bcast_lru_.pop();
@@ -931,6 +987,129 @@ void OverlayImpl::deliver_broadcast(PublicKeyHash source, td::BufferSlice data, 
 void OverlayImpl::register_delivered_broadcast(const BroadcastHash &hash) {
   if (delivered_broadcasts_.insert(hash).second) {
     bcast_lru_.push(hash);
+  }
+}
+
+void OverlayImpl::trace_broadcast_start(const BroadcastHash &broadcast_id, td::uint32 date, td::Bits256 data_hash,
+                                        td::uint64 data_size, BroadcastTrafficMode mode, td::uint32 part_size,
+                                        td::uint32 symbols_needed, td::uint32 recipients, bool originated) {
+  const double now = td::Clocks::system();
+  auto [it, inserted] = broadcast_traffic_.try_emplace(broadcast_id);
+  auto &trace = it->second;
+  if (inserted) {
+    trace.date = date;
+    trace.data_hash = data_hash;
+    trace.data_size = data_size;
+    trace.part_size = part_size;
+    trace.symbols_needed = symbols_needed;
+    trace.recipients = recipients;
+    trace.mode = mode;
+    trace.originated = originated;
+    trace.first_seen_at = now;
+    trace.last_activity_at = now;
+
+    VLOG(overlay, WARNING) << "Broadcast_traffic event=start"
+                           << " overlay_name=" << (opts_.name_.empty() ? "unknown" : opts_.name_)
+                           << " overlay_id=" << overlay_id_.bits256_value().to_hex()
+                           << " local_id=" << local_id_.bits256_value().to_hex()
+                           << " broadcast_id=" << broadcast_id.to_hex() << " data_hash=" << data_hash.to_hex()
+                           << " mode=" << broadcast_traffic_mode_name(mode) << " originated=" << originated
+                           << " date=" << date << " payload_bytes=" << data_size << " part_bytes=" << part_size
+                           << " symbols_needed=" << symbols_needed << " recipients=" << recipients;
+    return;
+  }
+
+  trace.originated = trace.originated || originated;
+  if (trace.data_size == 0 && data_size != 0) {
+    trace.date = date;
+    trace.data_hash = data_hash;
+    trace.data_size = data_size;
+    trace.part_size = part_size;
+    trace.symbols_needed = symbols_needed;
+    trace.recipients = recipients;
+    trace.mode = mode;
+  }
+}
+
+void OverlayImpl::trace_broadcast_packet(const BroadcastHash &broadcast_id, bool inbound, BroadcastPacketSizes sizes) {
+  auto it = broadcast_traffic_.find(broadcast_id);
+  if (it == broadcast_traffic_.end()) {
+    return;
+  }
+  const double now = td::Clocks::system();
+  auto &trace = it->second;
+  trace.last_activity_at = now;
+  auto &buckets = inbound ? trace.rx_seconds : trace.tx_seconds;
+  const auto second = static_cast<td::uint32>(now);
+  if (buckets.empty() || buckets.back().first != second) {
+    buckets.emplace_back(second, BroadcastTrafficBucket{});
+  }
+  auto &bucket = buckets.back().second;
+  bucket.packets++;
+  bucket.broadcast_bytes += sizes.broadcast;
+  bucket.overlay_message_bytes += sizes.overlay_message;
+}
+
+void OverlayImpl::trace_broadcast_unique_rx_part(const BroadcastHash &broadcast_id) {
+  auto it = broadcast_traffic_.find(broadcast_id);
+  if (it != broadcast_traffic_.end()) {
+    it->second.rx_unique_parts++;
+  }
+}
+
+void OverlayImpl::trace_broadcast_decoded(const BroadcastHash &broadcast_id) {
+  auto it = broadcast_traffic_.find(broadcast_id);
+  if (it == broadcast_traffic_.end() || it->second.decoded) {
+    return;
+  }
+  auto &trace = it->second;
+  trace.decoded = true;
+  trace.decoded_at = td::Clocks::system();
+  trace.last_activity_at = trace.decoded_at;
+  const auto rx = sum_broadcast_traffic_buckets(trace.rx_seconds);
+  const auto tx = sum_broadcast_traffic_buckets(trace.tx_seconds);
+  VLOG(overlay, WARNING) << "Broadcast_traffic event=decoded"
+                         << " overlay_name=" << (opts_.name_.empty() ? "unknown" : opts_.name_)
+                         << " overlay_id=" << overlay_id_.bits256_value().to_hex()
+                         << " local_id=" << local_id_.bits256_value().to_hex()
+                         << " broadcast_id=" << broadcast_id.to_hex()
+                         << " elapsed_sec=" << trace.decoded_at - trace.first_seen_at << " rx_packets=" << rx.packets
+                         << " rx_broadcast_bytes=" << rx.broadcast_bytes
+                         << " rx_overlay_message_bytes=" << rx.overlay_message_bytes << " tx_packets=" << tx.packets
+                         << " tx_broadcast_bytes=" << tx.broadcast_bytes
+                         << " tx_overlay_message_bytes=" << tx.overlay_message_bytes;
+}
+
+void OverlayImpl::trace_broadcasts_gc() {
+  const double now = td::Clocks::system();
+  for (auto it = broadcast_traffic_.begin(); it != broadcast_traffic_.end();) {
+    const auto &broadcast_id = it->first;
+    const auto &trace = it->second;
+    if (trace.last_activity_at > now - 25.0) {
+      ++it;
+      continue;
+    }
+    const auto rx = sum_broadcast_traffic_buckets(trace.rx_seconds);
+    const auto tx = sum_broadcast_traffic_buckets(trace.tx_seconds);
+    VLOG(overlay, WARNING) << "Broadcast_traffic event=gc"
+                           << " overlay_name=" << (opts_.name_.empty() ? "unknown" : opts_.name_)
+                           << " overlay_id=" << overlay_id_.bits256_value().to_hex()
+                           << " local_id=" << local_id_.bits256_value().to_hex()
+                           << " broadcast_id=" << broadcast_id.to_hex() << " data_hash=" << trace.data_hash.to_hex()
+                           << " mode=" << broadcast_traffic_mode_name(trace.mode) << " originated=" << trace.originated
+                           << " decoded=" << trace.decoded << " date=" << trace.date
+                           << " payload_bytes=" << trace.data_size << " part_bytes=" << trace.part_size
+                           << " symbols_needed=" << trace.symbols_needed << " recipients=" << trace.recipients
+                           << " lifetime_sec=" << now - trace.first_seen_at
+                           << " decode_sec=" << (trace.decoded ? trace.decoded_at - trace.first_seen_at : -1.0)
+                           << " rx_packets=" << rx.packets << " rx_unique_parts=" << trace.rx_unique_parts
+                           << " rx_broadcast_bytes=" << rx.broadcast_bytes
+                           << " rx_overlay_message_bytes=" << rx.overlay_message_bytes << " tx_packets=" << tx.packets
+                           << " tx_broadcast_bytes=" << tx.broadcast_bytes
+                           << " tx_overlay_message_bytes=" << tx.overlay_message_bytes
+                           << " rx_seconds=" << format_broadcast_traffic_buckets(trace.rx_seconds)
+                           << " tx_seconds=" << format_broadcast_traffic_buckets(trace.tx_seconds);
+    it = broadcast_traffic_.erase(it);
   }
 }
 

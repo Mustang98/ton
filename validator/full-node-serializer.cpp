@@ -55,7 +55,10 @@ static td::Result<td::BufferSlice> serialize_block_broadcast_v2(const BlockBroad
                            << " called_from=" << called_from << " time_sec=" << (td::Time::now() - t_compression_start)
                            << " compression=" << "compressedV2" << algorithm_name << " original_size="
                            << broadcast.data.size() + broadcast.proof.size() + total_signatures_size
-                           << " compressed_size=" << compressed_size + broadcast.proof.size() + total_signatures_size;
+                           << " block_size=" << broadcast.data.size() << " proof_size=" << broadcast.proof.size()
+                           << " signatures_size=" << total_signatures_size
+                           << " compressed_size=" << compressed_size + broadcast.proof.size() + total_signatures_size
+                           << " serialized_size=" << res.size();
   return res;
 }
 
@@ -86,7 +89,9 @@ td::Result<td::BufferSlice> serialize_block_broadcast(const BlockBroadcast& broa
                            << " compression=" << "compressed"
                            << " original_size="
                            << broadcast.data.size() + broadcast.proof.size() + total_signatures_size
-                           << " compressed_size=" << compressed_size;
+                           << " block_size=" << broadcast.data.size() << " proof_size=" << broadcast.proof.size()
+                           << " signatures_size=" << total_signatures_size << " compressed_size=" << compressed_size
+                           << " serialized_size=" << res.size();
   return res;
 }
 
@@ -339,7 +344,8 @@ td::Result<td::BufferSlice> serialize_block_candidate_broadcast(BlockIdExt block
     VLOG(full_node, WARNING) << "Broadcast_benchmark serialize_block_candidate_broadcast block_id=" << block_id
                              << " called_from=" << called_from
                              << " time_sec=" << (td::Time::now() - t_compression_start) << " compression=" << "none"
-                             << " original_size=" << data.size() << " compressed_size=" << data.size();
+                             << " original_size=" << data.size() << " block_size=" << data.size()
+                             << " compressed_size=" << data.size() << " serialized_size=" << res.size();
     return res;
   }
   TRY_RESULT(root, vm::std_boc_deserialize(data));
@@ -354,7 +360,8 @@ td::Result<td::BufferSlice> serialize_block_candidate_broadcast(BlockIdExt block
   VLOG(full_node, WARNING) << "Broadcast_benchmark serialize_block_candidate_broadcast block_id=" << block_id
                            << " called_from=" << called_from << " time_sec=" << (td::Time::now() - t_compression_start)
                            << " compression=" << "compressed"
-                           << " original_size=" << data.size() << " compressed_size=" << compressed_size;
+                           << " original_size=" << data.size() << " block_size=" << data.size()
+                           << " compressed_size=" << compressed_size << " serialized_size=" << res.size();
   return res;
 }
 

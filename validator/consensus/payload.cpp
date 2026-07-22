@@ -42,6 +42,7 @@ td::Result<td::BufferSlice> compress_candidate_data(td::Slice block, td::Slice c
                                     << " time_sec=" << (td::Time::now() - t_compression_start)
                                     << " compression=" << "compressed"
                                     << " original_size=" << block.size() + collated_data.size()
+                                    << " block_size=" << block.size() << " collated_data_size=" << collated_data.size()
                                     << " compressed_size=" << compressed.size();
   return compressed;
 }
@@ -51,31 +52,32 @@ td::Result<std::pair<td::BufferSlice, td::BufferSlice>> decompress_candidate_dat
     std::string called_from, td::Bits256 root_hash) {
   std::vector<td::Ref<vm::Cell>> roots;
   auto t_decompression_start = td::Time::now();
+  td::string compression;
   if (!improved_compression) {
     TRY_RESULT(decompressed, td::lz4_decompress(compressed, decompressed_size));
     if (decompressed.size() != (size_t)decompressed_size) {
       return td::Status::Error("decompressed size mismatch");
     }
     TRY_RESULT_ASSIGN(roots, vm::std_boc_deserialize_multi(decompressed));
-    VLOG(VALIDATOR_SESSION_BENCHMARK) << "Broadcast_benchmark deserialize_candidate block_id=" << root_hash.to_hex()
-                                      << " called_from=" << called_from
-                                      << " time_sec=" << (td::Time::now() - t_decompression_start)
-                                      << " compression=" << "compressed" << " compressed_size=" << compressed.size();
+    compression = "compressed";
   } else {
     TRY_RESULT_ASSIGN(roots, vm::boc_decompress(compressed, max_decompressed_size));
     TRY_RESULT(algorithm_name, vm::boc_get_algorithm_name(compressed));
-    VLOG(VALIDATOR_SESSION_BENCHMARK) << "Broadcast_benchmark deserialize_candidate block_id=" << root_hash.to_hex()
-                                      << " called_from=" << called_from
-                                      << " time_sec=" << (td::Time::now() - t_decompression_start)
-                                      << " compression=" << "compressedV2_" << algorithm_name
-                                      << " compressed_size=" << compressed.size();
+    compression = "compressedV2_";
+    compression += algorithm_name;
   }
+  const double decompression_elapsed = td::Time::now() - t_decompression_start;
   if (roots.empty()) {
     return td::Status::Error("boc is empty");
   }
   TRY_RESULT(block_data, vm::std_boc_serialize(roots[0], 31));
   roots.erase(roots.begin());
   TRY_RESULT(collated_data, vm::std_boc_serialize_multi(std::move(roots), 2));
+  VLOG(VALIDATOR_SESSION_BENCHMARK) << "Broadcast_benchmark deserialize_candidate block_id=" << root_hash.to_hex()
+                                    << " called_from=" << called_from << " time_sec=" << decompression_elapsed
+                                    << " compression=" << compression << " compressed_size=" << compressed.size()
+                                    << " block_size=" << block_data.size()
+                                    << " collated_data_size=" << collated_data.size();
   LOG(DEBUG) << "Decompressing block candidate " << (improved_compression ? "V2:" : ":") << compressed.size() << " -> "
              << block_data.size() + collated_data.size();
   return std::make_pair(std::move(block_data), std::move(collated_data));

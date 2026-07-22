@@ -74,6 +74,32 @@ struct TrafficStats {
   tl_object_ptr<ton_api::engine_validator_overlayStatsTraffic> tl() const;
 };
 
+enum class BroadcastTrafficMode { ClassicFec, TwostepFec, TwostepSimple };
+
+struct BroadcastTrafficBucket {
+  td::uint64 packets = 0;
+  td::uint64 broadcast_bytes = 0;
+  td::uint64 overlay_message_bytes = 0;
+};
+
+struct BroadcastTrafficTrace {
+  td::uint32 date = 0;
+  td::Bits256 data_hash = td::Bits256::zero();
+  td::uint64 data_size = 0;
+  td::uint32 part_size = 0;
+  td::uint32 symbols_needed = 0;
+  td::uint32 recipients = 0;
+  BroadcastTrafficMode mode = BroadcastTrafficMode::ClassicFec;
+  bool originated = false;
+  bool decoded = false;
+  double first_seen_at = 0.0;
+  double last_activity_at = 0.0;
+  double decoded_at = 0.0;
+  td::uint64 rx_unique_parts = 0;
+  std::vector<std::pair<td::uint32, BroadcastTrafficBucket>> rx_seconds;
+  std::vector<std::pair<td::uint32, BroadcastTrafficBucket>> tx_seconds;
+};
+
 class OverlayPeer {
  public:
   adnl::AdnlNodeIdShort get_id() const {
@@ -217,7 +243,7 @@ class OverlayImpl : public Overlay {
   }
 
   void receive_message(adnl::AdnlNodeIdShort src, tl_object_ptr<ton_api::overlay_messageExtra> extra,
-                       td::BufferSlice data) override;
+                       td::BufferSlice data, td::uint64 overlay_message_size) override;
   void receive_query(adnl::AdnlNodeIdShort src, tl_object_ptr<ton_api::overlay_messageExtra> extra,
                      td::BufferSlice data, td::Promise<td::BufferSlice> promise) override;
   void send_message_to_neighbours(td::BufferSlice data) override;
@@ -281,6 +307,16 @@ class OverlayImpl : public Overlay {
   void deliver_broadcast(PublicKeyHash source, td::BufferSlice data, td::BufferSlice extra);
   void register_delivered_broadcast(const BroadcastHash &hash);
   bool is_delivered(const BroadcastHash &hash);
+  void trace_broadcast_start(const BroadcastHash &broadcast_id, td::uint32 date, td::Bits256 data_hash,
+                             td::uint64 data_size, BroadcastTrafficMode mode, td::uint32 part_size,
+                             td::uint32 symbols_needed, td::uint32 recipients, bool originated);
+  void trace_broadcast_packet(const BroadcastHash &broadcast_id, bool inbound, BroadcastPacketSizes sizes);
+  void trace_broadcast_unique_rx_part(const BroadcastHash &broadcast_id);
+  void trace_broadcast_decoded(const BroadcastHash &broadcast_id);
+  static constexpr td::uint64 serialized_overlay_message_size(td::uint64 broadcast_size) {
+    // overlay.message consists of a 4-byte TL constructor and a 32-byte overlay ID.
+    return broadcast_size + 36;
+  }
   void receive_plumtree_repair_response(adnl::AdnlNodeIdShort from, td::Bits256 expected_broadcast_id,
                                         td::uint32 expected_part_index, td::uint32 expected_tree_index,
                                         td::Result<td::BufferSlice> R);
@@ -425,9 +461,11 @@ class OverlayImpl : public Overlay {
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
                                       tl_object_ptr<ton_api::overlay_broadcast> bcast);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
-                                      tl_object_ptr<ton_api::overlay_broadcastFec> bcast);
+                                      tl_object_ptr<ton_api::overlay_broadcastFec> bcast,
+                                      BroadcastPacketSizes packet_sizes);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
-                                      tl_object_ptr<ton_api::overlay_broadcastFecShort> bcast);
+                                      tl_object_ptr<ton_api::overlay_broadcastFecShort> bcast,
+                                      BroadcastPacketSizes packet_sizes);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
                                       tl_object_ptr<ton_api::overlay_broadcastNotFound> bcast);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
@@ -436,9 +474,11 @@ class OverlayImpl : public Overlay {
                                       tl_object_ptr<ton_api::overlay_fec_completed> msg);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from, tl_object_ptr<ton_api::overlay_unicast> msg);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
-                                      tl_object_ptr<ton_api::overlay_broadcastTwostepSimple> bcast);
+                                      tl_object_ptr<ton_api::overlay_broadcastTwostepSimple> bcast,
+                                      BroadcastPacketSizes packet_sizes);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
-                                      tl_object_ptr<ton_api::overlay_broadcastTwostepFec> bcast);
+                                      tl_object_ptr<ton_api::overlay_broadcastTwostepFec> bcast,
+                                      BroadcastPacketSizes packet_sizes);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
                                       tl_object_ptr<ton_api::overlay_broadcastPlumtreeFec> bcast);
   td::actor::Task<> process_broadcast(adnl::AdnlNodeIdShort message_from,
@@ -512,10 +552,12 @@ class OverlayImpl : public Overlay {
   std::set<BroadcastHash> delivered_broadcasts_;
 
   std::queue<BroadcastHash> bcast_lru_;
+  std::map<BroadcastHash, BroadcastTrafficTrace> broadcast_traffic_;
 
   std::shared_ptr<td::actor::SharedFuture<OverlayNode>> self_node_future_;
 
   void bcast_gc();
+  void trace_broadcasts_gc();
 
   static BroadcastHash get_broadcast_hash(adnl::AdnlNodeIdShort &src, td::Bits256 &data_hash) {
     td::uint8 buf[64];

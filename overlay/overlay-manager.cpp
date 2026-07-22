@@ -263,6 +263,7 @@ void OverlayManager::create_semiprivate_overlay(adnl::AdnlNodeIdShort local_id, 
 }
 
 void OverlayManager::receive_message(adnl::AdnlNodeIdShort src, adnl::AdnlNodeIdShort dst, td::BufferSlice data) {
+  const td::uint64 overlay_message_size = data.size();
   OverlayIdShort overlay_id;
   tl_object_ptr<ton_api::overlay_messageExtra> extra;
   td::Slice parsed_data = data;
@@ -303,7 +304,8 @@ void OverlayManager::receive_message(adnl::AdnlNodeIdShort src, adnl::AdnlNodeId
 
   data.confirm_read(data.size() - parsed_data.size());
   td::actor::send_closure(it2->second.overlay, &Overlay::update_throughput_in_ctr, src, data.size(), false, false);
-  td::actor::send_closure(it2->second.overlay, &Overlay::receive_message, src, std::move(extra), std::move(data));
+  td::actor::send_closure(it2->second.overlay, &Overlay::receive_message, src, std::move(extra), std::move(data),
+                          overlay_message_size);
 }
 
 void OverlayManager::receive_query(adnl::AdnlNodeIdShort src, adnl::AdnlNodeIdShort dst, td::BufferSlice data,

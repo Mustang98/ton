@@ -30,6 +30,11 @@ namespace ton {
 
 namespace overlay {
 
+struct BroadcastPacketSizes {
+  td::uint64 broadcast = 0;
+  td::uint64 overlay_message = 0;
+};
+
 class Overlay : public td::actor::Actor {
  public:
   using BroadcastHash = td::Bits256;
@@ -56,7 +61,7 @@ class Overlay : public td::actor::Actor {
   virtual void update_dht_node(td::actor::ActorId<dht::Dht> dht) = 0;
 
   virtual void receive_message(adnl::AdnlNodeIdShort src, tl_object_ptr<ton_api::overlay_messageExtra> extra,
-                               td::BufferSlice data) = 0;
+                               td::BufferSlice data, td::uint64 overlay_message_size) = 0;
   virtual void receive_query(adnl::AdnlNodeIdShort src, tl_object_ptr<ton_api::overlay_messageExtra> extra,
                              td::BufferSlice data, td::Promise<td::BufferSlice> promise) = 0;
   virtual void send_message_to_neighbours(td::BufferSlice data) = 0;

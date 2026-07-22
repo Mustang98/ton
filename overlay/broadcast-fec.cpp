@@ -218,6 +218,10 @@ td::Status BroadcastFec::distribute_part(OverlayImpl *overlay, td::uint32 seqno)
       continue;
     }
     if (neighbour_received(n)) {
+      overlay->trace_broadcast_packet(
+          hash_, false,
+          {.broadcast = data_short.size(),
+           .overlay_message = OverlayImpl::serialized_overlay_message_size(data_short.size())});
       td::actor::send_closure(manager, &OverlayManager::send_message, n, overlay->local_id(), overlay->overlay_id(),
                               data_short.clone());
       limiter.register_out_traffic(data_short.size());
@@ -225,6 +229,9 @@ td::Status BroadcastFec::distribute_part(OverlayImpl *overlay, td::uint32 seqno)
       if (hash_.count_leading_zeroes() >= 12) {
         VLOG(overlay, INFO) << "broadcast " << hash_ << ": sending part " << seqno << " to " << n;
       }
+      overlay->trace_broadcast_packet(
+          hash_, false,
+          {.broadcast = data.size(), .overlay_message = OverlayImpl::serialized_overlay_message_size(data.size())});
       td::actor::send_closure(manager, &OverlayManager::send_message, n, overlay->local_id(), overlay->overlay_id(),
                               data.clone());
       limiter.register_out_traffic(data.size());
@@ -339,6 +346,7 @@ td::Status BroadcastFecPart::run(OverlayImpl *overlay, BroadcastFec &bcast) {
       } else {
         overlay->deliver_broadcast(bcast.src_.compute_short_id(), R.move_as_ok(), {});
       }
+      overlay->trace_broadcast_decoded(broadcast_hash_);
     }
   }
   if (!untrusted_ || bcast.is_checked_) {
@@ -427,6 +435,8 @@ void BroadcastsFec::send_part(OverlayImpl *overlay, PublicKeyHash send_as, Overl
                               td::uint32 size, td::uint32 flags, td::BufferSlice part, td::uint32 seqno,
                               fec::FecType fec_type, td::uint32 date) {
   auto broadcast_hash = compute_broadcast_id(send_as, fec_type, data_hash, size, flags);
+  overlay->trace_broadcast_start(broadcast_hash, date, data_hash, size, BroadcastTrafficMode::ClassicFec,
+                                 fec_type.symbol_size(), fec_type.symbols_count(), 0, true);
   auto part_data_hash = sha256_bits256(part.as_slice());
   auto part_hash = compute_broadcast_part_id(broadcast_hash, part_data_hash, seqno);
   auto part_obj = std::make_unique<BroadcastFecPart>(
@@ -463,7 +473,8 @@ void BroadcastsFec::signed_(OverlayImpl *overlay, std::unique_ptr<BroadcastFecPa
 }
 
 td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort src_peer_id,
-                                            tl_object_ptr<ton_api::overlay_broadcastFec> broadcast) {
+                                            tl_object_ptr<ton_api::overlay_broadcastFec> broadcast,
+                                            BroadcastPacketSizes packet_sizes) {
   TRY_STATUS(overlay->check_date(broadcast->date_));
   PublicKey source(broadcast->src_);
   auto part_data_hash = sha256_bits256(broadcast->data_.as_slice());
@@ -476,6 +487,10 @@ td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNode
   }
   auto broadcast_hash = compute_broadcast_id(source.compute_short_id(), fec_type, broadcast->data_hash_,
                                              broadcast->data_size_, broadcast->flags_);
+  overlay->trace_broadcast_start(broadcast_hash, broadcast->date_, broadcast->data_hash_, broadcast->data_size_,
+                                 BroadcastTrafficMode::ClassicFec, fec_type.symbol_size(), fec_type.symbols_count(), 0,
+                                 false);
+  overlay->trace_broadcast_packet(broadcast_hash, true, packet_sizes);
   auto part_hash = compute_broadcast_part_id(broadcast_hash, part_data_hash, broadcast->seqno_);
   TRY_RESULT(cert, Certificate::create(std::move(broadcast->certificate_)));
   BroadcastFecPart part(broadcast_hash, part_hash, source, std::move(cert), broadcast->data_hash_,
@@ -488,7 +503,8 @@ td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNode
 }
 
 td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort src_peer_id,
-                                            tl_object_ptr<ton_api::overlay_broadcastFecShort> broadcast) {
+                                            tl_object_ptr<ton_api::overlay_broadcastFecShort> broadcast,
+                                            BroadcastPacketSizes packet_sizes) {
   auto it = broadcasts_.find(broadcast->broadcast_hash_);
   if (it == broadcasts_.end()) {
     return td::Status::Error(ErrorCode::notready, "short part of unknown broadcast");
@@ -498,6 +514,10 @@ td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNode
     return td::Status::Error(ErrorCode::protoviolation, "short part of not finished broadcast");
   }
   TRY_STATUS(overlay->check_date(bcast.date_));
+  overlay->trace_broadcast_start(bcast.hash_, bcast.date_, bcast.data_hash_, bcast.fec_type_.size(),
+                                 BroadcastTrafficMode::ClassicFec, bcast.fec_type_.symbol_size(),
+                                 bcast.fec_type_.symbols_count(), 0, false);
+  overlay->trace_broadcast_packet(bcast.hash_, true, packet_sizes);
 
   auto source = PublicKey{broadcast->src_};
   auto part_data_hash = broadcast->part_data_hash_;
@@ -514,6 +534,7 @@ td::Status BroadcastsFec::process_broadcast(OverlayImpl *overlay, adnl::AdnlNode
                         std::move(broadcast->signature_), true, src_peer_id);
   TRY_STATUS(part.run_checks(overlay, &bcast));
   TRY_STATUS(part.run(overlay, bcast));
+  overlay->trace_broadcast_unique_rx_part(broadcast_hash);
   return td::Status::OK();
 }
 
@@ -560,6 +581,9 @@ td::Status BroadcastsFec::process(OverlayImpl *overlay, BroadcastFecPart &part, 
     TRY_STATUS(part.run_checks(overlay, it->second.get()));
   }
   TRY_STATUS(part.run(overlay, *it->second));
+  if (!is_ours) {
+    overlay->trace_broadcast_unique_rx_part(part.broadcast_hash_);
+  }
   return td::Status::OK();
 }
 

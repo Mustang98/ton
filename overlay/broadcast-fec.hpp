@@ -46,9 +46,11 @@ class BroadcastsFec {
   void signed_(OverlayImpl *overlay, std::unique_ptr<BroadcastFecPart> &&part,
                td::Result<std::pair<td::BufferSlice, PublicKey>> &&R);
   td::Status process_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort src_peer_id,
-                               tl_object_ptr<ton_api::overlay_broadcastFec> broadcast);
+                               tl_object_ptr<ton_api::overlay_broadcastFec> broadcast,
+                               BroadcastPacketSizes packet_sizes);
   td::Status process_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort src_peer_id,
-                               tl_object_ptr<ton_api::overlay_broadcastFecShort> broadcast);
+                               tl_object_ptr<ton_api::overlay_broadcastFecShort> broadcast,
+                               BroadcastPacketSizes packet_sizes);
   void checked(OverlayImpl *overlay, Overlay::BroadcastHash &&hash, td::Result<td::Unit> &&R);
   void gc(OverlayImpl *overlay);
 

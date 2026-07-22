@@ -52,9 +52,11 @@ class BroadcastsTwostep {
   void signed_fec(OverlayImpl *overlay, BroadcastTwostepDataFec &&data,
                   td::Result<std::pair<td::BufferSlice, PublicKey>> &&R);
   td::actor::Task<> process_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort src_peer_id,
-                                      tl_object_ptr<ton_api::overlay_broadcastTwostepSimple> broadcast);
+                                      tl_object_ptr<ton_api::overlay_broadcastTwostepSimple> broadcast,
+                                      BroadcastPacketSizes packet_sizes);
   td::actor::Task<> process_broadcast(OverlayImpl *overlay, adnl::AdnlNodeIdShort src_peer_id,
-                                      tl_object_ptr<ton_api::overlay_broadcastTwostepFec> broadcast);
+                                      tl_object_ptr<ton_api::overlay_broadcastTwostepFec> broadcast,
+                                      BroadcastPacketSizes packet_sizes);
   void gc(OverlayImpl *overlay);
 
   void init_sender(td::actor::ActorId<adnl::AdnlSenderInterface> sender) {
@@ -66,8 +68,8 @@ class BroadcastsTwostep {
   std::map<Overlay::BroadcastHash, std::unique_ptr<BroadcastTwostep>> broadcasts_;
   td::ListNode lru_;
 
-  td::uint64 rebroadcast(OverlayImpl *overlay, const adnl::AdnlNodeIdShort &bcast_src_adnl_id,
-                         const td::BufferSlice &data);
+  td::uint64 rebroadcast(OverlayImpl *overlay, const Overlay::BroadcastHash &broadcast_id,
+                         const adnl::AdnlNodeIdShort &bcast_src_adnl_id, const td::BufferSlice &data);
 };
 }  // namespace overlay
 
