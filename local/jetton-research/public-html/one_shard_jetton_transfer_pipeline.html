@@ -1,0 +1,769 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>One-Shard Jetton Path Inside the Collator</title>
+  <style>
+    :root {
+      --ink: #172326;
+      --muted: #5b686b;
+      --page: #edf1f1;
+      --paper: #ffffff;
+      --line: #c7d0d1;
+      --collator: #28714a;
+      --collator-soft: #e5f2e9;
+      --wallet: #176c72;
+      --wallet-soft: #e3f1f2;
+      --jetton: #2f7041;
+      --jetton-soft: #e7f2e9;
+      --queue: #ac6200;
+      --queue-soft: #fff1dc;
+      --optional: #687376;
+      --optional-soft: #f0f2f2;
+      --radius: 6px;
+      color-scheme: light;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--page);
+    }
+
+    body {
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+      letter-spacing: 0;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 28px;
+      align-items: end;
+      padding: 24px 30px 22px;
+      color: #ffffff;
+      background: #172a2d;
+      border-bottom: 4px solid #3a8b60;
+    }
+
+    .eyebrow {
+      margin: 0 0 6px;
+      color: #9bc6b3;
+      font-size: 10px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 25px;
+      line-height: 1.15;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      display: flex;
+      border: 1px solid #486266;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .summary-item {
+      min-width: 175px;
+      padding: 9px 13px;
+      background: #20383b;
+    }
+
+    .summary-item + .summary-item {
+      border-left: 1px solid #486266;
+    }
+
+    .summary-item span,
+    .summary-item strong {
+      display: block;
+    }
+
+    .summary-item span {
+      color: #9eb2b5;
+      font-size: 9px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .summary-item strong {
+      margin-top: 2px;
+      font-size: 12px;
+    }
+
+    main {
+      padding: 22px 22px 0;
+    }
+
+    .scope,
+    .pipeline-shell,
+    .tx-loop {
+      max-width: 1760px;
+      margin-right: auto;
+      margin-left: auto;
+    }
+
+    .scope {
+      display: grid;
+      grid-template-columns: 165px minmax(0, 1fr);
+      background: #f7f9f9;
+      border: 1px solid #c6cecf;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .scope-label {
+      display: flex;
+      align-items: center;
+      padding: 13px 16px;
+      color: #ffffff;
+      background: #59676a;
+      font-size: 10px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .scope-text {
+      margin: 0;
+      padding: 12px 16px;
+      color: #435053;
+      font-size: 12px;
+    }
+
+    .scope-text strong {
+      color: #1c2a2d;
+    }
+
+    .pipeline-shell {
+      margin-top: 16px;
+      background: var(--paper);
+      border: 1px solid #bbc5c6;
+      border-radius: var(--radius);
+      box-shadow: 0 7px 20px rgba(23, 35, 38, 0.08);
+      overflow-x: auto;
+      scrollbar-color: #95a3a5 #e9eded;
+      scrollbar-width: thin;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      min-width: 1540px;
+      padding: 14px 18px;
+      background: #f5f8f6;
+      border-bottom: 1px solid #cbd3d4;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .section-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .critical-path {
+      display: grid;
+      grid-template-columns: 178px 30px 242px 30px 106px 30px 242px 30px 106px 30px 242px 30px 154px;
+      grid-template-rows: 250px 130px 102px;
+      align-items: center;
+      min-width: 1540px;
+      min-height: 482px;
+      padding: 22px 18px 16px;
+      background:
+        linear-gradient(#e8f3eb, #e8f3eb) 0 0 / 100% 5px no-repeat,
+        #ffffff;
+    }
+
+    .stage {
+      --accent: var(--collator);
+      position: relative;
+      width: 100%;
+      min-width: 0;
+      min-height: 210px;
+      padding: 14px 14px 12px;
+      background: #ffffff;
+      border: 1px solid #9eb0a2;
+      border-top: 5px solid var(--accent);
+      border-radius: var(--radius);
+      box-shadow: 0 3px 9px rgba(23, 35, 38, 0.07);
+    }
+
+    .stage-boundary {
+      --accent: var(--collator);
+      min-height: 178px;
+      background: var(--collator-soft);
+    }
+
+    .stage-wallet {
+      --accent: var(--wallet);
+      background: var(--wallet-soft);
+      border-color: #7da3a6;
+    }
+
+    .stage-jetton {
+      --accent: var(--jetton);
+      background: var(--jetton-soft);
+      border-color: #82a48a;
+    }
+
+    .stage-id {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 38px;
+      height: 23px;
+      padding: 0 7px;
+      color: #ffffff;
+      background: var(--accent);
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .stage-type {
+      float: right;
+      margin-top: 3px;
+      color: #566366;
+      font-size: 9px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .stage h3 {
+      clear: both;
+      margin: 11px 0 7px;
+      font-size: 15px;
+      line-height: 1.22;
+      font-weight: 780;
+    }
+
+    .stage p {
+      margin: 0;
+      color: #4c595c;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .stage ul {
+      margin: 9px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .stage li {
+      position: relative;
+      margin-top: 5px;
+      padding-left: 12px;
+      color: #344144;
+      font-size: 10px;
+      line-height: 1.3;
+    }
+
+    .stage li::before {
+      position: absolute;
+      top: 0.48em;
+      left: 0;
+      width: 5px;
+      height: 5px;
+      content: "";
+      background: var(--accent);
+    }
+
+    .measure {
+      position: absolute;
+      right: 12px;
+      bottom: 10px;
+      left: 12px;
+      padding-top: 7px;
+      color: #586568;
+      border-top: 1px solid rgba(78, 96, 99, 0.23);
+      font-size: 8px;
+      line-height: 1.25;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      color: var(--collator);
+      font-size: 27px;
+      line-height: 1;
+    }
+
+    .decision-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 106px;
+      height: 106px;
+    }
+
+    .decision {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 76px;
+      height: 76px;
+      color: #23442c;
+      background: #fbfdfb;
+      border: 2px solid var(--collator);
+      transform: rotate(45deg);
+    }
+
+    .decision span {
+      display: block;
+      width: 70px;
+      font-size: 9px;
+      line-height: 1.2;
+      font-weight: 850;
+      text-align: center;
+      text-transform: uppercase;
+      transform: rotate(-45deg);
+    }
+
+    .yes {
+      position: absolute;
+      top: 43px;
+      right: -2px;
+      padding: 1px 3px;
+      color: var(--collator);
+      background: #ffffff;
+      font-size: 8px;
+      font-weight: 900;
+    }
+
+    .queue {
+      position: relative;
+      align-self: start;
+      width: 164px;
+      margin-left: -29px;
+      padding: 10px 11px;
+      color: #653a04;
+      background: var(--queue-soft);
+      border: 1px solid #d59a4b;
+      border-radius: var(--radius);
+    }
+
+    .queue::before {
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      width: 1px;
+      height: 26px;
+      content: "";
+      background: var(--queue);
+    }
+
+    .queue::after {
+      position: absolute;
+      bottom: calc(100% + 19px);
+      left: calc(50% - 9px);
+      content: "NO";
+      color: var(--queue);
+      background: #ffffff;
+      font-size: 8px;
+      font-weight: 900;
+    }
+
+    .queue strong,
+    .queue span {
+      display: block;
+    }
+
+    .queue strong {
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .queue span {
+      margin-top: 3px;
+      font-size: 9px;
+      line-height: 1.3;
+    }
+
+    .complete {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 154px;
+      min-height: 174px;
+      padding: 13px;
+      color: #185d2e;
+      background: #dff2e3;
+      border: 2px solid #3d8c55;
+      border-radius: var(--radius);
+      text-align: center;
+    }
+
+    .complete span {
+      font-size: 8px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .complete strong {
+      margin-top: 7px;
+      font-size: 14px;
+      line-height: 1.18;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .optional {
+      position: relative;
+      grid-column: 11 / 14;
+      grid-row: 3;
+      display: grid;
+      grid-template-columns: 100px 1fr 1fr;
+      gap: 9px;
+      align-self: stretch;
+      padding-top: 14px;
+    }
+
+    .optional::before {
+      position: absolute;
+      top: -10px;
+      left: 121px;
+      width: 1px;
+      height: 18px;
+      content: "";
+      background: #849093;
+    }
+
+    .optional-label {
+      display: flex;
+      align-items: center;
+      color: var(--optional);
+      font-size: 8px;
+      line-height: 1.25;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .optional-item {
+      padding: 9px 10px;
+      color: #3e494b;
+      background: var(--optional-soft);
+      border: 1px solid #adb7b9;
+      border-radius: var(--radius);
+    }
+
+    .optional-item strong,
+    .optional-item span {
+      display: block;
+    }
+
+    .optional-item strong {
+      font-size: 9px;
+    }
+
+    .optional-item span {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 8px;
+    }
+
+    .c-ext { grid-column: 1; grid-row: 1; }
+    .a-ext { grid-column: 2; grid-row: 1; }
+    .c-tx1 { grid-column: 3; grid-row: 1; }
+    .a-tx1 { grid-column: 4; grid-row: 1; }
+    .c-d1 { grid-column: 5; grid-row: 1; }
+    .q-d1 { grid-column: 5; grid-row: 2; }
+    .a-d1 { grid-column: 6; grid-row: 1; }
+    .c-tx2 { grid-column: 7; grid-row: 1; }
+    .a-tx2 { grid-column: 8; grid-row: 1; }
+    .c-d2 { grid-column: 9; grid-row: 1; }
+    .q-d2 { grid-column: 9; grid-row: 2; }
+    .a-d2 { grid-column: 10; grid-row: 1; }
+    .c-tx3 { grid-column: 11; grid-row: 1; }
+    .a-tx3 { grid-column: 12; grid-row: 1; }
+    .c-done { grid-column: 13; grid-row: 1; }
+
+    .tx-loop {
+      display: grid;
+      grid-template-columns: 170px minmax(0, 1fr);
+      margin-top: 16px;
+      color: #536164;
+      background: #f8f9f9;
+      border: 1px solid #c4cdce;
+      border-radius: var(--radius) var(--radius) 0 0;
+      overflow: hidden;
+    }
+
+    .tx-loop strong {
+      display: flex;
+      align-items: center;
+      padding: 13px 15px;
+      color: #ffffff;
+      background: #4b595c;
+      font-size: 9px;
+      text-transform: uppercase;
+    }
+
+    .tx-loop code {
+      display: block;
+      padding: 13px 16px;
+      color: #3c494c;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 10px;
+      white-space: normal;
+    }
+
+    @media (max-width: 820px) {
+      .topbar {
+        grid-template-columns: 1fr;
+        gap: 16px;
+        padding: 21px 16px 18px;
+      }
+
+      h1 {
+        font-size: 22px;
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      .summary-item + .summary-item {
+        border-top: 1px solid #486266;
+        border-left: 0;
+      }
+
+      main {
+        padding: 13px 9px 0;
+      }
+
+      .scope,
+      .tx-loop {
+        grid-template-columns: 1fr;
+      }
+
+      .section-head {
+        min-width: 0;
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .pipeline-shell {
+        overflow: visible;
+      }
+
+      .critical-path {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-width: 0;
+        min-height: 0;
+        padding: 22px 14px;
+      }
+
+      .stage,
+      .complete {
+        width: min(100%, 360px);
+        min-height: 0;
+      }
+
+      .stage {
+        padding-bottom: 49px;
+      }
+
+      .arrow {
+        width: 100%;
+        min-height: 39px;
+        transform: rotate(90deg);
+      }
+
+      .decision-wrap {
+        margin: 8px 0;
+      }
+
+      .queue {
+        align-self: center;
+        width: min(100%, 280px);
+        margin: 20px 0 4px;
+      }
+
+      .optional {
+        display: grid;
+        grid-template-columns: 1fr;
+        width: min(100%, 360px);
+        margin-top: 20px;
+        padding-top: 20px;
+      }
+
+      .optional::before {
+        top: 0;
+        left: 50%;
+        height: 14px;
+      }
+
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">One-shard jTPS research</p>
+      <h1>Jetton transfer path inside the collator</h1>
+    </div>
+    <div class="summary" aria-label="Pipeline summary">
+      <div class="summary-item">
+        <span>Start boundary</span>
+        <strong>External available to collator</strong>
+      </div>
+      <div class="summary-item">
+        <span>Completion boundary</span>
+        <strong>TX3 included in candidate block</strong>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="scope" aria-label="Research scope">
+      <div class="scope-label">Excluded from scope</div>
+      <p class="scope-text">
+        Client-side construction, liteserver admission, mempool capacity, external delivery, consensus, finalization and indexer synchronization are intentionally omitted. <strong>The measured path starts when the external is available to the collator and ends when TX3 is included in the candidate block.</strong>
+      </p>
+    </section>
+
+    <section class="pipeline-shell" aria-labelledby="critical-path-title">
+      <header class="section-head">
+        <h2 id="critical-path-title">Collation critical path</h2>
+        <p>One shard: generated internal messages are locally processable, subject to ordering, limits and time</p>
+      </header>
+
+      <div class="critical-path">
+        <article class="stage stage-boundary c-ext">
+          <span class="stage-id">C0</span>
+          <span class="stage-type">Boundary</span>
+          <h3>External reaches collator</h3>
+          <ul>
+            <li>Pop from collator external queue</li>
+            <li>Reject malformed or duplicate external</li>
+            <li>Confirm destination belongs to shard</li>
+            <li>Destination is user TON wallet</li>
+          </ul>
+          <div class="measure">Measure: dequeue rate, filters, wait time</div>
+        </article>
+        <div class="arrow a-ext" aria-hidden="true">&rarr;</div>
+
+        <article class="stage stage-wallet c-tx1">
+          <span class="stage-id">TX1</span>
+          <span class="stage-type">TON wallet</span>
+          <h3>User TON wallet transaction</h3>
+          <ul>
+            <li>Lookup and unpack account</li>
+            <li>TVM verifies signature, expiry and seqno</li>
+            <li><code>ACCEPT</code>, increment seqno, commit data</li>
+            <li>Action emits internal <code>op::transfer</code></li>
+            <li>Record <code>msg_import_ext</code></li>
+          </ul>
+          <div class="measure">Measure: TVM CPU, other CPU, gas, cells/bits</div>
+        </article>
+        <div class="arrow a-tx1" aria-hidden="true">&rarr;</div>
+
+        <div class="decision-wrap c-d1" aria-label="Same-block eligibility after TX1">
+          <div class="decision"><span>Same-block eligible?</span></div>
+          <span class="yes">YES</span>
+        </div>
+        <aside class="queue q-d1">
+          <strong>Spill to queue</strong>
+          <span>TX2 moves to a later block when ordering, limits, timeout or deferral prevents immediate processing.</span>
+        </aside>
+        <div class="arrow a-d1" aria-hidden="true">&rarr;</div>
+
+        <article class="stage stage-jetton c-tx2">
+          <span class="stage-id">TX2</span>
+          <span class="stage-type">Jetton wallet</span>
+          <h3>Sender jetton wallet transaction</h3>
+          <ul>
+            <li>Credit attached TON and charge storage</li>
+            <li>Authenticate owner TON wallet</li>
+            <li>Check and debit jetton balance</li>
+            <li>Build recipient wallet address and StateInit</li>
+            <li>Emit <code>internal_transfer</code></li>
+          </ul>
+          <div class="measure">Measure: TVM/gas, StateInit cells, message bytes</div>
+        </article>
+        <div class="arrow a-tx2" aria-hidden="true">&rarr;</div>
+
+        <div class="decision-wrap c-d2" aria-label="Same-block eligibility after TX2">
+          <div class="decision"><span>Same-block eligible?</span></div>
+          <span class="yes">YES</span>
+        </div>
+        <aside class="queue q-d2">
+          <strong>Spill to queue</strong>
+          <span>TX3 and the recipient balance credit wait for a later block.</span>
+        </aside>
+        <div class="arrow a-d2" aria-hidden="true">&rarr;</div>
+
+        <article class="stage stage-jetton c-tx3">
+          <span class="stage-id">TX3</span>
+          <span class="stage-type">Jetton wallet</span>
+          <h3>Recipient jetton wallet transaction</h3>
+          <ul>
+            <li>Deploy from StateInit if account is absent</li>
+            <li>Verify sender jetton wallet derivation</li>
+            <li>Credit recipient jetton balance</li>
+            <li>Commit recipient account state</li>
+            <li>Optionally emit follow-up messages</li>
+          </ul>
+          <div class="measure">Measure: deploy ratio, TVM/gas, state and block delta</div>
+        </article>
+        <div class="arrow a-tx3" aria-hidden="true">&rarr;</div>
+
+        <div class="complete c-done">
+          <span>jTPS counting point</span>
+          <strong>TX3 in candidate</strong>
+        </div>
+
+        <aside class="optional" aria-label="Optional work after TX3">
+          <span class="optional-label">Optional work after credit</span>
+          <div class="optional-item">
+            <strong>TX4 transfer_notification</strong>
+            <span>Only when forward_ton_amount is positive</span>
+          </div>
+          <div class="optional-item">
+            <strong>TX4 or TX5 excesses</strong>
+            <span>Only when response destination and TON remain</span>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="tx-loop" aria-label="Ordinary transaction inner pipeline">
+      <strong>Repeated inside TX1, TX2 and TX3</strong>
+      <code>account lookup/unpack &rarr; input parsing &rarr; storage/credit &rarr; TVM compute &rarr; action phase &rarr; optional bounce &rarr; serialize &rarr; update block limits &rarr; commit account &rarr; register outgoing messages</code>
+    </section>
+  </main>
+</body>
+</html>

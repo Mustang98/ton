@@ -596,6 +596,7 @@ add_subdirectory(dht-server)
 add_subdirectory(utils)
 add_subdirectory(rldp-http-proxy)
 add_subdirectory(benchmark)
+add_subdirectory(local/jetton-research/simulator)
 endif()
 #END internal
 
