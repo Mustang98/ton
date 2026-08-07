@@ -128,21 +128,14 @@ struct CollationStats {
   td::uint32 int_wave_tasks = 0;
   td::uint32 account_dict_estimator_updates = 0;
   td::uint32 account_dict_estimator_proofs = 0;
-  td::uint32 account_dict_estimator_batches = 0;
   td::uint64 account_dict_estimator_estimated_bytes = 0;
   td::uint64 account_dict_estimator_proof_cells = 0;
   td::uint64 account_dict_estimator_proof_bits = 0;
   td::uint64 account_dict_estimator_proof_internal_refs = 0;
   td::uint64 account_dict_estimator_proof_external_refs = 0;
-  td::uint32 account_dict_estimator_async_batches = 0;
-  td::uint32 account_dict_estimator_async_queue_max = 0;
-  td::uint32 account_dict_estimator_reused = 0;
-  td::uint32 account_dict_estimator_corrections = 0;
   td::uint32 final_account_dict_async_updates = 0;
   td::uint32 final_account_dict_async_batches = 0;
   td::uint32 final_account_dict_async_queue_max = 0;
-  td::uint32 account_lookup_batches = 0;
-  td::uint32 account_lookup_prefetched = 0;
   td::uint64 old_out_msg_queue_size = 0;
   td::uint64 new_out_msg_queue_size = 0;
   td::uint32 msg_queue_cleaned = 0;
@@ -197,14 +190,12 @@ struct CollationStats {
     td::RealCpuTimer::Time account_lookup;
     td::RealCpuTimer::Time account_dict_lookup;
     td::RealCpuTimer::Time account_unpack;
-    td::RealCpuTimer::Time account_lookup_batch;
     td::RealCpuTimer::Time trx_limits;
     td::RealCpuTimer::Time trx_commit;
     td::RealCpuTimer::Time trx_postprocess;
     td::RealCpuTimer::Time message_descriptor;
     td::RealCpuTimer::Time account_dict_estimator_update;
     td::RealCpuTimer::Time account_dict_estimator_proof;
-    td::RealCpuTimer::Time account_dict_estimator_wait;
     td::RealCpuTimer::Time account_block_build;
     td::RealCpuTimer::Time final_account_dict_update;
     td::RealCpuTimer::Time final_account_dict_async_work;
@@ -251,12 +242,10 @@ struct CollationStats {
                        << " account_lookup=" << account_lookup.get(is_cpu) << " trx_limits=" << trx_limits.get(is_cpu)
                        << " account_dict_lookup=" << account_dict_lookup.get(is_cpu)
                        << " account_unpack=" << account_unpack.get(is_cpu)
-                       << " account_lookup_batch=" << account_lookup_batch.get(is_cpu)
                        << " trx_commit=" << trx_commit.get(is_cpu) << " trx_postprocess=" << trx_postprocess.get(is_cpu)
                        << " message_descriptor=" << message_descriptor.get(is_cpu)
                        << " account_dict_estimator_update=" << account_dict_estimator_update.get(is_cpu)
                        << " account_dict_estimator_proof=" << account_dict_estimator_proof.get(is_cpu)
-                       << " account_dict_estimator_wait=" << account_dict_estimator_wait.get(is_cpu)
                        << " account_block_build=" << account_block_build.get(is_cpu)
                        << " final_account_dict_update=" << final_account_dict_update.get(is_cpu)
                        << " final_account_dict_async_work=" << final_account_dict_async_work.get(is_cpu)

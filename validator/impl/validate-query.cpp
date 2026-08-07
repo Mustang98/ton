@@ -3055,22 +3055,8 @@ bool ValidateQuery::compute_minted_amount(block::CurrencyCollection& to_mint) {
 bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::CellSlice> old_value,
                                                 Ref<vm::CellSlice> new_value) {
   LOG(DEBUG) << "checking update of account " << acc_id.to_hex(256);
-  auto account = acc_id.to_hex(256);
-  const char* account_step = "start";
-  try {
-  account_step = "extract old ShardAccount";
-  try {
-    old_value = ps_.account_dict_->extract_value(std::move(old_value));
-  } catch (vm::VmVirtError&) {
-    throw vm::VmError{vm::Excno::virt_err, "pruned old ShardAccount value for "s + account};
-  }
-  account_step = "extract new ShardAccount";
-  try {
-    new_value = ns_.account_dict_->extract_value(std::move(new_value));
-  } catch (vm::VmVirtError&) {
-    throw vm::VmError{vm::Excno::virt_err, "pruned new ShardAccount value for "s + account};
-  }
-  account_step = "lookup AccountBlock";
+  old_value = ps_.account_dict_->extract_value(std::move(old_value));
+  new_value = ns_.account_dict_->extract_value(std::move(new_value));
   auto acc_blk_root = account_blocks_dict_->lookup(acc_id, 256);
   if (acc_blk_root.is_null()) {
     if (verbosity >= 3 * 0) {
@@ -3096,21 +3082,13 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
                         "AccountBlock for this account");
   }
   if (new_value.not_null()) {
-    account_step = "validate new ShardAccount";
-    bool valid = false;
-    try {
-      valid = block::tlb::t_ShardAccount.validate_csr(10000, new_value);
-    } catch (vm::VmVirtError&) {
-      throw vm::VmError{vm::Excno::virt_err, "pruned cell while validating new ShardAccount for "s + account};
-    }
-    if (!valid) {
+    if (!block::tlb::t_ShardAccount.validate_csr(10000, new_value)) {
       return reject_query("new state of account "s + acc_id.to_hex(256) +
                           " failed to pass hand-written validity checks for ShardAccount");
     }
   }
   block::gen::AccountBlock::Record acc_blk;
   block::gen::HASH_UPDATE::Record hash_upd;
-  account_step = "unpack AccountBlock";
   if (!(tlb::csr_unpack(std::move(acc_blk_root), acc_blk) &&
         tlb::type_unpack_cell(std::move(acc_blk.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd))) {
     return reject_query("cannot extract (HASH_UPDATE Account) from the AccountBlock of "s + acc_id.to_hex(256));
@@ -3120,7 +3098,6 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
                         acc_blk.account_addr.to_hex());
   }
   Ref<vm::Cell> old_state, new_state;
-  account_step = "extract old and new Account states";
   if (!(block::tlb::t_ShardAccount.extract_account_state(old_value, old_state) &&
         block::tlb::t_ShardAccount.extract_account_state(new_value, new_state))) {
     return reject_query("cannot extract Account from the ShardAccount of "s + acc_id.to_hex(256));
@@ -3134,10 +3111,6 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
                         " has incorrect new hash");
   }
   return true;
-  } catch (vm::VmVirtError&) {
-    throw vm::VmError{vm::Excno::virt_err,
-                      PSTRING() << "pruned cell during " << account_step << " for account " << account};
-  }
 }
 
 /**
@@ -5621,7 +5594,7 @@ std::unique_ptr<block::Account> ValidateQuery::CheckAccountTxs::unpack_account(t
         ctx_.storage_stat_cache_update.emplace_back(dict_root, new_acc->storage_used.cells);
         vq_.stats_.storage_stat_cache.hit_cnt.fetch_add(1);
         vq_.stats_.storage_stat_cache.hit_cells.fetch_add(new_acc->storage_used.cells);
-      } else if (new_acc->storage_used.cells >= StorageStatCache::min_account_cells()) {
+      } else if (new_acc->storage_used.cells >= StorageStatCache::MIN_ACCOUNT_CELLS) {
         vq_.stats_.storage_stat_cache.miss_cnt.fetch_add(1);
         vq_.stats_.storage_stat_cache.miss_cells.fetch_add(new_acc->storage_used.cells);
       } else {
@@ -6257,7 +6230,7 @@ bool ValidateQuery::CheckAccountTxs::try_check() {
     }
     if ((!vq_.full_collated_data_ || vq_.is_masterchain()) && account.storage_dict_hash &&
         account.account_storage_stat && account.account_storage_stat.value().is_dict_ready() &&
-        account.storage_used.cells >= StorageStatCache::min_account_cells()) {
+        account.storage_used.cells >= StorageStatCache::MIN_ACCOUNT_CELLS) {
       ctx_.storage_stat_cache_update.emplace_back(account.account_storage_stat.value().get_dict_root().move_as_ok(),
                                                   account.storage_used.cells);
     }
@@ -7544,10 +7517,8 @@ bool ValidateQuery::try_validate() {
     return true;
   }
   td::ScopedRealCpuTimer timer_total{stats_.work_time.total};
-  const char* validation_step = "start";
   try {
     if (stage_ == 0) {
-      validation_step = "stage 0";
       LOG(WARNING) << "try_validate stage 0";
       {
         td::ScopedRealCpuTimer timer{stats_.work_time.validate_block_tlb};
@@ -7592,79 +7563,67 @@ bool ValidateQuery::try_validate() {
     if (stage_ == 1) {
       LOG(WARNING) << "try_validate stage 1";
       LOG(INFO) << "running automated validity checks for block candidate " << id_;
-      validation_step = "fix_all_processed_upto";
       if (!fix_all_processed_upto()) {
         return fatal_error("cannot adjust all ProcessedUpto of neighbor and previous blocks");
       }
-      validation_step = "add_trivial_neighbor";
       if (!add_trivial_neighbor()) {
         return fatal_error("cannot add previous block as a trivial neighbor");
       }
       {
-        validation_step = "unpack_block_data";
         td::ScopedRealCpuTimer timer{stats_.work_time.unpack_block_data};
         if (!unpack_block_data()) {
           return reject_query("cannot unpack block data");
         }
       }
       {
-        validation_step = "precheck_account_updates";
         td::ScopedRealCpuTimer timer{stats_.work_time.precheck_account_updates};
         if (!precheck_account_updates()) {
           return reject_query("invalid AccountState update");
         }
       }
       {
-        validation_step = "precheck_account_transactions";
         td::ScopedRealCpuTimer timer{stats_.work_time.precheck_account_transactions};
         if (!precheck_account_transactions()) {
           return reject_query("invalid collection of account transactions in ShardAccountBlocks");
         }
       }
       {
-        validation_step = "precheck_message_queue_update";
         td::ScopedRealCpuTimer timer{stats_.work_time.precheck_msg_queue};
         if (!precheck_message_queue_update()) {
           return reject_query("invalid OutMsgQueue update");
         }
       }
       {
-        validation_step = "unpack_dispatch_queue_update";
         td::ScopedRealCpuTimer timer{stats_.work_time.unpack_dispatch_queue};
         if (!unpack_dispatch_queue_update()) {
           return reject_query("invalid DispatchQueue update");
         }
       }
       {
-        validation_step = "check_in_msg_descr";
         td::ScopedRealCpuTimer timer{stats_.work_time.check_in_msg_descr};
         if (!check_in_msg_descr()) {
           return reject_query("invalid InMsgDescr");
         }
       }
       {
-        validation_step = "check_out_msg_descr";
         td::ScopedRealCpuTimer timer{stats_.work_time.check_out_msg_descr};
         if (!check_out_msg_descr()) {
           return reject_query("invalid OutMsgDescr");
         }
       }
       {
-        validation_step = "check_dispatch_queue_update";
         td::ScopedRealCpuTimer timer{stats_.work_time.check_dispatch_queue};
         if (!check_dispatch_queue_update()) {
           return reject_query("invalid DispatchQueue update (2)");
         }
       }
       {
-        validation_step = "check_processed_upto";
         td::ScopedRealCpuTimer timer{stats_.work_time.check_processed_upto};
         if (!check_processed_upto()) {
           return reject_query("invalid ProcessedInfo");
         }
       }
       {
-        validation_step = "check_in_queue";
         td::ScopedRealCpuTimer timer{stats_.work_time.check_in_queue};
         if (!check_in_queue()) {
           return reject_query("cannot check inbound message queues");
@@ -7673,7 +7632,6 @@ bool ValidateQuery::try_validate() {
           return reject_query("cannot check delivery status of all outbound messages");
         }
       }
-      validation_step = "check_transactions";
       if (!check_transactions()) {
         return reject_query("invalid collection of account transactions in ShardAccountBlocks");
       }
@@ -7683,7 +7641,6 @@ bool ValidateQuery::try_validate() {
       }
     }
     if (stage_ == 2) {
-      validation_step = "stage 2";
       LOG(WARNING) << "try_validate stage 2";
       td::ScopedRealCpuTimer timer{stats_.work_time.check_new_state};
       if (!check_all_ticktock_processed()) {
@@ -7715,7 +7672,7 @@ bool ValidateQuery::try_validate() {
   } catch (vm::CellBuilder::CellWriteError&) {
     return reject_query("cell write error");
   } catch (vm::VmVirtError& err) {
-    return reject_query(PSTRING() << validation_step << ": " << err.get_msg());
+    return reject_query(err.get_msg());
   }
 
   finish_query();

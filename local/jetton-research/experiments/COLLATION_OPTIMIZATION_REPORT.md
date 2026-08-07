@@ -1000,11 +1000,9 @@ The final H105/H106 runs used:
 | `tonlibjson` | `c791f9bf5af7f4a929ab779dc4dc665b2489175ed04c85b88ffc613380bb3014` |
 | `bench-state-gen` | `5226260f9c4fca8a87788fe18a648b5a77f4672de29634150e0e461aa779c638` |
 
-The repository worktree is currently dirty. Commit `5f07d9...` identifies the
-starting point, not the complete final source. Production reproduction therefore
-requires preserving the current diff in a dedicated commit and verifying that a
-clean rebuild produces the expected behavior. The binary hash above is the
-authoritative identity for the recorded final runs.
+These hashes identify the historical H105/H106 binary. The smaller, cleaned
+implementation and its final binary-exact acceptance run are recorded in
+section 13.7.
 
 ### 13.5 Exact milestone artifact index
 
@@ -1077,22 +1075,103 @@ local/jetton-research/experiments/runs/
   optimized-double-380-long-20260807-135723
 ```
 
+### 13.7 Final-stack cleanup and revalidation
+
+The optimization stack was implemented incrementally, so the final source still
+contained rejected alternatives, diagnostics, and switches whose behavior had
+later been superseded. A cleanup pass re-audited dependencies and reduced the
+optimization commit by **2,749 net lines** across 21 production/test files
+(`195` additions and `2,944` deletions relative to the pre-cleanup commit).
+
+The cleanup removed:
+
+- the superseded exact, batched, and asynchronous account-dictionary estimator
+  paths; the measured analytical estimator is now the only optimized estimator;
+- rejected account-prefetch, dictionary-rebind, partitioned-proof, shared-proof,
+  late-serialization, move-candidate, and storage-threshold experiments;
+- duplicate switches for behavior now owned by one parent feature;
+- experimental counters, warning logs, and tests that exercised removed APIs.
+
+It retained focused correctness tests for analytical proof estimation,
+multiset dictionary updates, separate proof accounting, direct usage nodes,
+parallel predicate proofs, parallel usage-tree proofs, and concurrent usage-tree
+access.
+
+Two parent switches now describe complete pipelines:
+
+- `TON_SIM_EARLY_BLOCK_BOC=1` starts block BOC serialization and computes the
+  block file hash and collated BOC from that early result;
+- `TON_SIM_PIPELINED_STATE_FINALIZATION=1` enables early proof-backed final
+  account rebind and parallel state-proof/Merkle-update construction.
+
+The following matched checks were run against the 45M-account state. The
+ablation runs used a 20-second load; the reference and worker-count checks used
+30 seconds. All used 10,000 wallets, 380 requests/s, doubled limits, one shard,
+and the forced-empty first slot.
+
+| Check | Productive collation mean | P95 | Tx/productive block | Result |
+|---|---:|---:|---:|---|
+| Pre-cleanup full stack | 100.111 ms | 124.050 ms | 807.217 | reference |
+| Without analytical estimator | 164.512 ms | 210.770 ms | 819.857 | retain estimator |
+| Without early serialization pipeline | 110.865 ms | 138.767 ms | 819.000 | retain early serialization |
+| Cleaned stack, 32 workers | 100.292 ms | 124.751 ms | 812.426 | pass |
+| Cleaned stack, 32-worker repeat | 100.742 ms | 126.936 ms | 814.174 | pass |
+| Cleaned stack, 16 workers | 101.948 ms | 124.194 ms | 810.809 | retain 32 workers |
+| Final binary acceptance, 32 workers | 101.846 ms | 126.124 ms | 812.596 | pass |
+
+The cleaned 32-worker runs contain 5-7 more transactions per productive block
+than the pre-cleanup reference. Pooling all 140 productive blocks from the three
+cleaned 32-worker runs gives **100.961 ms/block**, **813.057 tx/block**, and
+**0.12418 ms/transaction**. The pre-cleanup reference is **100.111 ms/block**,
+**807.217 tx/block**, and **0.12402 ms/transaction**. The normalized difference
+is 0.12%, below run-to-run noise. Across all steady candidates, including the
+deliberately empty first slots, the cleaned means are 75.414, 75.336, and 76.514
+ms. All three runs drained the queue and had no deadline overload; sampled
+same-block TX1-through-TX4 completion was 100%, 100%, and 99%.
+
+This revalidation does not replace the historical H105/H106 observation of
+98.216 ms. It shows that the smaller implementation preserves the same
+approximately-100-ms operating point within run-to-run block-composition
+variance. The strict `<100 ms` productive-block mean was not stable even before
+cleanup: the duration-matched pre-cleanup run measured 100.373 ms. The robust
+claim is therefore approximately 100 ms and approximately 0.124 ms per
+transaction, not that every short run must fall below an exact decimal boundary.
+
+The binary-exact acceptance run used:
+
+| Binary/input | SHA-256 |
+|---|---|
+| `validator-engine` | `20acf5a9927150a6a9e1ef7513b1dbd446a23768865f5815a77bc4f54e439dcb` |
+| `jetton-simulator` | `fc737ec367ff5a6861a46ae6567bda84ea9f8af02f7f354b3da6fea7ae62cbd2` |
+| `tonlibjson` | `c791f9bf5af7f4a929ab779dc4dc665b2489175ed04c85b88ffc613380bb3014` |
+| `bench-state-gen` | `5226260f9c4fca8a87788fe18a648b5a77f4672de29634150e0e461aa779c638` |
+
+Cleanup artifacts:
+
+```text
+local/jetton-research/experiments/runs/
+  cleanup-reference-20260807-155852
+  cleanup-ablate-analytical-20260807-160435
+  cleanup-ablate-early-serialization-20260807-161006
+  cleanup-final-32w-20260807-20260807-163634
+  cleanup-final-32w-repeat-20260807-20260807-164802
+  cleanup-final-16w-20260807-20260807-164205
+  cleanup-acceptance-final-20260807-20260807-165706
+```
+
 ## 14. Final feature configuration
 
-All optimization switches were explicitly passed to the node and recorded in
-each run's `run.json`:
+After cleanup, the complete stack uses 19 settings instead of the previous 31.
+They are explicitly passed to the node and recorded in each run's `run.json`:
 
 ```text
 TON_SIM_FILTER_ANCESTOR_EXTERNALS=1
 TON_SIM_ED25519_CHKSIG_CACHE=1
-TON_SIM_BATCH_ACCOUNT_DICT_ESTIMATOR=1
-TON_SIM_ASYNC_ACCOUNT_DICT_ESTIMATOR=1
 TON_SIM_BATCH_MESSAGE_DESCRIPTORS=1
 TON_SIM_MESSAGE_DESCRIPTOR_BATCH_SIZE=256
 TON_SIM_EARLY_BLOCK_BOC=1
 TON_SIM_ANALYTICAL_ACCOUNT_DICT_ESTIMATOR=1
 TON_SIM_ASYNC_FINAL_ACCOUNT_DICT=1
-TON_SIM_BATCH_FINAL_ACCOUNT_DICT=1
 TON_SIM_PARALLEL_ACCOUNT_PREPARE=1
 TON_SIM_PARALLEL_STORAGE_PREPARE=1
 TON_SIM_PARALLEL_EXECUTION=1
@@ -1101,16 +1180,7 @@ TON_SIM_PARALLEL_ACCOUNT_BLOCKS=1
 TON_SIM_BATCH_EXT_POOL_DELIVERY=1
 TON_SIM_EXT_POOL_BATCH_SIZE=32
 TON_SIM_EXT_POOL_BATCH_DELAY_MS=80
-TON_SIM_PARALLEL_FINAL_ACCOUNT_REBIND_TRAVERSAL=1
-TON_SIM_DIRECT_MERKLE_USAGE_NODE=1
 TON_SIM_PIPELINED_STATE_FINALIZATION=1
-TON_SIM_EARLY_PIPELINED_STATE_PROOF=1
-TON_SIM_EARLY_COLLATED_BOC=1
-TON_SIM_EARLY_BLOCK_FILE_HASH=1
-TON_SIM_FAST_FINAL_ACCOUNT_REBIND_WITH_PROOF=1
-TON_SIM_PARALLEL_FAST_FINAL_ACCOUNT_REBIND_WITH_PROOF=1
-TON_SIM_PARALLEL_PIPELINED_STATE_PROOF=1
-TON_SIM_PARALLEL_STATE_UPDATE_OLD_PROOF=1
 TON_SIM_FINAL_ACCOUNT_REBIND_TASKS=16
 TON_SIM_PIPELINED_STATE_PROOF_TASKS=16
 TON_SIM_STATE_UPDATE_OLD_PROOF_TASKS=16
@@ -1124,8 +1194,7 @@ them into reviewed configuration or safe defaults after each feature is accepted
 
 ### 15.1 Prerequisites
 
-1. Use the `bench-parallel-merge-collators` branch and preserve the exact final
-   research diff.
+1. Use the `fast-collators` branch based on the current `testnet` branch.
 2. Ensure `_local/` is ignored by Git; never checkpoint the 169 GB cell database.
 3. Have at least 200 GB free for generation plus headroom for RocksDB temporary
    files and experiment runs.
@@ -1253,14 +1322,11 @@ cd /home/vallas/ton
 final_env=(
   TON_SIM_FILTER_ANCESTOR_EXTERNALS=1
   TON_SIM_ED25519_CHKSIG_CACHE=1
-  TON_SIM_BATCH_ACCOUNT_DICT_ESTIMATOR=1
-  TON_SIM_ASYNC_ACCOUNT_DICT_ESTIMATOR=1
   TON_SIM_BATCH_MESSAGE_DESCRIPTORS=1
   TON_SIM_MESSAGE_DESCRIPTOR_BATCH_SIZE=256
   TON_SIM_EARLY_BLOCK_BOC=1
   TON_SIM_ANALYTICAL_ACCOUNT_DICT_ESTIMATOR=1
   TON_SIM_ASYNC_FINAL_ACCOUNT_DICT=1
-  TON_SIM_BATCH_FINAL_ACCOUNT_DICT=1
   TON_SIM_PARALLEL_ACCOUNT_PREPARE=1
   TON_SIM_PARALLEL_STORAGE_PREPARE=1
   TON_SIM_PARALLEL_EXECUTION=1
@@ -1269,16 +1335,7 @@ final_env=(
   TON_SIM_BATCH_EXT_POOL_DELIVERY=1
   TON_SIM_EXT_POOL_BATCH_SIZE=32
   TON_SIM_EXT_POOL_BATCH_DELAY_MS=80
-  TON_SIM_PARALLEL_FINAL_ACCOUNT_REBIND_TRAVERSAL=1
-  TON_SIM_DIRECT_MERKLE_USAGE_NODE=1
   TON_SIM_PIPELINED_STATE_FINALIZATION=1
-  TON_SIM_EARLY_PIPELINED_STATE_PROOF=1
-  TON_SIM_EARLY_COLLATED_BOC=1
-  TON_SIM_EARLY_BLOCK_FILE_HASH=1
-  TON_SIM_FAST_FINAL_ACCOUNT_REBIND_WITH_PROOF=1
-  TON_SIM_PARALLEL_FAST_FINAL_ACCOUNT_REBIND_WITH_PROOF=1
-  TON_SIM_PARALLEL_PIPELINED_STATE_PROOF=1
-  TON_SIM_PARALLEL_STATE_UPDATE_OLD_PROOF=1
   TON_SIM_FINAL_ACCOUNT_REBIND_TASKS=16
   TON_SIM_PIPELINED_STATE_PROOF_TASKS=16
   TON_SIM_STATE_UPDATE_OLD_PROOF_TASKS=16
@@ -1434,6 +1491,8 @@ measured 100.373 ms at 809.198 transactions per productive block, confirming a
 69.8% long-run reduction with the same final stack.
 
 That is the result to carry forward. The next engineering phase is to turn the
-feature-flagged research stack into a clean, reviewable patch series and prove
-the same correctness and latency properties under multi-validator production
-conditions.
+remaining feature-flagged stack into a reviewable production configuration and
+prove the same correctness and latency properties under multi-validator
+production conditions. The cleanup pass has already removed 2,749 net lines of
+superseded research code, reduced the active settings from 31 to 19, and
+revalidated equivalent per-transaction collation cost on the same workload.

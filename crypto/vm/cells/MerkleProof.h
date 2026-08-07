@@ -52,9 +52,6 @@ class MerkleProof {
   static td::Result<Ref<Cell>> generate_raw(Ref<Cell> cell, CellUsageTree *usage_tree);
   static td::Result<Ref<Cell>> generate_raw_parallel(Ref<Cell> cell, CellUsageTree *usage_tree,
                                                      unsigned max_tasks);
-  static td::Result<std::pair<Ref<Cell>, Ref<Cell>>> generate_raw_pair(Ref<Cell> cell,
-                                                                       CellUsageTree *first_usage_tree,
-                                                                       IsPrunnedFunction second_is_prunned);
   static Ref<Cell> virtualize_raw(Ref<Cell> cell, td::uint32 effective_level);
   static td::Result<Ref<Cell>> combine_raw(Ref<Cell> a, Ref<Cell> b);
   static td::Result<Ref<Cell>> combine_fast_raw(Ref<Cell> a, Ref<Cell> b);

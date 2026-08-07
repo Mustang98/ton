@@ -20,8 +20,6 @@
 #include <future>
 #include <map>
 
-#include <array>
-
 #include "td/utils/HashMap.h"
 #include "td/utils/HashSet.h"
 #include "td/utils/Status.h"
@@ -47,17 +45,6 @@ class MerkleProofImpl {
     }
     try {
       return dfs(cell, cell->get_level());
-    } catch (CellBuilder::CellWriteError &) {
-      return td::Status::Error("failed to generate Merkle proof: cell write error");
-    } catch (CellBuilder::CellCreateError &) {
-      return td::Status::Error("failed to generate Merkle proof: cell create error");
-    }
-  }
-
-  td::Result<Ref<Cell>> create_from(Ref<Cell> cell, unsigned merkle_depth) {
-    CHECK(is_prunned_);
-    try {
-      return dfs(std::move(cell), merkle_depth);
     } catch (CellBuilder::CellWriteError &) {
       return td::Status::Error("failed to generate Merkle proof: cell write error");
     } catch (CellBuilder::CellCreateError &) {
@@ -234,104 +221,6 @@ class ParallelMerkleProofImpl {
   }
 };
 
-class MerkleProofPairImpl {
- public:
-  MerkleProofPairImpl(CellUsageTree *first_usage_tree, MerkleProof::IsPrunnedFunction second_is_prunned)
-      : first_usage_tree_(first_usage_tree), second_is_prunned_(std::move(second_is_prunned)) {
-  }
-
-  td::Result<std::pair<Ref<Cell>, Ref<Cell>>> create_from(Ref<Cell> cell) {
-    CHECK(first_usage_tree_ != nullptr);
-    dfs_usage_tree(cell, first_usage_tree_->root_id());
-    try {
-      unsigned level = cell->get_level();
-      return dfs(std::move(cell), level, 3);
-    } catch (CellBuilder::CellWriteError &) {
-      return td::Status::Error("failed to generate paired Merkle proofs: cell write error");
-    } catch (CellBuilder::CellCreateError &) {
-      return td::Status::Error("failed to generate paired Merkle proofs: cell create error");
-    }
-  }
-
- private:
-  using Key = std::pair<Cell::Hash, unsigned>;
-  using Output = std::pair<Ref<Cell>, Ref<Cell>>;
-  std::array<td::HashMap<Key, Output>, 4> cells_;
-  td::HashSet<Cell::Hash> first_visited_cells_;
-  CellUsageTree *first_usage_tree_;
-  MerkleProof::IsPrunnedFunction second_is_prunned_;
-
-  void dfs_usage_tree(Ref<Cell> cell, CellUsageTree::NodeId node_id) {
-    if (!first_usage_tree_->is_loaded(node_id)) {
-      return;
-    }
-    first_visited_cells_.insert(cell->get_hash());
-    CellSlice cs(NoVm(), cell);
-    for (unsigned i = 0; i < cs.size_refs(); ++i) {
-      dfs_usage_tree(cs.prefetch_ref(i), first_usage_tree_->get_child(node_id, i));
-    }
-  }
-
-  Output dfs(Ref<Cell> cell, unsigned merkle_depth, unsigned mask) {
-    CHECK(cell.not_null() && mask != 0);
-    Key key{cell->get_hash(), merkle_depth};
-    auto &cache = cells_[mask];
-    if (auto it = cache.find(key); it != cache.end()) {
-      return it->second;
-    }
-
-    bool first_prunned = (mask & 1) && first_visited_cells_.count(cell->get_hash()) == 0;
-    bool second_prunned = (mask & 2) && second_is_prunned_(cell);
-    Output output;
-    if (first_prunned) {
-      output.first = CellBuilder::create_pruned_branch(cell, merkle_depth + 1);
-      CHECK(output.first.not_null());
-    }
-    if (second_prunned) {
-      output.second = CellBuilder::create_pruned_branch(cell, merkle_depth + 1);
-      CHECK(output.second.not_null());
-    }
-
-    unsigned child_mask = ((mask & 1) && !first_prunned ? 1 : 0) | ((mask & 2) && !second_prunned ? 2 : 0);
-    if (child_mask != 0) {
-      CellSlice cs(NoVm(), cell);
-      int child_merkle_depth = cs.child_merkle_depth(merkle_depth);
-      CellBuilder first_builder, second_builder;
-      auto bits = cs.fetch_bits(cs.size());
-      if (child_mask & 1) {
-        first_builder.store_bits(bits);
-      }
-      if (child_mask & 2) {
-        second_builder.store_bits(bits);
-      }
-      for (unsigned i = 0; i < cs.size_refs(); ++i) {
-        auto child = dfs(cs.prefetch_ref(i), child_merkle_depth, child_mask);
-        if (child_mask & 1) {
-          first_builder.store_ref(std::move(child.first));
-        }
-        if (child_mask & 2) {
-          second_builder.store_ref(std::move(child.second));
-        }
-      }
-      auto hash_hint = [&](unsigned level, const Cell::LevelMask &, CellHash &hash) {
-        if (level <= merkle_depth) {
-          hash = cell->get_hash(level);
-          return true;
-        }
-        return false;
-      };
-      if (child_mask & 1) {
-        output.first = first_builder.finalize(cs.is_special(), hash_hint);
-        CHECK(output.first.not_null());
-      }
-      if (child_mask & 2) {
-        output.second = second_builder.finalize(cs.is_special(), hash_hint);
-        CHECK(output.second.not_null());
-      }
-    }
-    return cache.emplace(std::move(key), output).first->second;
-  }
-};
 }  // namespace detail
 
 td::Result<Ref<Cell>> MerkleProof::generate_raw(Ref<Cell> cell, IsPrunnedFunction is_prunned) {
@@ -376,11 +265,6 @@ td::Result<Ref<Cell>> MerkleProof::generate_raw_parallel(Ref<Cell> cell, CellUsa
     return visited->count(current->get_hash()) == 0;
   };
   return generate_raw_parallel(std::move(cell), std::move(is_prunned), max_tasks);
-}
-
-td::Result<std::pair<Ref<Cell>, Ref<Cell>>> MerkleProof::generate_raw_pair(
-    Ref<Cell> cell, CellUsageTree *first_usage_tree, IsPrunnedFunction second_is_prunned) {
-  return detail::MerkleProofPairImpl(first_usage_tree, std::move(second_is_prunned)).create_from(std::move(cell));
 }
 
 Ref<Cell> MerkleProof::virtualize_raw(Ref<Cell> cell, td::uint32 effective_level) {

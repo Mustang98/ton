@@ -1175,13 +1175,8 @@ void NewCellStorageStat::add_cell(Ref<Cell> cell) {
   dfs(std::move(cell), true, false);
 }
 void NewCellStorageStat::add_proof(Ref<Cell> cell, const CellUsageTree* usage_tree) {
-  add_proof(std::move(cell), usage_tree, nullptr);
-}
-void NewCellStorageStat::add_proof(Ref<Cell> cell, const CellUsageTree* usage_tree,
-                                   const CellUsageTree* auxiliary_usage_tree) {
   CHECK(usage_tree);
   usage_tree_ = usage_tree;
-  auxiliary_usage_tree_ = auxiliary_usage_tree;
   dfs(std::move(cell), false, true);
 }
 void NewCellStorageStat::add_cell_and_proof(Ref<Cell> cell, const CellUsageTree* usage_tree) {
@@ -1221,9 +1216,7 @@ void NewCellStorageStat::dfs(Ref<Cell> cell, bool need_stat, bool need_proof_sta
 
   if (need_proof_stat) {
     auto tree_node = cell->get_tree_node();
-    if (!tree_node.empty() &&
-        (tree_node.is_from_tree(usage_tree_) ||
-         (auxiliary_usage_tree_ != nullptr && tree_node.is_from_tree(auxiliary_usage_tree_)))) {
+    if (!tree_node.empty() && tree_node.is_from_tree(usage_tree_)) {
       proof_stat_.external_refs++;
       need_proof_stat = false;
     } else {

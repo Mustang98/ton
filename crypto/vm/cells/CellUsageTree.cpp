@@ -90,7 +90,6 @@ CellUsageTree::NodePtr CellUsageTree::node_ptr(NodeId node_id) {
 }
 
 std::shared_ptr<CellUsageTree> CellUsageTree::clone_for_proof() const {
-  std::lock_guard<std::recursive_mutex> guard{mutex_};
   auto clone = std::make_shared<CellUsageTree>();
   size_t count = node_count_.load(std::memory_order_acquire);
   for (size_t chunk = 1; chunk <= ((count - 1) >> chunk_bits); ++chunk) {
@@ -198,24 +197,6 @@ CellUsageTree::NodeId CellUsageTree::create_child(NodeId node_id, unsigned ref_i
     return candidate;
   }
   return expected;
-}
-
-void CellUsageTree::import_paths_from(const CellUsageTree& source, NodeId target_root) {
-  DCHECK(target_root != 0 && target_root < node_count_.load(std::memory_order_acquire));
-  std::vector<std::pair<NodeId, NodeId>> pending{{source.root_id(), target_root}};
-  while (!pending.empty()) {
-    auto [source_node, target_node] = pending.back();
-    pending.pop_back();
-    for (unsigned ref_id = 0; ref_id < CellTraits::max_refs; ++ref_id) {
-      NodeId source_child = source.get_child(source_node, ref_id);
-      if (source_child == 0) {
-        continue;
-      }
-      NodeId target_child = create_child(target_node, ref_id);
-      mark_path(target_child);
-      pending.emplace_back(source_child, target_child);
-    }
-  }
 }
 
 void CellUsageTree::import_loaded_paths_from(const CellUsageTree& source, NodeId target_root,

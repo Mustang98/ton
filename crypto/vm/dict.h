@@ -201,7 +201,6 @@ class DictionaryFixed : public DictionaryBase {
   typedef std::function<bool(CellBuilder&, Ref<CellSlice>, Ref<CellSlice>, td::ConstBitPtr, int)> combine_func_t;
   typedef std::function<bool(Ref<CellSlice>, td::ConstBitPtr, int)> foreach_func_t;
   typedef std::function<bool(td::ConstBitPtr, int, Ref<CellSlice>, Ref<CellSlice>)> scan_diff_func_t;
-  typedef std::function<bool()> scan_diff_task_t;
 
   DictionaryFixed(int _n, bool validate = true) : DictionaryBase(_n, validate) {
   }
@@ -230,7 +229,6 @@ class DictionaryFixed : public DictionaryBase {
   bool int_key_exists(long long key);
   bool uint_key_exists(unsigned long long key);
   Ref<CellSlice> lookup(td::ConstBitPtr key, int key_len);
-  std::vector<Ref<CellSlice>> lookup_multi(td::Span<td::ConstBitPtr> sorted_keys, int key_len);
   DictionaryReplacementStat estimate_replacement_proof_increment(
       td::Span<td::ConstBitPtr> sorted_current_keys, td::Span<td::ConstBitPtr> sorted_previous_keys, int key_len);
   Ref<CellSlice> lookup_delete(td::ConstBitPtr key, int key_len);
@@ -249,8 +247,6 @@ class DictionaryFixed : public DictionaryBase {
   bool combine_with(DictionaryFixed& dict2, const simple_combine_func_t& simple_combine_func, int mode = 0);
   bool combine_with(DictionaryFixed& dict2);
   bool scan_diff(DictionaryFixed& dict2, const scan_diff_func_t& diff_func, int check_augm = 0);
-  std::vector<scan_diff_task_t> prepare_scan_diff_tasks(DictionaryFixed& dict2, const scan_diff_func_t& diff_func,
-                                                        int check_augm, unsigned max_tasks);
   bool validate_check(const foreach_func_t& foreach_func, bool invert_first = false);
   bool validate_all();
   DictIterator null_iterator();
@@ -304,8 +300,6 @@ class DictionaryFixed : public DictionaryBase {
   bool check_leaf(Ref<CellSlice> cs_ref, td::ConstBitPtr key, int key_len) const {
     return check_leaf(cs_ref.write(), key, key_len);
   }
-  void dict_lookup_multi(Ref<Cell> cell, td::Span<td::ConstBitPtr> keys, td::MutableSpan<Ref<CellSlice>> values,
-                         int key_offset, int remaining_bits);
   void dict_estimate_replacement_proof_increment(Ref<Cell> cell, td::Span<td::ConstBitPtr> current_keys,
                                                  td::Span<td::ConstBitPtr> previous_keys, int key_offset,
                                                  int remaining_bits, DictionaryReplacementStat& stat);

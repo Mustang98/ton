@@ -91,7 +91,6 @@ class NewCellStorageStat {
 
   void add_cell(Ref<Cell> cell);
   void add_proof(Ref<Cell> cell, const CellUsageTree* usage_tree);
-  void add_proof(Ref<Cell> cell, const CellUsageTree* usage_tree, const CellUsageTree* auxiliary_usage_tree);
   void add_cell_and_proof(Ref<Cell> cell, const CellUsageTree* usage_tree);
   Stat tentative_add_cell(Ref<Cell> cell) const;
   Stat tentative_add_proof(Ref<Cell> cell, const CellUsageTree* usage_tree) const;
@@ -102,7 +101,6 @@ class NewCellStorageStat {
 
  private:
   const CellUsageTree* usage_tree_;
-  const CellUsageTree* auxiliary_usage_tree_{nullptr};
   td::HashSet<vm::Cell::Hash> seen_;
   Stat stat_;
   td::HashSet<vm::Cell::Hash> proof_seen_;
@@ -351,10 +349,6 @@ class BagOfCells {
   int add_root(td::Ref<vm::Cell> add_root);
   td::Status import_cells() TD_WARN_UNUSED_RESULT;
   BagOfCells() = default;
-  void reserve_cells(size_t count) {
-    cells.reserve(count);
-    cell_list_.reserve(count);
-  }
   void set_logger(BagOfCellsLogger* logger_ptr) {
     logger_ptr_ = logger_ptr;
   }

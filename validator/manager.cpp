@@ -3377,21 +3377,14 @@ void ValidatorManagerImpl::log_collate_query_stats(CollationStats stats) {
         << ",\"int_waves\":" << stats.int_waves << ",\"int_wave_tasks\":" << stats.int_wave_tasks
         << ",\"account_dict_estimator_updates\":" << stats.account_dict_estimator_updates
         << ",\"account_dict_estimator_proofs\":" << stats.account_dict_estimator_proofs
-        << ",\"account_dict_estimator_batches\":" << stats.account_dict_estimator_batches
         << ",\"account_dict_estimator_estimated_bytes\":" << stats.account_dict_estimator_estimated_bytes
         << ",\"account_dict_estimator_proof_cells\":" << stats.account_dict_estimator_proof_cells
         << ",\"account_dict_estimator_proof_bits\":" << stats.account_dict_estimator_proof_bits
         << ",\"account_dict_estimator_proof_internal_refs\":" << stats.account_dict_estimator_proof_internal_refs
         << ",\"account_dict_estimator_proof_external_refs\":" << stats.account_dict_estimator_proof_external_refs
-        << ",\"account_dict_estimator_async_batches\":" << stats.account_dict_estimator_async_batches
-        << ",\"account_dict_estimator_async_queue_max\":" << stats.account_dict_estimator_async_queue_max
-        << ",\"account_dict_estimator_reused\":" << stats.account_dict_estimator_reused
-        << ",\"account_dict_estimator_corrections\":" << stats.account_dict_estimator_corrections
         << ",\"final_account_dict_async_updates\":" << stats.final_account_dict_async_updates
         << ",\"final_account_dict_async_batches\":" << stats.final_account_dict_async_batches
         << ",\"final_account_dict_async_queue_max\":" << stats.final_account_dict_async_queue_max
-        << ",\"account_lookup_batches\":" << stats.account_lookup_batches
-        << ",\"account_lookup_prefetched\":" << stats.account_lookup_prefetched
         << ",\"storage_cache_small_count\":" << stats.storage_stat_cache.small_cnt.load()
         << ",\"storage_cache_small_cells\":" << stats.storage_stat_cache.small_cells.load()
         << ",\"storage_cache_hit_count\":" << stats.storage_stat_cache.hit_cnt.load()
@@ -3435,13 +3428,11 @@ void ValidatorManagerImpl::log_collate_query_stats(CollationStats stats) {
         << ",\"trx_serialize\":" << work.trx_serialize.real << ",\"msg_parse\":" << work.msg_parse.real
         << ",\"account_lookup\":" << work.account_lookup.real << ",\"trx_limits\":" << work.trx_limits.real
         << ",\"account_dict_lookup\":" << work.account_dict_lookup.real
-        << ",\"account_unpack\":" << work.account_unpack.real
-        << ",\"account_lookup_batch\":" << work.account_lookup_batch.real << ",\"trx_commit\":" << work.trx_commit.real
+        << ",\"account_unpack\":" << work.account_unpack.real << ",\"trx_commit\":" << work.trx_commit.real
         << ",\"trx_postprocess\":" << work.trx_postprocess.real
         << ",\"message_descriptor\":" << work.message_descriptor.real
         << ",\"account_dict_estimator_update\":" << work.account_dict_estimator_update.real
         << ",\"account_dict_estimator_proof\":" << work.account_dict_estimator_proof.real
-        << ",\"account_dict_estimator_wait\":" << work.account_dict_estimator_wait.real
         << ",\"account_block_build\":" << work.account_block_build.real
         << ",\"final_account_dict_update\":" << work.final_account_dict_update.real
         << ",\"final_account_dict_async_work\":" << work.final_account_dict_async_work.real
@@ -3481,13 +3472,11 @@ void ValidatorManagerImpl::log_collate_query_stats(CollationStats stats) {
         << ",\"trx_serialize\":" << work.trx_serialize.cpu << ",\"msg_parse\":" << work.msg_parse.cpu
         << ",\"account_lookup\":" << work.account_lookup.cpu << ",\"trx_limits\":" << work.trx_limits.cpu
         << ",\"account_dict_lookup\":" << work.account_dict_lookup.cpu
-        << ",\"account_unpack\":" << work.account_unpack.cpu
-        << ",\"account_lookup_batch\":" << work.account_lookup_batch.cpu << ",\"trx_commit\":" << work.trx_commit.cpu
+        << ",\"account_unpack\":" << work.account_unpack.cpu << ",\"trx_commit\":" << work.trx_commit.cpu
         << ",\"trx_postprocess\":" << work.trx_postprocess.cpu
         << ",\"message_descriptor\":" << work.message_descriptor.cpu
         << ",\"account_dict_estimator_update\":" << work.account_dict_estimator_update.cpu
         << ",\"account_dict_estimator_proof\":" << work.account_dict_estimator_proof.cpu
-        << ",\"account_dict_estimator_wait\":" << work.account_dict_estimator_wait.cpu
         << ",\"account_block_build\":" << work.account_block_build.cpu
         << ",\"final_account_dict_update\":" << work.final_account_dict_update.cpu
         << ",\"final_account_dict_async_work\":" << work.final_account_dict_async_work.cpu

@@ -50,8 +50,7 @@ namespace ton {
 namespace validator {
 using td::Ref;
 
-class AsyncAccountDictEstimator;
-class AsyncAccountLookupBatch;
+class AsyncAccountDictionary;
 
 // A persistent fork-join pool for deterministic transaction-execution waves. The actor
 // thread participates in each wave; workers only execute tasks and never commit collator state.
@@ -320,8 +319,6 @@ class Collator final : public td::actor::Actor {
   td::CancellationTokenSource ext_msg_cancellation_;
 
   std::priority_queue<NewOutMsg, std::vector<NewOutMsg>, std::greater<NewOutMsg>> new_msgs;
-  std::vector<StdSmcAddress> pending_new_msg_accounts_;
-  std::shared_ptr<AsyncAccountLookupBatch> async_account_lookup_batch_;
   std::pair<ton::LogicalTime, ton::Bits256> last_proc_int_msg_, first_unproc_int_msg_;
   block::tlb::Aug_InMsgDescr aug_InMsgDescr{0};
   block::tlb::Aug_OutMsgDescr aug_OutMsgDescr{0};
@@ -380,8 +377,7 @@ class Collator final : public td::actor::Actor {
   std::vector<td::Bits256> analytical_estimator_previous_keys_;
   std::vector<td::Bits256> analytical_estimator_pending_keys_;
   bool analytical_account_dict_estimator_valid_{true};
-  std::shared_ptr<AsyncAccountDictEstimator> async_account_dict_estimator_;
-  std::shared_ptr<AsyncAccountDictEstimator> async_final_account_dict_;
+  std::shared_ptr<AsyncAccountDictionary> async_final_account_dict_;
   struct EarlyFinalAccountRebind {
     td::Result<Ref<vm::Cell>> result;
     std::shared_ptr<vm::ProofStorageStat> loaded_cells;
@@ -393,23 +389,12 @@ class Collator final : public td::actor::Actor {
     td::thread thread;
     bool started{false};
   } early_final_account_rebind_;
-  std::shared_ptr<vm::CellUsageTree> state_update_aux_usage_tree_;
-  std::shared_ptr<vm::ProofStorageStat> state_update_aux_loaded_cells_;
-  vm::CellUsageTree::NodeId state_update_aux_target_root_{0};
   std::set<td::Bits256> account_dict_estimator_added_accounts_;
-  struct AccountDictEstimatorState {
-    bool exists;
-    td::Bits256 total_state_hash;
-    td::Bits256 last_trans_hash;
-    ton::LogicalTime last_trans_lt;
-  };
   struct AccountDictEstimatorUpdate {
     td::Bits256 address;
     Ref<vm::Cell> value;
   };
   std::vector<AccountDictEstimatorUpdate> analytical_estimator_fallback_updates_;
-  std::map<td::Bits256, AccountDictEstimatorState> account_dict_estimator_states_;
-  std::vector<AccountDictEstimatorUpdate> account_dict_estimator_pending_updates_;
   std::vector<AccountDictEstimatorUpdate> final_account_dict_pending_updates_;
   unsigned account_dict_ops_{0};
 
@@ -517,11 +502,6 @@ class Collator final : public td::actor::Actor {
   td::actor::Task<> wait_for_external_message(td::Timestamp timeout);
 
   void register_new_msg(block::NewOutMsg msg);
-  void track_new_message_account(const Ref<vm::Cell>& msg);
-  bool prefetch_new_message_accounts();
-  bool start_async_account_lookup_batch();
-  bool finish_async_account_lookup_batch();
-  bool prepare_async_account_for_message(const Ref<vm::Cell>& msg);
   void register_new_msgs(block::transaction::Transaction& trans, td::optional<block::MsgMetadata> msg_metadata);
   bool process_new_messages(bool& enqueue_only);
   struct NewMsgRoute {
@@ -561,11 +541,6 @@ class Collator final : public td::actor::Actor {
   bool flush_message_descriptor_updates();
   bool register_out_msg_queue_op(bool force = false);
   bool register_dispatch_queue_op(bool force = false);
-  bool wait_account_dict_estimator(Ref<vm::Cell>* root = nullptr,
-                                   std::shared_ptr<vm::CellUsageTree>* usage_tree = nullptr,
-                                   std::shared_ptr<vm::ProofStorageStat>* loaded_cells = nullptr);
-  bool enqueue_account_dict_estimator_update(td::Bits256 address, Ref<vm::Cell> value);
-  bool flush_account_dict_estimator_updates();
   bool enqueue_final_account_dict_update(const block::Account& account);
   bool flush_final_account_dict_updates();
   bool start_early_final_account_rebind();

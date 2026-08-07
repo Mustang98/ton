@@ -320,11 +320,6 @@ struct BlockLimitStatus {
     st_stat.add_proof(std::move(cell), usage_tree);
     return true;
   }
-  bool add_proof(Ref<vm::Cell> cell, const vm::CellUsageTree* usage_tree,
-                 const vm::CellUsageTree* auxiliary_usage_tree) {
-    st_stat.add_proof(std::move(cell), usage_tree, auxiliary_usage_tree);
-    return true;
-  }
   bool update_lt(ton::LogicalTime lt) {
     cur_lt = std::max(lt, cur_lt);
     return true;

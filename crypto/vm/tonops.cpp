@@ -17,7 +17,6 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #include <array>
-#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -75,15 +74,6 @@ class Ed25519ChksignuCache {
       const auto& entry = shard.entries[(hash / kShardCount) % kEntriesPerShard];
       hit = entry.valid && entry.hash == hash && entry.key == cache_key;
     }
-    auto lookups = lookups_.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (hit) {
-      hits_.fetch_add(1, std::memory_order_relaxed);
-    }
-    if ((lookups & 0x7fff) == 0) {
-      LOG(WARNING) << "TON_SIM_ED25519_CHKSIG_CACHE lookups=" << lookups
-                   << " hits=" << hits_.load(std::memory_order_relaxed)
-                   << " inserts=" << inserts_.load(std::memory_order_relaxed);
-    }
     return hit;
   }
 
@@ -98,7 +88,6 @@ class Ed25519ChksignuCache {
       entry.hash = hash;
       entry.valid = true;
     }
-    inserts_.fetch_add(1, std::memory_order_relaxed);
   }
 
  private:
@@ -146,9 +135,6 @@ class Ed25519ChksignuCache {
   };
 
   std::array<Shard, kShardCount> shards_;
-  std::atomic<td::uint64> lookups_{0};
-  std::atomic<td::uint64> hits_{0};
-  std::atomic<td::uint64> inserts_{0};
 };
 
 Ed25519ChksignuCache* ed25519_chksignu_cache() {

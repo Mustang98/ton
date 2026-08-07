@@ -22,7 +22,6 @@
 #include <atomic>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <vector>
 
 #include "td/utils/int_types.h"
@@ -79,7 +78,6 @@ class CellUsageTree : public std::enable_shared_from_this<CellUsageTree> {
   NodeId get_child(NodeId node_id, unsigned ref_id) const;
   void set_use_mark_for_is_loaded(bool use_mark = true);
   NodeId create_child(NodeId node_id, unsigned ref_id);
-  void import_paths_from(const CellUsageTree& source, NodeId target_root);
   void import_loaded_paths_from(const CellUsageTree& source, NodeId target_root,
                                 std::vector<NodeId>* source_to_target = nullptr);
 
@@ -117,8 +115,6 @@ class CellUsageTree : public std::enable_shared_from_this<CellUsageTree> {
   std::array<std::atomic<Chunk*>, max_chunks> chunks_{};
   std::atomic<size_t> node_count_{2};
   std::function<void(const LoadedCell&)> cell_load_callback_;
-  mutable std::recursive_mutex mutex_;
-
   void on_load(NodeId node_id, const LoadedCell& loaded_cell);
   NodeId create_node(NodeId parent, unsigned parent_ref);
   void ensure_chunk(size_t chunk_index);

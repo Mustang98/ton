@@ -23,7 +23,6 @@
 #include "vm/cells/Cell.h"
 #include "vm/cells/CellBuilder.h"
 #include "vm/cells/CellSlice.h"
-#include "vm/cells/MerkleProof.h"
 #include "vm/db/DynamicBagOfCellsDb.h"
 
 namespace vm {
@@ -31,20 +30,9 @@ class MerkleUpdate {
  public:
   // from + update == to
   static td::Result<Ref<Cell>> generate(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree,
-                                        CellUsageTree *auxiliary_usage_tree = nullptr,
-                                        CellUsageTree::NodeId auxiliary_target_root = 0,
                                         bool prefer_direct_usage_node = false,
                                         CellUsageTree *proof_usage_tree = nullptr,
                                         unsigned parallel_old_proof_tasks = 1);
-  static td::Result<Ref<Cell>> generate_raw_new_proof(Ref<Cell> to, CellUsageTree *usage_tree,
-                                                       CellUsageTree *auxiliary_usage_tree = nullptr,
-                                                       bool prefer_direct_usage_node = false,
-                                                       CellUsageTree *proof_usage_tree = nullptr);
-  static td::Result<Ref<Cell>> complete_from_raw_new_proof(Ref<Cell> from, Ref<Cell> raw_new_proof,
-                                                            CellUsageTree *proof_usage_tree);
-  static td::Result<std::pair<Ref<Cell>, Ref<Cell>>> generate_with_shared_old_proof(
-      Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree, MerkleProof::IsPrunnedFunction collated_is_prunned,
-      bool prefer_direct_usage_node = false);
   // Returns Error if something go wrong. If validate(from).is_ok() and may_apply(from, to).is_ok(), then it
   // must not fail.
   static td::Result<Ref<Cell>> apply(Ref<Cell> from, Ref<Cell> update, StoreCellHint *hint = nullptr);
@@ -58,8 +46,6 @@ class MerkleUpdate {
                                          td::uint32 from_level, td::uint32 to_level, StoreCellHint *hint = nullptr);
   static td::Result<std::pair<Ref<Cell>, Ref<Cell>>> generate_raw(Ref<Cell> from, Ref<Cell> to,
                                                                   CellUsageTree *usage_tree,
-                                                                  CellUsageTree *auxiliary_usage_tree = nullptr,
-                                                                  CellUsageTree::NodeId auxiliary_target_root = 0,
                                                                   bool prefer_direct_usage_node = false,
                                                                   CellUsageTree *proof_usage_tree = nullptr,
                                                                   unsigned parallel_old_proof_tasks = 1);

@@ -24,7 +24,6 @@
 #include <deque>
 #include <future>
 #include <mutex>
-#include <numeric>
 #include <optional>
 
 #include "adnl/utils.hpp"
@@ -61,88 +60,49 @@ thread_local Collator::WaveProofStats* Collator::current_wave_proof_stats_ = nul
 
 namespace {
 
+bool read_bool_env(const char* name) {
+  const char* value = std::getenv(name);
+  return value != nullptr && value[0] == '1' && value[1] == '\0';
+}
+
+unsigned read_unsigned_env(const char* name, unsigned fallback, unsigned maximum) {
+  const char* value = std::getenv(name);
+  int parsed = value ? std::atoi(value) : 0;
+  return parsed > 0 && static_cast<unsigned>(parsed) <= maximum ? static_cast<unsigned>(parsed)
+                                                                : fallback;
+}
+
 bool filter_ancestor_externals_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_FILTER_ANCESTOR_EXTERNALS");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_FILTER_ANCESTOR_EXTERNALS");
   return enabled;
 }
 
 bool parallel_execution_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_EXECUTION");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_EXECUTION");
   return enabled;
 }
 
 bool parallel_account_prepare_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_ACCOUNT_PREPARE");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool multi_account_lookup_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_MULTI_ACCOUNT_LOOKUP");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool partitioned_multi_account_lookup_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARTITIONED_MULTI_ACCOUNT_LOOKUP");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_ACCOUNT_PREPARE");
   return enabled;
 }
 
 bool parallel_storage_prepare_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_STORAGE_PREPARE");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_STORAGE_PREPARE");
   return enabled;
 }
 
 bool parallel_account_blocks_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_ACCOUNT_BLOCKS");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_ACCOUNT_BLOCKS");
   return enabled;
 }
 
 int parallel_execution_threads() {
-  static const int threads = [] {
-    const char* value = std::getenv("TON_SIM_EXECUTION_THREADS");
-    int parsed = value ? std::atoi(value) : 0;
-    return parsed > 0 && parsed <= 32 ? parsed : 8;
-  }();
-  return threads;
+  static const unsigned threads = read_unsigned_env("TON_SIM_EXECUTION_THREADS", 8, 32);
+  return static_cast<int>(threads);
 }
 
-int multi_account_lookup_partitions() {
-  static const int partitions = [] {
-    const char* value = std::getenv("TON_SIM_ACCOUNT_LOOKUP_PARTITIONS");
-    int parsed = value ? std::atoi(value) : 0;
-    return parsed > 0 && parsed <= 32 ? parsed : parallel_execution_threads();
-  }();
-  return partitions;
-}
-
-double ext_load_fraction_limit() {
-  static const double limit = [] {
-    const char* value = std::getenv("TON_SIM_EXT_LOAD_FRACTION");
-    double parsed = value ? std::atof(value) : 0.0;
-    return parsed > 0.0 && parsed <= 1.0 ? parsed : 0.4;
-  }();
-  return limit;
-}
+constexpr double ext_load_fraction_limit = 0.4;
 
 void merge_parallel_transaction_stats(CollationStats& target, const CollationStats& source, bool external) {
   const auto& src = source.work_time;
@@ -158,366 +118,54 @@ void merge_parallel_transaction_stats(CollationStats& target, const CollationSta
   (external ? dst.trx_external : dst.trx_internal) += external ? src.trx_external : src.trx_internal;
 }
 
-bool move_block_candidate_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_MOVE_BLOCK_CANDIDATE");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool reuse_account_dict_estimator_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_REUSE_ACCOUNT_DICT_ESTIMATOR");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool batch_account_dict_estimator_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_BATCH_ACCOUNT_DICT_ESTIMATOR");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool async_account_dict_estimator_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_ASYNC_ACCOUNT_DICT_ESTIMATOR");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool batch_async_account_dict_estimator_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_BATCH_ASYNC_ACCOUNT_DICT_ESTIMATOR");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
 bool async_final_account_dict_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_ASYNC_FINAL_ACCOUNT_DICT");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool batch_final_account_dict_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_BATCH_FINAL_ACCOUNT_DICT");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool fast_final_account_rebind_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_FAST_FINAL_ACCOUNT_REBIND");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool fast_final_account_rebind_with_proof_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_FAST_FINAL_ACCOUNT_REBIND_WITH_PROOF");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_fast_final_account_rebind_with_proof_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_FAST_FINAL_ACCOUNT_REBIND_WITH_PROOF");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool dense_final_account_rebind_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_DENSE_FINAL_ACCOUNT_REBIND");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool inplace_final_account_rebind_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_INPLACE_FINAL_ACCOUNT_REBIND");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool reuse_async_account_dict_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_REUSE_ASYNC_ACCOUNT_DICT");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool rebind_async_account_dict_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_REBIND_ASYNC_ACCOUNT_DICT");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_ASYNC_FINAL_ACCOUNT_DICT");
   return enabled;
 }
 
 bool batch_message_descriptors_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_BATCH_MESSAGE_DESCRIPTORS");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_BATCH_MESSAGE_DESCRIPTORS");
   return enabled;
 }
 
 unsigned message_descriptor_batch_size() {
-  static const unsigned batch_size = [] {
-    const char* value = std::getenv("TON_SIM_MESSAGE_DESCRIPTOR_BATCH_SIZE");
-    int parsed = value ? std::atoi(value) : 0;
-    return parsed > 0 && parsed <= 4096 ? static_cast<unsigned>(parsed) : 64u;
-  }();
+  static const unsigned batch_size = read_unsigned_env("TON_SIM_MESSAGE_DESCRIPTOR_BATCH_SIZE", 64, 4096);
   return batch_size;
 }
 
-bool batch_account_lookup_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_BATCH_ACCOUNT_LOOKUP");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_candidate_boc_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_CANDIDATE_BOC");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
 bool early_block_boc_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_EARLY_BLOCK_BOC");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool early_collated_boc_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_EARLY_COLLATED_BOC");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool reserve_candidate_boc_cells_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_RESERVE_CANDIDATE_BOC_CELLS");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool early_block_file_hash_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_EARLY_BLOCK_FILE_HASH");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_collated_proofs_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_COLLATED_PROOFS");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_state_proof_traversal_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_STATE_PROOF_TRAVERSAL");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool direct_merkle_usage_node_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_DIRECT_MERKLE_USAGE_NODE");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool async_account_lookup_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_ASYNC_ACCOUNT_LOOKUP");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_state_finalization_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_STATE_FINALIZATION");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_EARLY_BLOCK_BOC");
   return enabled;
 }
 
 bool pipelined_state_finalization_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PIPELINED_STATE_FINALIZATION");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool early_pipelined_state_proof_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_EARLY_PIPELINED_STATE_PROOF");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_pipelined_state_proof_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_PIPELINED_STATE_PROOF");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_PIPELINED_STATE_FINALIZATION");
   return enabled;
 }
 
 unsigned parallel_pipelined_state_proof_tasks() {
-  static const unsigned tasks = [] {
-    const char* value = std::getenv("TON_SIM_PIPELINED_STATE_PROOF_TASKS");
-    int parsed = value ? std::atoi(value) : 0;
-    return parsed > 0 && parsed <= 32 ? static_cast<unsigned>(parsed) : 8u;
-  }();
+  static const unsigned tasks = read_unsigned_env("TON_SIM_PIPELINED_STATE_PROOF_TASKS", 8, 32);
   return tasks;
-}
-
-bool parallel_state_update_old_proof_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_STATE_UPDATE_OLD_PROOF");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
 }
 
 unsigned parallel_state_update_old_proof_tasks() {
-  static const unsigned tasks = [] {
-    const char* value = std::getenv("TON_SIM_STATE_UPDATE_OLD_PROOF_TASKS");
-    int parsed = value ? std::atoi(value) : 0;
-    return parsed > 0 && parsed <= 32 ? static_cast<unsigned>(parsed) : 8u;
-  }();
+  static const unsigned tasks = read_unsigned_env("TON_SIM_STATE_UPDATE_OLD_PROOF_TASKS", 8, 32);
   return tasks;
-}
-
-bool parallel_exact_state_proofs_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_EXACT_STATE_PROOFS");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_account_proof_scan_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_ACCOUNT_PROOF_SCAN");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-unsigned account_proof_scan_tasks() {
-  static const unsigned tasks = [] {
-    const char* value = std::getenv("TON_SIM_ACCOUNT_PROOF_SCAN_TASKS");
-    int parsed = value ? std::atoi(value) : 0;
-    return parsed > 0 && parsed <= 32 ? static_cast<unsigned>(parsed) : 8u;
-  }();
-  return tasks;
-}
-
-bool parallel_final_account_update_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_FINAL_ACCOUNT_UPDATE");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_final_account_rebind_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_FINAL_ACCOUNT_REBIND");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool parallel_final_account_rebind_traversal_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_PARALLEL_FINAL_ACCOUNT_REBIND_TRAVERSAL");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
 }
 
 unsigned final_account_rebind_tasks() {
-  static const unsigned tasks = [] {
-    const char* value = std::getenv("TON_SIM_FINAL_ACCOUNT_REBIND_TASKS");
-    int parsed = value ? std::atoi(value) : 0;
-    return parsed > 0 && parsed <= 32 ? static_cast<unsigned>(parsed) : 8u;
-  }();
+  static const unsigned tasks = read_unsigned_env("TON_SIM_FINAL_ACCOUNT_REBIND_TASKS", 8, 32);
   return tasks;
 }
 
-bool lazy_final_account_rebind_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_LAZY_FINAL_ACCOUNT_REBIND");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool shared_old_state_proofs_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_SHARED_OLD_STATE_PROOFS");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
 bool analytical_account_dict_estimator_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_ANALYTICAL_ACCOUNT_DICT_ESTIMATOR");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
-  }();
-  return enabled;
-}
-
-bool shadow_analytical_account_dict_estimator_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("TON_SIM_ANALYTICAL_ACCOUNT_DICT_ESTIMATOR");
-    return value != nullptr && std::strcmp(value, "shadow") == 0;
-  }();
+  static const bool enabled = read_bool_env("TON_SIM_ANALYTICAL_ACCOUNT_DICT_ESTIMATOR");
   return enabled;
 }
 
 }  // namespace
 
-class AsyncAccountDictEstimator {
+class AsyncAccountDictionary {
  public:
   struct Update {
     td::uint64 sequence = 0;
@@ -526,7 +174,6 @@ class AsyncAccountDictEstimator {
   };
 
   struct Snapshot {
-    Ref<vm::Cell> original_root;
     Ref<vm::Cell> root;
     std::shared_ptr<vm::CellUsageTree> usage_tree;
     std::shared_ptr<vm::ProofStorageStat> loaded_cells;
@@ -536,40 +183,26 @@ class AsyncAccountDictEstimator {
     td::uint32 max_queue = 0;
   };
 
-  explicit AsyncAccountDictEstimator(Ref<vm::Cell> root, bool track_loaded_cells = false)
-      : original_root_(unwrap_usage_cell(std::move(root)))
-      , usage_tree_(std::make_shared<vm::CellUsageTree>())
-      , dict_(vm::UsageCell::create(original_root_, usage_tree_->root_ptr()), 256,
+  explicit AsyncAccountDictionary(Ref<vm::Cell> root)
+      : usage_tree_(std::make_shared<vm::CellUsageTree>())
+      , dict_(vm::UsageCell::create(unwrap_usage_cell(std::move(root)), usage_tree_->root_ptr()), 256,
               block::tlb::aug_ShardAccounts, false)
       , root_(dict_.get_root_cell())
-      , loaded_cells_(track_loaded_cells ? std::make_shared<vm::ProofStorageStat>() : nullptr) {
-    if (loaded_cells_) {
-      usage_tree_->set_cell_load_callback([loaded_cells = loaded_cells_](const vm::LoadedCell& cell) {
-        loaded_cells->add_loaded_cell(cell.data_cell, static_cast<td::uint8>(cell.effective_level));
-      });
-    }
+      , loaded_cells_(std::make_shared<vm::ProofStorageStat>()) {
+    usage_tree_->set_cell_load_callback([loaded_cells = loaded_cells_](const vm::LoadedCell& cell) {
+      loaded_cells->add_loaded_cell(cell.data_cell, static_cast<td::uint8>(cell.effective_level));
+    });
     thread_ = td::thread([this] { run(); });
-    thread_.set_name("acc-dict-est");
+    thread_.set_name("acc-dict-final");
   }
 
-  ~AsyncAccountDictEstimator() {
+  ~AsyncAccountDictionary() {
     {
       std::lock_guard lock(mutex_);
       stopping_ = true;
     }
     wakeup_.notify_all();
     thread_.join();
-  }
-
-  bool enqueue(td::Bits256 address, Ref<vm::Cell> value) {
-    std::lock_guard lock(mutex_);
-    if (failed_ || stopping_) {
-      return false;
-    }
-    pending_.push_back(Update{++submitted_, address, std::move(value)});
-    max_queue_ = std::max<td::uint32>(max_queue_, static_cast<td::uint32>(pending_.size()));
-    wakeup_.notify_one();
-    return true;
   }
 
   bool enqueue_batch(std::vector<std::pair<td::Bits256, Ref<vm::Cell>>> updates) {
@@ -595,7 +228,6 @@ class AsyncAccountDictEstimator {
       return false;
     }
     snapshot.root = root_;
-    snapshot.original_root = original_root_;
     snapshot.usage_tree = usage_tree_;
     snapshot.loaded_cells = loaded_cells_;
     snapshot.work_time = unreported_work_time_;
@@ -681,7 +313,6 @@ class AsyncAccountDictEstimator {
     }
   }
 
-  Ref<vm::Cell> original_root_;
   std::shared_ptr<vm::CellUsageTree> usage_tree_;
   vm::AugmentedDictionary dict_;
   Ref<vm::Cell> root_;
@@ -699,98 +330,6 @@ class AsyncAccountDictEstimator {
   bool stopping_ = false;
   bool failed_ = false;
   std::string error_;
-};
-
-class AsyncAccountLookupBatch {
- public:
-  struct Snapshot {
-    std::vector<StdSmcAddress> addresses;
-    std::vector<Ref<vm::CellSlice>> values;
-    std::shared_ptr<vm::CellUsageTree> usage_tree;
-    std::shared_ptr<vm::ProofStorageStat> loaded_cells;
-    td::RealCpuTimer::Time work_time;
-  };
-
-  AsyncAccountLookupBatch(Ref<vm::Cell> root, std::vector<StdSmcAddress> addresses)
-      : root_(unwrap_usage_cell(std::move(root))), addresses_(std::move(addresses)) {
-    thread_ = td::thread([this] { run(); });
-    thread_.set_name("account-lookup");
-  }
-
-  ~AsyncAccountLookupBatch() {
-    if (!joined_) {
-      thread_.join();
-    }
-  }
-
-  bool contains(const StdSmcAddress& address) const {
-    return std::binary_search(addresses_.begin(), addresses_.end(), address);
-  }
-
-  bool done() const {
-    return done_.load(std::memory_order_acquire);
-  }
-
-  td::Result<Snapshot> wait() {
-    if (!joined_) {
-      thread_.join();
-      joined_ = true;
-    }
-    if (error_.is_error()) {
-      return std::move(error_);
-    }
-    return Snapshot{std::move(addresses_), std::move(values_), std::move(usage_tree_), std::move(loaded_cells_),
-                    work_time_};
-  }
-
- private:
-  static Ref<vm::Cell> unwrap_usage_cell(Ref<vm::Cell> root) {
-    while (auto* usage_cell = dynamic_cast<const vm::UsageCell*>(root.get())) {
-      root = usage_cell->underlying_cell();
-    }
-    return root;
-  }
-
-  void run() {
-    td::RealCpuTimer timer;
-    try {
-      usage_tree_ = std::make_shared<vm::CellUsageTree>();
-      loaded_cells_ = std::make_shared<vm::ProofStorageStat>();
-      usage_tree_->set_cell_load_callback([loaded_cells = loaded_cells_](const vm::LoadedCell& cell) {
-        loaded_cells->add_loaded_cell(cell.data_cell, static_cast<td::uint8>(cell.effective_level));
-      });
-      vm::AugmentedDictionary dict{vm::UsageCell::create(root_, usage_tree_->root_ptr()), 256,
-                                   block::tlb::aug_ShardAccounts, false};
-      std::vector<td::ConstBitPtr> keys;
-      keys.reserve(addresses_.size());
-      for (const auto& address : addresses_) {
-        keys.push_back(address.cbits());
-      }
-      values_ = dict.lookup_multi(keys, 256);
-      if (values_.size() != addresses_.size()) {
-        error_ = td::Status::Error("asynchronous account lookup returned a wrong number of values");
-      }
-    } catch (vm::VmError& error) {
-      error_ = td::Status::Error(td::Slice{error.get_msg()});
-    } catch (const std::exception& exception) {
-      error_ = td::Status::Error(td::Slice{exception.what()});
-    } catch (...) {
-      error_ = td::Status::Error("asynchronous account lookup failed with an unknown exception");
-    }
-    work_time_ = timer.elapsed_both();
-    done_.store(true, std::memory_order_release);
-  }
-
-  Ref<vm::Cell> root_;
-  std::vector<StdSmcAddress> addresses_;
-  std::vector<Ref<vm::CellSlice>> values_;
-  std::shared_ptr<vm::CellUsageTree> usage_tree_;
-  std::shared_ptr<vm::ProofStorageStat> loaded_cells_;
-  td::thread thread_;
-  td::Status error_;
-  td::RealCpuTimer::Time work_time_;
-  std::atomic<bool> done_{false};
-  bool joined_{false};
 };
 
 // Don't increase MERGE_MAX_QUEUE_LIMIT too much: merging requires cleaning the whole queue in out_msg_queue_cleanup
@@ -2051,8 +1590,7 @@ bool Collator::import_shard_state_data(block::ShardState& ss) {
   old_account_dict =
       std::make_unique<vm::AugmentedDictionary>(account_dict->get_root(), 256, block::tlb::aug_ShardAccounts);
   account_dict_estimator_ = std::make_unique<vm::AugmentedDictionary>(*account_dict);
-  if ((analytical_account_dict_estimator_enabled() || shadow_analytical_account_dict_estimator_enabled()) &&
-      !is_masterchain()) {
+  if (analytical_account_dict_estimator_enabled() && !is_masterchain()) {
     auto root = account_dict_estimator_->get_root_cell();
     while (auto* usage_cell = dynamic_cast<const vm::UsageCell*>(root.get())) {
       root = usage_cell->underlying_cell();
@@ -2060,14 +1598,8 @@ bool Collator::import_shard_state_data(block::ShardState& ss) {
     analytical_account_dict_estimator_ = std::make_unique<vm::AugmentedDictionary>(
         std::move(root), 256, block::tlb::aug_ShardAccounts, false);
   }
-  if (async_account_dict_estimator_enabled() && !analytical_account_dict_estimator_enabled() && !is_masterchain()) {
-    async_account_dict_estimator_ = std::make_shared<AsyncAccountDictEstimator>(
-        account_dict_estimator_->get_root_cell(),
-        reuse_async_account_dict_enabled() && !rebind_async_account_dict_enabled());
-  }
   if (async_final_account_dict_enabled() && !is_masterchain()) {
-    async_final_account_dict_ = std::make_shared<AsyncAccountDictEstimator>(
-        account_dict->get_root_cell(), fast_final_account_rebind_with_proof_enabled());
+    async_final_account_dict_ = std::make_shared<AsyncAccountDictionary>(account_dict->get_root_cell());
   }
   shard_libraries_ = std::move(ss.shard_libraries_);
   mc_state_extra_ = std::move(ss.mc_state_extra_);
@@ -3289,21 +2821,16 @@ td::actor::Task<> Collator::do_collate_inner() {
   if (early_block_boc_enabled()) {
     auto block_root = new_block;
     early_block_boc_started = true;
-    auto block_reserve_hint = reserve_candidate_boc_cells_enabled() ? std::max<size_t>(1024, block_size_estimate_ / 32)
-                                                                     : 0;
-    early_block_boc_thread = td::thread([block_root = std::move(block_root), block_reserve_hint, &early_block_boc,
+    early_block_boc_thread = td::thread([block_root = std::move(block_root), &early_block_boc,
                                          &early_block_file_hash, &early_block_file_hash_ready,
                                          &early_block_boc_time] {
       td::RealCpuTimer timer;
       try {
         vm::BagOfCells boc;
         boc.set_root(block_root);
-        if (block_reserve_hint != 0) {
-          boc.reserve_cells(block_reserve_hint);
-        }
         auto status = boc.import_cells();
         early_block_boc = status.is_error() ? status.move_as_error() : boc.serialize_to_slice(31);
-        if (early_block_file_hash_enabled() && early_block_boc.is_ok()) {
+        if (early_block_boc.is_ok()) {
           early_block_file_hash = block::compute_file_hash(early_block_boc.ok().as_slice());
           early_block_file_hash_ready = true;
         }
@@ -3337,14 +2864,10 @@ td::actor::Task<> Collator::do_collate_inner() {
       early_collated_boc_thread.join();
     }
   };
-  if (early_collated_boc_enabled() && early_block_boc_started) {
+  if (early_block_boc_started) {
     auto roots = collated_roots_;
-    auto reserve_hint =
-        reserve_candidate_boc_cells_enabled()
-            ? std::max<size_t>(1024, static_cast<size_t>(block_limit_status_->collated_data_size_estimate / 32))
-            : 0;
     early_collated_boc_started = true;
-    early_collated_boc_thread = td::thread([roots = std::move(roots), reserve_hint, &early_collated_boc,
+    early_collated_boc_thread = td::thread([roots = std::move(roots), &early_collated_boc,
                                             &early_collated_boc_time] {
       td::RealCpuTimer timer;
       try {
@@ -3353,9 +2876,6 @@ td::actor::Task<> Collator::do_collate_inner() {
         } else {
           vm::BagOfCells boc;
           boc.set_roots(roots);
-          if (reserve_hint != 0) {
-            boc.reserve_cells(reserve_hint);
-          }
           auto status = boc.import_cells();
           early_collated_boc = status.is_error() ? status.move_as_error() : boc.serialize_to_slice(2);
         }
@@ -3651,7 +3171,7 @@ bool Collator::init_account_storage_dict(block::Account& account) {
     storage_stat_cache_update_.emplace_back(cached_dict_root, account.storage_used.cells);
     stats_.storage_stat_cache.hit_cnt++;
     stats_.storage_stat_cache.hit_cells += account.storage_used.cells;
-  } else if (account.storage_used.cells >= StorageStatCache::min_account_cells()) {
+  } else if (account.storage_used.cells >= StorageStatCache::MIN_ACCOUNT_CELLS) {
     stats_.storage_stat_cache.miss_cnt++;
     stats_.storage_stat_cache.miss_cells += account.storage_used.cells;
   } else {
@@ -3761,7 +3281,6 @@ td::Result<block::Account*> Collator::make_account(td::ConstBitPtr addr, bool fo
 bool Collator::prepare_accounts_parallel(const std::vector<StdSmcAddress>& addresses) {
   struct Task {
     StdSmcAddress address;
-    Ref<vm::CellSlice> account_value;
     std::unique_ptr<block::Account> account;
     td::Status error;
     td::RealCpuTimer::Time dict_lookup_time;
@@ -3783,125 +3302,19 @@ bool Collator::prepare_accounts_parallel(const std::vector<StdSmcAddress>& addre
   }
 
   td::RealCpuTimer total_timer;
-  const bool serial_multi_lookup = multi_account_lookup_enabled();
-  const bool partitioned_multi_lookup = partitioned_multi_account_lookup_enabled();
-  const bool prefetched_lookup = serial_multi_lookup || partitioned_multi_lookup;
-  std::vector<size_t> lookup_order;
-  if (prefetched_lookup) {
-    lookup_order.resize(tasks.size());
-    std::iota(lookup_order.begin(), lookup_order.end(), 0);
-    std::sort(lookup_order.begin(), lookup_order.end(), [&](size_t lhs, size_t rhs) {
-      return tasks[lhs].address < tasks[rhs].address;
-    });
-    for (size_t i = 1; i < lookup_order.size(); ++i) {
-      if (tasks[lookup_order[i - 1]].address == tasks[lookup_order[i]].address) {
-        return fatal_error("multi-account lookup received a duplicate address");
-      }
-    }
-  }
-  if (serial_multi_lookup) {
-    std::vector<td::ConstBitPtr> keys;
-    keys.reserve(tasks.size());
-    for (auto index : lookup_order) {
-      keys.push_back(tasks[index].address.cbits());
-    }
-    std::vector<Ref<vm::CellSlice>> values;
-    try {
-      td::RealCpuTimer timer;
-      values = account_dict->lookup_multi(keys, 256);
-      stats_.work_time.account_dict_lookup += timer.elapsed_both();
-    } catch (vm::VmError& error) {
-      return fatal_error(PSTRING() << "multi-account lookup failed: " << error.get_msg());
-    } catch (const std::exception& error) {
-      return fatal_error(PSTRING() << "multi-account lookup failed: " << error.what());
-    }
-    if (values.size() != tasks.size()) {
-      return fatal_error("multi-account lookup returned an unexpected number of values");
-    }
-    ++stats_.account_lookup_batches;
-    stats_.account_lookup_prefetched += tasks.size();
-    for (size_t i = 0; i < tasks.size(); ++i) {
-      tasks[lookup_order[i]].account_value = std::move(values[i]);
-    }
-  } else if (partitioned_multi_lookup) {
-    struct LookupGroup {
-      std::vector<size_t> task_indices;
-      WaveProofStats proof_stats;
-      td::RealCpuTimer::Time work_time;
-      td::Status error;
-    };
-    const size_t group_count = std::min<size_t>(multi_account_lookup_partitions(), tasks.size());
-    std::vector<std::unique_ptr<LookupGroup>> groups;
-    std::vector<std::function<void()>> lookup_jobs;
-    groups.reserve(group_count);
-    lookup_jobs.reserve(group_count);
-    for (size_t group_index = 0; group_index < group_count; ++group_index) {
-      auto group = std::make_unique<LookupGroup>();
-      const size_t begin = lookup_order.size() * group_index / group_count;
-      const size_t end = lookup_order.size() * (group_index + 1) / group_count;
-      group->task_indices.assign(lookup_order.begin() + begin, lookup_order.begin() + end);
-      auto* group_ptr = group.get();
-      lookup_jobs.emplace_back([this, &tasks, group = group_ptr] {
-        td::RealCpuTimer timer;
-        SCOPE_EXIT {
-          group->work_time = timer.elapsed_both();
-          current_wave_proof_stats_ = nullptr;
-          current_tx_storage_dict_ = nullptr;
-        };
-        try {
-          current_wave_proof_stats_ = &group->proof_stats;
-          std::vector<td::ConstBitPtr> keys;
-          keys.reserve(group->task_indices.size());
-          for (auto index : group->task_indices) {
-            keys.push_back(tasks[index].address.cbits());
-          }
-          auto values = account_dict->lookup_multi(keys, 256);
-          if (values.size() != group->task_indices.size()) {
-            group->error = td::Status::Error("partitioned multi-account lookup returned a wrong value count");
-            return;
-          }
-          for (size_t i = 0; i < values.size(); ++i) {
-            tasks[group->task_indices[i]].account_value = std::move(values[i]);
-          }
-        } catch (vm::VmError& error) {
-          group->error = td::Status::Error(td::Slice{error.get_msg()});
-        } catch (const std::exception& error) {
-          group->error = td::Status::Error(td::Slice{error.what()});
-        } catch (...) {
-          group->error = td::Status::Error("partitioned multi-account lookup failed");
-        }
-      });
-      groups.push_back(std::move(group));
-    }
-    wave_executor().run(lookup_jobs);
-    stats_.account_lookup_batches += group_count;
-    stats_.account_lookup_prefetched += tasks.size();
-    for (auto& group : groups) {
-      stats_.work_time.account_dict_lookup += group->work_time;
-      merge_wave_proof_stats(group->proof_stats);
-      if (group->error.is_error()) {
-        return fatal_error(group->error.move_as_error_prefix("cannot look up account partition: "));
-      }
-    }
-  }
   std::vector<std::function<void()>> jobs;
   jobs.reserve(tasks.size());
   for (auto& task : tasks) {
-    jobs.emplace_back([this, &task, prefetched_lookup] {
+    jobs.emplace_back([this, &task] {
       SCOPE_EXIT {
         current_wave_proof_stats_ = nullptr;
         current_tx_storage_dict_ = nullptr;
       };
       try {
         current_wave_proof_stats_ = &task.proof_stats;
-        Ref<vm::CellSlice> account_value;
-        if (prefetched_lookup) {
-          account_value = std::move(task.account_value);
-        } else {
-          td::RealCpuTimer timer;
-          account_value = account_dict->lookup_extra(task.address.cbits(), 256).first;
-          task.dict_lookup_time = timer.elapsed_both();
-        }
+        td::RealCpuTimer timer;
+        auto account_value = account_dict->lookup_extra(task.address.cbits(), 256).first;
+        task.dict_lookup_time = timer.elapsed_both();
         auto account = std::make_unique<block::Account>(workchain(), task.address.cbits());
         {
           td::RealCpuTimer timer;
@@ -3988,7 +3401,7 @@ bool Collator::prepare_accounts_parallel(const std::vector<StdSmcAddress>& addre
         if (group->cached_root.not_null()) {
           ++stats_.storage_stat_cache.hit_cnt;
           stats_.storage_stat_cache.hit_cells += cells;
-        } else if (cells >= StorageStatCache::min_account_cells()) {
+        } else if (cells >= StorageStatCache::MIN_ACCOUNT_CELLS) {
           ++stats_.storage_stat_cache.miss_cnt;
           stats_.storage_stat_cache.miss_cells += cells;
         } else {
@@ -4167,254 +3580,6 @@ static td::Ref<vm::Cell> clean_usage_cells(td::Ref<vm::Cell> old_root, td::Ref<v
   return dfs(new_root);
 }
 
-static td::Result<Ref<vm::Cell>> rebind_usage_cells(Ref<vm::Cell> original_root, Ref<vm::Cell> updated_root,
-                                                     const vm::CellUsageTree& source_tree,
-                                                     Ref<vm::Cell> canonical_root,
-                                                     WaveExecutor* executor = nullptr) {
-  td::HashMap<vm::CellUsageTree::NodeId, Ref<vm::Cell>> canonical_nodes;
-  std::vector<Ref<vm::Cell>> dense_canonical_nodes;
-  if (dense_final_account_rebind_enabled() || executor != nullptr) {
-    dense_canonical_nodes.resize(source_tree.node_count());
-  }
-  auto store_canonical_node = [&](vm::CellUsageTree::NodeId node_id, Ref<vm::Cell> cell) {
-    if (!dense_canonical_nodes.empty()) {
-      CHECK(node_id < dense_canonical_nodes.size());
-      dense_canonical_nodes[node_id] = std::move(cell);
-    } else {
-      canonical_nodes[node_id] = std::move(cell);
-    }
-  };
-  auto get_canonical_node = [&](vm::CellUsageTree::NodeId node_id) -> Ref<vm::Cell> {
-    if (!dense_canonical_nodes.empty()) {
-      return node_id < dense_canonical_nodes.size() ? dense_canonical_nodes[node_id] : Ref<vm::Cell>{};
-    }
-    auto it = canonical_nodes.find(node_id);
-    return it != canonical_nodes.end() ? it->second : Ref<vm::Cell>{};
-  };
-  std::function<td::Status(Ref<vm::Cell>, Ref<vm::Cell>, vm::CellUsageTree::NodeId)> transfer_paths =
-      [&](Ref<vm::Cell> source, Ref<vm::Cell> canonical, vm::CellUsageTree::NodeId node_id) -> td::Status {
-    if (source.is_null() || canonical.is_null() || source->get_hash() != canonical->get_hash()) {
-      return td::Status::Error("cannot rebind usage trees with different original cells");
-    }
-    store_canonical_node(node_id, canonical);
-    if (!source_tree.is_loaded(node_id)) {
-      return td::Status::OK();
-    }
-    vm::CellSlice source_cs{vm::NoVm(), std::move(source)};
-    vm::CellSlice canonical_cs{vm::NoVm(), std::move(canonical)};
-    if (source_cs.size() != canonical_cs.size() || source_cs.size_refs() != canonical_cs.size_refs()) {
-      return td::Status::Error("cannot rebind usage trees with different original cell layouts");
-    }
-    for (unsigned i = 0; i < source_cs.size_refs(); ++i) {
-      auto child_id = source_tree.get_child(node_id, i);
-      if (child_id != 0) {
-        TRY_STATUS(transfer_paths(source_cs.prefetch_ref(i), canonical_cs.prefetch_ref(i), child_id));
-      }
-    }
-    return td::Status::OK();
-  };
-  TRY_STATUS(transfer_paths(std::move(original_root), std::move(canonical_root), source_tree.root_id()));
-
-  std::function<td::Result<Ref<vm::Cell>>(Ref<vm::Cell>, bool)> rebind =
-      [&](Ref<vm::Cell> cell, bool may_parallelize) -> td::Result<Ref<vm::Cell>> {
-    if (cell.is_null()) {
-      return Ref<vm::Cell>{};
-    }
-    if (auto* usage_cell = dynamic_cast<const vm::UsageCell*>(cell.get())) {
-      auto node_id = usage_cell->get_tree_node().node_id_for(&source_tree);
-      if (node_id == 0) {
-        return cell;
-      }
-      auto canonical = get_canonical_node(node_id);
-      if (canonical.is_null() || canonical->get_hash() != cell->get_hash()) {
-        return td::Status::Error("worker usage path has no matching canonical path");
-      }
-      return canonical;
-    }
-
-    vm::CellSlice cs{vm::NoVm(), cell};
-    vm::CellBuilder cb;
-    cb.store_bits(cs.fetch_bits(cs.size()));
-    bool changed = false;
-    std::vector<Ref<vm::Cell>> children;
-    children.reserve(cs.size_refs());
-    for (unsigned i = 0; i < cs.size_refs(); ++i) {
-      children.push_back(cs.prefetch_ref(i));
-    }
-    std::vector<td::Result<Ref<vm::Cell>>> results;
-    results.reserve(children.size());
-    for (size_t i = 0; i < children.size(); ++i) {
-      results.emplace_back(td::Status::Error("rebind child was not processed"));
-    }
-    if (may_parallelize && executor != nullptr && children.size() > 1) {
-      std::vector<std::function<void()>> jobs;
-      jobs.reserve(children.size());
-      for (size_t i = 0; i < children.size(); ++i) {
-        jobs.emplace_back([&, i] { results[i] = rebind(children[i], false); });
-      }
-      executor->run(jobs);
-    } else {
-      for (size_t i = 0; i < children.size(); ++i) {
-        results[i] = rebind(children[i], may_parallelize);
-      }
-    }
-    for (size_t i = 0; i < children.size(); ++i) {
-      if (results[i].is_error()) {
-        return results[i].move_as_error();
-      }
-      auto rebound_child = results[i].move_as_ok();
-      changed |= rebound_child.get() != children[i].get();
-      if (!cb.store_ref_bool(std::move(rebound_child))) {
-        return td::Status::Error("cannot store rebound usage child");
-      }
-    }
-    if (!changed) {
-      return cell;
-    }
-    auto hash_hint = [&cell](unsigned level, const vm::Cell::LevelMask&, vm::CellHash& hash) {
-      hash = cell->get_hash(level);
-      return true;
-    };
-    auto rebound = cb.finalize(cs.is_special(), std::move(hash_hint));
-    if (rebound.is_null() || rebound->get_hash() != cell->get_hash()) {
-      return td::Status::Error("rebound usage cell changed the dictionary hash");
-    }
-    return rebound;
-  };
-  return rebind(std::move(updated_root), executor != nullptr);
-}
-
-static td::Result<Ref<vm::Cell>> rebind_usage_cells_lazy(Ref<vm::Cell> original_root, Ref<vm::Cell> updated_root,
-                                                          const vm::CellUsageTree& source_tree,
-                                                          Ref<vm::Cell> canonical_root) {
-  if (original_root.is_null() || canonical_root.is_null() ||
-      original_root->get_hash() != canonical_root->get_hash()) {
-    return td::Status::Error("cannot lazily rebind usage trees with different original roots");
-  }
-
-  td::HashMap<vm::CellUsageTree::NodeId, Ref<vm::Cell>> canonical_nodes;
-  canonical_nodes.emplace(source_tree.root_id(), std::move(canonical_root));
-  std::function<td::Result<Ref<vm::Cell>>(vm::CellUsageTree::NodeId)> resolve_canonical =
-      [&](vm::CellUsageTree::NodeId source_node) -> td::Result<Ref<vm::Cell>> {
-    if (auto it = canonical_nodes.find(source_node); it != canonical_nodes.end()) {
-      return it->second;
-    }
-    auto source_parent = source_tree.get_parent(source_node);
-    if (source_parent == 0) {
-      return td::Status::Error("worker usage node is disconnected from its root");
-    }
-    TRY_RESULT(canonical_parent, resolve_canonical(source_parent));
-    auto ref_id = source_tree.get_parent_ref(source_node);
-    vm::CellSlice parent_cs{vm::NoVm(), std::move(canonical_parent)};
-    if (ref_id >= parent_cs.size_refs()) {
-      return td::Status::Error("worker usage path does not exist in the canonical tree");
-    }
-    auto canonical_node = parent_cs.prefetch_ref(ref_id);
-    canonical_nodes.emplace(source_node, canonical_node);
-    return canonical_node;
-  };
-
-  std::function<td::Result<Ref<vm::Cell>>(Ref<vm::Cell>)> rebind =
-      [&](Ref<vm::Cell> cell) -> td::Result<Ref<vm::Cell>> {
-    if (cell.is_null()) {
-      return Ref<vm::Cell>{};
-    }
-    if (auto* usage_cell = dynamic_cast<const vm::UsageCell*>(cell.get())) {
-      auto source_node = usage_cell->get_tree_node().node_id_for(&source_tree);
-      if (source_node == 0) {
-        return cell;
-      }
-      TRY_RESULT(canonical_node, resolve_canonical(source_node));
-      if (canonical_node->get_hash() != cell->get_hash()) {
-        return td::Status::Error("worker usage path has no matching canonical cell");
-      }
-      return canonical_node;
-    }
-
-    vm::CellSlice cs{vm::NoVm(), cell};
-    vm::CellBuilder cb;
-    cb.store_bits(cs.fetch_bits(cs.size()));
-    bool changed = false;
-    for (unsigned i = 0; i < cs.size_refs(); ++i) {
-      auto child = cs.prefetch_ref(i);
-      TRY_RESULT(rebound_child, rebind(child));
-      changed |= rebound_child.get() != child.get();
-      if (!cb.store_ref_bool(std::move(rebound_child))) {
-        return td::Status::Error("cannot store lazily rebound usage child");
-      }
-    }
-    if (!changed) {
-      return cell;
-    }
-    auto hash_hint = [&cell](unsigned level, const vm::Cell::LevelMask&, vm::CellHash& hash) {
-      hash = cell->get_hash(level);
-      return true;
-    };
-    auto rebound = cb.finalize(cs.is_special(), std::move(hash_hint));
-    if (rebound.is_null() || rebound->get_hash() != cell->get_hash()) {
-      return td::Status::Error("lazy usage rebind changed the dictionary hash");
-    }
-    return rebound;
-  };
-  return rebind(std::move(updated_root));
-}
-
-static td::Status rebind_usage_cells_in_place(Ref<vm::Cell> original_root, const Ref<vm::Cell>& updated_root,
-                                              const vm::CellUsageTree& source_tree,
-                                              Ref<vm::Cell> canonical_root) {
-  td::HashMap<vm::CellUsageTree::NodeId, Ref<vm::Cell>> canonical_nodes;
-  std::function<td::Status(Ref<vm::Cell>, Ref<vm::Cell>, vm::CellUsageTree::NodeId)> transfer_paths =
-      [&](Ref<vm::Cell> source, Ref<vm::Cell> canonical, vm::CellUsageTree::NodeId node_id) -> td::Status {
-    if (source.is_null() || canonical.is_null() || source->get_hash() != canonical->get_hash()) {
-      return td::Status::Error("cannot rebind usage trees with different original cells");
-    }
-    canonical_nodes[node_id] = canonical;
-    if (!source_tree.is_loaded(node_id)) {
-      return td::Status::OK();
-    }
-    vm::CellSlice source_cs{vm::NoVm(), std::move(source)};
-    vm::CellSlice canonical_cs{vm::NoVm(), std::move(canonical)};
-    if (source_cs.size() != canonical_cs.size() || source_cs.size_refs() != canonical_cs.size_refs()) {
-      return td::Status::Error("cannot rebind usage trees with different original cell layouts");
-    }
-    for (unsigned i = 0; i < source_cs.size_refs(); ++i) {
-      auto child_id = source_tree.get_child(node_id, i);
-      if (child_id != 0) {
-        TRY_STATUS(transfer_paths(source_cs.prefetch_ref(i), canonical_cs.prefetch_ref(i), child_id));
-      }
-    }
-    return td::Status::OK();
-  };
-  TRY_STATUS(transfer_paths(std::move(original_root), std::move(canonical_root), source_tree.root_id()));
-
-  std::function<td::Status(const Ref<vm::Cell>&)> rebind = [&](const Ref<vm::Cell>& cell) -> td::Status {
-    if (cell.is_null()) {
-      return td::Status::OK();
-    }
-    if (auto* usage_cell = dynamic_cast<const vm::UsageCell*>(cell.get())) {
-      auto node_id = usage_cell->get_tree_node().node_id_for(&source_tree);
-      if (node_id == 0) {
-        return td::Status::OK();
-      }
-      auto it = canonical_nodes.find(node_id);
-      if (it == canonical_nodes.end() || it->second->get_hash() != cell->get_hash()) {
-        return td::Status::Error("worker usage path has no matching canonical path");
-      }
-      auto target_node = it->second->get_tree_node();
-      if (!usage_cell->rebind_tree_node(&source_tree, std::move(target_node))) {
-        return td::Status::Error("cannot rebind worker usage cell in place");
-      }
-      return td::Status::OK();
-    }
-    vm::CellSlice cs{vm::NoVm(), cell};
-    for (unsigned i = 0; i < cs.size_refs(); ++i) {
-      TRY_STATUS(rebind(cs.prefetch_ref(i)));
-    }
-    return td::Status::OK();
-  };
-  return rebind(updated_root);
-}
-
 static td::Result<Ref<vm::Cell>> rebind_usage_cells_by_path(Ref<vm::Cell> updated_root,
                                                              const vm::CellUsageTree& source_tree,
                                                              vm::CellUsageTree& target_tree,
@@ -4531,7 +3696,7 @@ bool Collator::process_account_storage_dict(block::Account& account) {
   td::ScopedRealCpuTimer timer2{stats_.work_time.combine_account_transactions, -1.0};
   bool store_dict_to_cache = account.storage_dict_hash && account.account_storage_stat &&
                              account.account_storage_stat.value().is_dict_ready() &&
-                             account.storage_used.cells >= StorageStatCache::min_account_cells();
+                             account.storage_used.cells >= StorageStatCache::MIN_ACCOUNT_CELLS;
   if (!account.orig_storage_dict_hash) {
     if (store_dict_to_cache) {
       td::Ref<vm::Cell> dict_root = account.account_storage_stat.value().get_dict_root().move_as_ok();
@@ -4643,19 +3808,16 @@ bool Collator::process_account_storage_dict(block::Account& account) {
  */
 bool Collator::combine_account_transactions() {
   vm::AugmentedDictionary dict{256, block::tlb::aug_ShardAccountBlocks};
-  std::vector<vm::AugmentedDictionary::MultiSetValue> final_account_dict_updates;
   td::Result<Ref<vm::Cell>> parallel_rebind_result;
   std::shared_ptr<vm::ProofStorageStat> parallel_rebind_loaded_cells;
   td::RealCpuTimer::Time parallel_rebind_time;
   td::thread parallel_rebind_thread;
   bool parallel_rebind_started = false;
   bool parallel_rebind_deferred_storage = false;
-  bool parallel_rebind_with_proof = false;
   bool early_parallel_rebind = early_final_account_rebind_.started;
   if (early_parallel_rebind) {
     parallel_rebind_started = true;
     parallel_rebind_deferred_storage = true;
-    parallel_rebind_with_proof = true;
   }
   SCOPE_EXIT {
     if (parallel_rebind_started) {
@@ -4667,77 +3829,11 @@ bool Collator::combine_account_transactions() {
       }
     }
   };
-  bool reused_async_account_dict = false;
-  if (reuse_async_account_dict_enabled() && async_account_dict_estimator_ &&
-      !account_dict_estimator_added_accounts_.empty()) {
-    Ref<vm::Cell> final_root;
-    std::shared_ptr<vm::CellUsageTree> worker_usage_tree;
-    std::shared_ptr<vm::ProofStorageStat> worker_loaded_cells;
-    if (!wait_account_dict_estimator(&final_root, &worker_usage_tree, &worker_loaded_cells)) {
-      return fatal_error("cannot obtain final asynchronous ShardAccounts root");
-    }
-    auto canonical_root = account_dict->get_root_cell();
-    auto target_node = canonical_root->get_tree_node().node_id_for(state_usage_tree_.get());
-    if (target_node == 0) {
-      return fatal_error("canonical ShardAccounts root has no state usage-tree node");
-    }
-    if (rebind_async_account_dict_enabled()) {
-      td::ScopedRealCpuTimer timer{stats_.work_time.final_account_dict_rebind};
-      auto rebound = rebind_usage_cells_by_path(std::move(final_root), *worker_usage_tree, *state_usage_tree_,
-                                                target_node);
-      if (rebound.is_error()) {
-        return fatal_error(rebound.move_as_error_prefix("cannot path-rebind asynchronous ShardAccounts root: "));
-      }
-      account_dict = std::make_unique<vm::AugmentedDictionary>(rebound.move_as_ok(), 256,
-                                                               block::tlb::aug_ShardAccounts);
-    } else {
-      if (!worker_loaded_cells) {
-        return fatal_error("asynchronous ShardAccounts worker did not track loaded cells");
-      }
-      {
-        td::ScopedRealCpuTimer timer{stats_.work_time.final_account_dict_rebind};
-        auto previous_proof_size = collated_data_stat.estimate_proof_size();
-        auto worker_proof_size = worker_loaded_cells->estimate_proof_size();
-        collated_data_stat.add_loaded_cells(*worker_loaded_cells);
-        auto merged_proof_size = collated_data_stat.estimate_proof_size();
-        block_limit_status_->collated_data_size_estimate += merged_proof_size - previous_proof_size;
-        LOG(WARNING) << "H17 worker proof: worker=" << worker_proof_size << " before=" << previous_proof_size
-                     << " after=" << merged_proof_size << " delta=" << merged_proof_size - previous_proof_size;
-      }
-      state_update_aux_usage_tree_ = std::move(worker_usage_tree);
-      state_update_aux_loaded_cells_ = std::move(worker_loaded_cells);
-      state_update_aux_target_root_ = target_node;
-      account_dict = std::make_unique<vm::AugmentedDictionary>(std::move(final_root), 256,
-                                                               block::tlb::aug_ShardAccounts);
-      {
-        td::ScopedRealCpuTimer timer{stats_.work_time.final_account_dict_rebind};
-        td::uint32 changed_accounts = 0;
-        try {
-          if (!old_account_dict->scan_diff(
-                  *account_dict,
-                  [&changed_accounts](td::ConstBitPtr, int, Ref<vm::CellSlice>, Ref<vm::CellSlice>) {
-                    ++changed_accounts;
-                    return true;
-                  },
-                  2)) {
-            return fatal_error("cannot scan asynchronous ShardAccounts update frontier");
-          }
-        } catch (vm::VmError& error) {
-          return fatal_error(PSTRING() << "cannot scan asynchronous ShardAccounts update frontier: "
-                                       << error.get_msg());
-        }
-        LOG(WARNING) << "H17 ShardAccounts proof frontier: changed_accounts=" << changed_accounts;
-      }
-    }
-    reused_async_account_dict = true;
-  } else if (!flush_account_dict_estimator_updates()) {
-    return fatal_error("cannot apply pending ShardAccounts estimator updates");
-  }
   if (async_final_account_dict_ && stats_.final_account_dict_async_updates != 0 && !early_parallel_rebind) {
     if (!flush_final_account_dict_updates()) {
       return fatal_error("cannot submit pending final ShardAccounts updates");
     }
-    AsyncAccountDictEstimator::Snapshot snapshot;
+    AsyncAccountDictionary::Snapshot snapshot;
     std::string error;
     if (!async_final_account_dict_->wait(snapshot, error)) {
       return fatal_error(PSTRING() << "asynchronous final ShardAccounts worker failed: " << error);
@@ -4747,137 +3843,44 @@ bool Collator::combine_account_transactions() {
     stats_.final_account_dict_async_batches += snapshot.batches;
     stats_.final_account_dict_async_queue_max =
         std::max(stats_.final_account_dict_async_queue_max, snapshot.max_queue);
-    bool parallel_fast_proof = parallel_fast_final_account_rebind_with_proof_enabled() &&
-                               fast_final_account_rebind_with_proof_enabled();
-    if (parallel_fast_proof ||
-        (parallel_final_account_rebind_enabled() && !inplace_final_account_rebind_enabled() &&
-         !fast_final_account_rebind_enabled() && !fast_final_account_rebind_with_proof_enabled())) {
-      auto canonical_root = account_dict->get_root_cell();
-      parallel_rebind_started = true;
-      parallel_rebind_deferred_storage = true;
-      if (parallel_fast_proof) {
-        auto target_node = canonical_root->get_tree_node().node_id_for(state_usage_tree_.get());
-        if (target_node == 0) {
-          return fatal_error("canonical ShardAccounts root has no state usage-tree node");
-        }
-        if (!snapshot.loaded_cells) {
-          return fatal_error("asynchronous final ShardAccounts worker did not track loaded cells");
-        }
-        parallel_rebind_with_proof = true;
-        parallel_rebind_loaded_cells = std::move(snapshot.loaded_cells);
-        parallel_rebind_thread = td::thread(
-            [this, updated_root = std::move(snapshot.root), usage_tree = std::move(snapshot.usage_tree), target_node,
-             &parallel_rebind_result, &parallel_rebind_time]() mutable {
-              td::RealCpuTimer timer;
-              try {
-                std::vector<vm::CellUsageTree::NodeId> source_to_target;
-                state_usage_tree_->import_loaded_paths_from(*usage_tree, target_node, &source_to_target);
-                parallel_rebind_result = rebind_usage_cells_by_path(
-                    std::move(updated_root), *usage_tree, *state_usage_tree_, target_node, &source_to_target,
-                    parallel_final_account_rebind_traversal_enabled() ? final_account_rebind_tasks() : 1);
-              } catch (const std::exception& exception) {
-                parallel_rebind_result = td::Status::Error(
-                    PSTRING() << "parallel proof-backed final-account rebind failed: " << exception.what());
-              } catch (...) {
-                parallel_rebind_result =
-                    td::Status::Error("parallel proof-backed final-account rebind failed");
-              }
-              parallel_rebind_time = timer.elapsed_both();
-            });
-      } else {
-        parallel_rebind_thread = td::thread(
-            [original_root = std::move(snapshot.original_root), updated_root = std::move(snapshot.root),
-             usage_tree = std::move(snapshot.usage_tree), canonical_root = std::move(canonical_root),
-             &parallel_rebind_result, &parallel_rebind_time]() mutable {
-            td::RealCpuTimer timer;
-            try {
-              parallel_rebind_result = rebind_usage_cells(std::move(original_root), std::move(updated_root),
-                                                            *usage_tree, std::move(canonical_root));
-            } catch (const std::exception& exception) {
-              parallel_rebind_result =
-                  td::Status::Error(PSTRING() << "parallel final-account rebind failed: " << exception.what());
-            } catch (...) {
-              parallel_rebind_result = td::Status::Error("parallel final-account rebind failed");
-            }
-            parallel_rebind_time = timer.elapsed_both();
-            });
-      }
-      parallel_rebind_thread.set_name("final-rebind");
-    } else {
-      td::ScopedRealCpuTimer timer{stats_.work_time.final_account_dict_rebind};
-      td::Result<Ref<vm::Cell>> rebound;
-      if (inplace_final_account_rebind_enabled()) {
-        auto status = rebind_usage_cells_in_place(snapshot.original_root, snapshot.root, *snapshot.usage_tree,
-                                                  account_dict->get_root_cell());
-        if (status.is_error()) {
-          return fatal_error(status.move_as_error_prefix("cannot rebind final ShardAccounts root in place: "));
-        }
-        rebound = std::move(snapshot.root);
-      } else if (lazy_final_account_rebind_enabled()) {
-        rebound = rebind_usage_cells_lazy(std::move(snapshot.original_root), std::move(snapshot.root),
-                                          *snapshot.usage_tree, account_dict->get_root_cell());
-      } else if (fast_final_account_rebind_enabled() || fast_final_account_rebind_with_proof_enabled()) {
-        auto canonical_root = account_dict->get_root_cell();
-        auto target_node = canonical_root->get_tree_node().node_id_for(state_usage_tree_.get());
-        if (target_node == 0) {
-          return fatal_error("canonical ShardAccounts root has no state usage-tree node");
-        }
-        if (fast_final_account_rebind_with_proof_enabled()) {
-          if (!snapshot.loaded_cells) {
-            return fatal_error("asynchronous final ShardAccounts worker did not track loaded cells");
-          }
-          std::vector<vm::CellUsageTree::NodeId> source_to_target;
-          state_usage_tree_->import_loaded_paths_from(*snapshot.usage_tree, target_node, &source_to_target);
-          auto previous_proof_size = collated_data_stat.estimate_proof_size();
-          collated_data_stat.add_loaded_cells(*snapshot.loaded_cells);
-          auto merged_proof_size = collated_data_stat.estimate_proof_size();
-          block_limit_status_->collated_data_size_estimate += merged_proof_size - previous_proof_size;
-          rebound = rebind_usage_cells_by_path(std::move(snapshot.root), *snapshot.usage_tree, *state_usage_tree_,
-                                               target_node, &source_to_target,
-                                               parallel_final_account_rebind_traversal_enabled()
-                                                   ? final_account_rebind_tasks()
-                                                   : 1);
-        } else {
-          rebound = rebind_usage_cells_by_path(std::move(snapshot.root), *snapshot.usage_tree, *state_usage_tree_,
-                                               target_node);
-        }
-      } else {
-        auto* executor = parallel_final_account_rebind_traversal_enabled() ? &wave_executor() : nullptr;
-        rebound = rebind_usage_cells(std::move(snapshot.original_root), std::move(snapshot.root),
-                                     *snapshot.usage_tree, account_dict->get_root_cell(), executor);
-      }
-      if (rebound.is_error()) {
-        return fatal_error(rebound.move_as_error_prefix("cannot rebind final ShardAccounts root: "));
-      }
-      account_dict = std::make_unique<vm::AugmentedDictionary>(rebound.move_as_ok(), 256,
-                                                               block::tlb::aug_ShardAccounts);
+    auto canonical_root = account_dict->get_root_cell();
+    auto target_node = canonical_root->get_tree_node().node_id_for(state_usage_tree_.get());
+    if (target_node == 0) {
+      return fatal_error("canonical ShardAccounts root has no state usage-tree node");
     }
-  }
-  if (reuse_account_dict_estimator_enabled() && !async_account_dict_estimator_) {
-    account_dict = std::make_unique<vm::AugmentedDictionary>(*account_dict_estimator_);
+    if (!snapshot.loaded_cells) {
+      return fatal_error("asynchronous final ShardAccounts worker did not track loaded cells");
+    }
+    parallel_rebind_started = true;
+    parallel_rebind_deferred_storage = true;
+    parallel_rebind_loaded_cells = std::move(snapshot.loaded_cells);
+    parallel_rebind_thread = td::thread(
+        [this, updated_root = std::move(snapshot.root), usage_tree = std::move(snapshot.usage_tree), target_node,
+         &parallel_rebind_result, &parallel_rebind_time]() mutable {
+          td::RealCpuTimer timer;
+          try {
+            std::vector<vm::CellUsageTree::NodeId> source_to_target;
+            state_usage_tree_->import_loaded_paths_from(*usage_tree, target_node, &source_to_target);
+            parallel_rebind_result = rebind_usage_cells_by_path(
+                std::move(updated_root), *usage_tree, *state_usage_tree_, target_node, &source_to_target,
+                final_account_rebind_tasks());
+          } catch (const std::exception& exception) {
+            parallel_rebind_result = td::Status::Error(
+                PSTRING() << "parallel proof-backed final-account rebind failed: " << exception.what());
+          } catch (...) {
+            parallel_rebind_result = td::Status::Error("parallel proof-backed final-account rebind failed");
+          }
+          parallel_rebind_time = timer.elapsed_both();
+        });
+    parallel_rebind_thread.set_name("final-rebind");
   }
 
   auto prepare_final_account_update = [&](block::Account& acc) -> bool {
-    if (async_final_account_dict_ || reused_async_account_dict) {
-      ++stats_.account_dict_estimator_reused;
+    if (async_final_account_dict_) {
       return true;
     }
-    auto final_state_hash = td::Bits256{acc.total_state->get_hash().bits()};
-    auto estimator_state_it = account_dict_estimator_states_.find(acc.addr);
-    bool estimator_has_account = estimator_state_it != account_dict_estimator_states_.end();
-    bool final_account_exists = acc.status != block::Account::acc_nonexist;
-    bool estimator_is_final =
-        estimator_has_account && estimator_state_it->second.exists == final_account_exists &&
-        (!final_account_exists || (estimator_state_it->second.total_state_hash == final_state_hash &&
-                                   estimator_state_it->second.last_trans_hash == acc.last_trans_hash_ &&
-                                   estimator_state_it->second.last_trans_lt == acc.last_trans_lt_));
-    if (estimator_is_final) {
-      ++stats_.account_dict_estimator_reused;
-    } else if (estimator_has_account) {
-      ++stats_.account_dict_estimator_corrections;
-    }
     bool changed_from_original = acc.total_state->get_hash() != acc.orig_total_state->get_hash();
-    if (estimator_is_final || (!changed_from_original && !estimator_has_account)) {
+    if (!changed_from_original) {
       return true;
     }
 
@@ -4885,36 +3888,7 @@ bool Collator::combine_account_transactions() {
     SCOPE_EXIT {
       stats_.work_time.final_account_dict_update += timer.elapsed_both();
     };
-    if (batch_account_dict_estimator_enabled()) {
-      Ref<vm::CellSlice> value;
-      if (final_account_exists) {
-        vm::CellBuilder cb;
-        if (!(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
-              && cb.store_bits_bool(acc.last_trans_hash_)    // last_trans_hash:bits256
-              && cb.store_long_bool(acc.last_trans_lt_, 64)  // last_trans_lt:uint64
-              && (value = vm::load_cell_slice_ref(cb.finalize())).not_null())) {
-          return fatal_error(std::string{"cannot serialize final state of account "} + acc.addr.to_hex() +
-                             " for batched ShardAccounts update");
-        }
-      }
-      final_account_dict_updates.emplace_back(acc.addr.bits(), std::move(value));
-    } else if (estimator_has_account) {
-      if (acc.status == block::Account::acc_nonexist) {
-        if (account_dict->lookup_delete(acc.addr).is_null()) {
-          return fatal_error(std::string{"cannot delete estimator account correction "} + acc.addr.to_hex() +
-                             " from ShardAccounts");
-        }
-      } else {
-        vm::CellBuilder cb;
-        if (!(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
-              && cb.store_bits_bool(acc.last_trans_hash_)    // last_trans_hash:bits256
-              && cb.store_long_bool(acc.last_trans_lt_, 64)  // last_trans_lt:uint64
-              && account_dict->set_builder(acc.addr, cb, vm::Dictionary::SetMode::Set))) {
-          return fatal_error(std::string{"cannot correct estimator state of account "} + acc.addr.to_hex() +
-                             " in ShardAccounts");
-        }
-      }
-    } else if (acc.orig_status == block::Account::acc_nonexist) {
+    if (acc.orig_status == block::Account::acc_nonexist) {
       CHECK(acc.status != block::Account::acc_nonexist);
       vm::CellBuilder cb;
       if (!(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
@@ -4953,38 +3927,6 @@ bool Collator::combine_account_transactions() {
     return true;
   };
 
-  bool parallel_final_account_update = parallel_final_account_update_enabled() &&
-                                       batch_account_dict_estimator_enabled() && !async_final_account_dict_ &&
-                                       !reused_async_account_dict && !reuse_account_dict_estimator_enabled();
-  if (parallel_final_account_update) {
-    for (auto& [_, account] : accounts) {
-      if (!account->transactions.empty() && !prepare_final_account_update(*account)) {
-        return false;
-      }
-    }
-  }
-  bool final_account_update_started = false;
-  bool final_account_update_ok = true;
-  td::RealCpuTimer::Time final_account_update_time;
-  td::thread final_account_update_thread;
-  if (parallel_final_account_update && !final_account_dict_updates.empty()) {
-    final_account_update_started = true;
-    final_account_update_thread = td::thread([&] {
-      td::RealCpuTimer timer;
-      try {
-        final_account_update_ok = account_dict->multiset(final_account_dict_updates);
-      } catch (...) {
-        final_account_update_ok = false;
-      }
-      final_account_update_time = timer.elapsed_both();
-    });
-    final_account_update_thread.set_name("final-accounts");
-  }
-  SCOPE_EXIT {
-    if (final_account_update_started) {
-      final_account_update_thread.join();
-    }
-  };
   bool parallel_account_blocks = parallel_account_blocks_enabled();
   if (parallel_account_blocks) {
     struct AccountBlockBuild {
@@ -5079,10 +4021,10 @@ bool Collator::combine_account_transactions() {
         }
       }
       // update account_dict
-      if (!parallel_final_account_update && !prepare_final_account_update(acc)) {
+      if (!prepare_final_account_update(acc)) {
         return false;
       }
-      if (!parallel_final_account_update && !parallel_rebind_deferred_storage) {
+      if (!parallel_rebind_deferred_storage) {
         td::RealCpuTimer timer;
         SCOPE_EXIT {
           stats_.work_time.account_storage_dict += timer.elapsed_both();
@@ -5096,22 +4038,6 @@ bool Collator::combine_account_transactions() {
         return fatal_error(std::string{"total state of account "} + z.first.to_hex() +
                            " miraculously changed without transactions");
       }
-    }
-  }
-  if (final_account_update_started) {
-    final_account_update_thread.join();
-    final_account_update_started = false;
-    stats_.work_time.final_account_dict_update += final_account_update_time;
-    if (!final_account_update_ok) {
-      return fatal_error("cannot apply parallel batched final ShardAccounts updates");
-    }
-  } else if (!final_account_dict_updates.empty() && !parallel_final_account_update) {
-    td::RealCpuTimer timer;
-    SCOPE_EXIT {
-      stats_.work_time.final_account_dict_update += timer.elapsed_both();
-    };
-    if (!account_dict->multiset(final_account_dict_updates)) {
-      return fatal_error("cannot apply batched final ShardAccounts updates");
     }
   }
   if (parallel_rebind_started) {
@@ -5134,7 +4060,7 @@ bool Collator::combine_account_transactions() {
     if (parallel_rebind_result.is_error()) {
       return fatal_error(parallel_rebind_result.move_as_error_prefix("cannot rebind final ShardAccounts root: "));
     }
-    if (parallel_rebind_with_proof) {
+    {
       std::lock_guard<std::recursive_mutex> guard{proof_stat_mutex_};
       auto previous_proof_size = collated_data_stat.estimate_proof_size();
       collated_data_stat.add_loaded_cells(*parallel_rebind_loaded_cells);
@@ -5144,7 +4070,7 @@ bool Collator::combine_account_transactions() {
     account_dict = std::make_unique<vm::AugmentedDictionary>(parallel_rebind_result.move_as_ok(), 256,
                                                              block::tlb::aug_ShardAccounts);
   }
-  if (parallel_final_account_update || parallel_rebind_deferred_storage) {
+  if (parallel_rebind_deferred_storage) {
     for (auto& [_, account] : accounts) {
       if (account->transactions.empty()) {
         continue;
@@ -6737,8 +5663,8 @@ td::actor::Task<bool> Collator::process_inbound_external_messages_parallel() {
       }
       ++stats_.ext_msgs_accepted;
       full = !block_limit_status_->fits(block::ParamLimits::cl_soft);
-      if (!full && block_limit_status_->load_fraction(block::ParamLimits::cl_soft) >= ext_load_fraction_limit()) {
-        stats_.limits_log += PSTRING() << "INBOUND_EXT_MESSAGES: intake budget " << ext_load_fraction_limit() << "\n";
+      if (!full && block_limit_status_->load_fraction(block::ParamLimits::cl_soft) >= ext_load_fraction_limit) {
+        stats_.limits_log += PSTRING() << "INBOUND_EXT_MESSAGES: intake budget " << ext_load_fraction_limit << "\n";
         full = true;
       }
       block_limit_class_ = std::max(block_limit_class_, block_limit_status_->classify());
@@ -7320,21 +6246,7 @@ bool Collator::process_new_messages(bool& enqueue_only) {
   SCOPE_EXIT {
     stats_.load_fraction_new_msgs = block_limit_status_->load_fraction(block::ParamLimits::cl_normal);
   };
-  if (batch_account_lookup_enabled() && !async_account_lookup_enabled() && !enqueue_only &&
-      !pending_new_msg_accounts_.empty() &&
-      !prefetch_new_message_accounts()) {
-    return false;
-  }
   while (!new_msgs.empty()) {
-    if (async_account_lookup_enabled() && !enqueue_only && !async_account_lookup_batch_ &&
-        pending_new_msg_accounts_.size() >= 64 && !start_async_account_lookup_batch()) {
-      return false;
-    }
-    if (batch_account_lookup_enabled() && !async_account_lookup_enabled() && !enqueue_only &&
-        pending_new_msg_accounts_.size() >= 64 &&
-        !prefetch_new_message_accounts()) {
-      return false;
-    }
     if (!block_limit_status_->fits(block::ParamLimits::cl_normal)) {
       block_full_ = true;
     }
@@ -7354,9 +6266,6 @@ bool Collator::process_new_messages(bool& enqueue_only) {
     if (!check_cancelled()) {
       return false;
     }
-    if (async_account_lookup_enabled() && !enqueue_only && !prepare_async_account_for_message(msg.msg)) {
-      return false;
-    }
     LOG(DEBUG) << "have message with lt=" << msg.lt;
     int res = process_one_new_message(std::move(msg), enqueue_only);
     if (res < 0) {
@@ -7368,8 +6277,6 @@ bool Collator::process_new_messages(bool& enqueue_only) {
                                      << block_full_comment(*block_limit_status_, block::ParamLimits::cl_normal) << "\n";
     }
   }
-  async_account_lookup_batch_.reset();
-  pending_new_msg_accounts_.clear();
   return true;
 }
 
@@ -7377,8 +6284,6 @@ bool Collator::process_new_messages_parallel(bool& enqueue_only) {
   td::ScopedRealCpuTimer phase_timer{stats_.work_time.new_messages};
   SCOPE_EXIT {
     stats_.load_fraction_new_msgs = block_limit_status_->load_fraction(block::ParamLimits::cl_normal);
-    async_account_lookup_batch_.reset();
-    pending_new_msg_accounts_.clear();
   };
 
   struct IntTask {
@@ -7481,14 +6386,6 @@ bool Collator::process_new_messages_parallel(bool& enqueue_only) {
     std::vector<std::function<void()>> jobs;
     {
       td::ScopedRealCpuTimer timer{stats_.work_time.new_messages_prepare};
-      if (async_account_lookup_enabled() && !enqueue_only) {
-        for (const auto& task : tasks) {
-          if (!prepare_async_account_for_message(task.msg.msg)) {
-            return false;
-          }
-        }
-      }
-
       std::vector<StdSmcAddress> addresses;
       addresses.reserve(tasks.size());
       for (const auto& task : tasks) {
@@ -7618,220 +6515,12 @@ bool Collator::process_new_messages_parallel(bool& enqueue_only) {
   return true;
 }
 
-void Collator::track_new_message_account(const Ref<vm::Cell>& msg) {
-  auto cs = load_cell_slice(msg);
-  if (block::gen::t_CommonMsgInfo.get_tag(cs) != block::gen::CommonMsgInfo::int_msg_info) {
-    return;
-  }
-  block::gen::CommonMsgInfo::Record_int_msg_info info;
-  if (!tlb::unpack(cs, info)) {
-    return;
-  }
-  WorkchainId wc;
-  StdSmcAddress addr;
-  if (block::tlb::t_MsgAddressInt.extract_std_address(std::move(info.dest), wc, addr) && wc == workchain() &&
-      is_our_address(addr) && lookup_account(addr.cbits()) == nullptr) {
-    pending_new_msg_accounts_.push_back(addr);
-  }
-}
-
-bool Collator::prefetch_new_message_accounts() {
-  td::ScopedRealCpuTimer total_timer{stats_.work_time.account_lookup};
-  td::ScopedRealCpuTimer batch_timer{stats_.work_time.account_lookup_batch};
-  std::sort(pending_new_msg_accounts_.begin(), pending_new_msg_accounts_.end());
-  pending_new_msg_accounts_.erase(std::unique(pending_new_msg_accounts_.begin(), pending_new_msg_accounts_.end()),
-                                  pending_new_msg_accounts_.end());
-  pending_new_msg_accounts_.erase(
-      std::remove_if(pending_new_msg_accounts_.begin(), pending_new_msg_accounts_.end(),
-                     [&](const auto& addr) { return lookup_account(addr.cbits()) != nullptr; }),
-      pending_new_msg_accounts_.end());
-  if (pending_new_msg_accounts_.empty()) {
-    return true;
-  }
-
-  std::vector<td::ConstBitPtr> keys;
-  keys.reserve(pending_new_msg_accounts_.size());
-  for (const auto& addr : pending_new_msg_accounts_) {
-    keys.push_back(addr.cbits());
-  }
-  std::vector<Ref<vm::CellSlice>> values;
-  {
-    td::ScopedRealCpuTimer timer{stats_.work_time.account_dict_lookup};
-    values = account_dict->lookup_multi(keys, 256);
-  }
-  CHECK(values.size() == pending_new_msg_accounts_.size());
-  ++stats_.account_lookup_batches;
-  for (size_t i = 0; i < pending_new_msg_accounts_.size(); ++i) {
-    const auto& addr = pending_new_msg_accounts_[i];
-    std::unique_ptr<block::Account> account;
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.account_unpack};
-      account = make_account_from(addr.cbits(), std::move(values[i]), true);
-    }
-    if (!account) {
-      return fatal_error(PSTRING() << "cannot batch-load account " << addr.to_hex() << " from previous state");
-    }
-    if (!account->belongs_to_shard(shard_)) {
-      return fatal_error(PSTRING() << "batch-loaded account " << addr.to_hex() << " does not belong to shard "
-                                   << shard_);
-    }
-    if (accounts.emplace(addr, std::move(account)).second) {
-      ++stats_.account_lookup_prefetched;
-    }
-  }
-  pending_new_msg_accounts_.clear();
-  return true;
-}
-
-bool Collator::start_async_account_lookup_batch() {
-  if (async_account_lookup_batch_) {
-    return true;
-  }
-  std::sort(pending_new_msg_accounts_.begin(), pending_new_msg_accounts_.end());
-  pending_new_msg_accounts_.erase(std::unique(pending_new_msg_accounts_.begin(), pending_new_msg_accounts_.end()),
-                                  pending_new_msg_accounts_.end());
-  pending_new_msg_accounts_.erase(
-      std::remove_if(pending_new_msg_accounts_.begin(), pending_new_msg_accounts_.end(),
-                     [&](const auto& address) { return lookup_account(address.cbits()) != nullptr; }),
-      pending_new_msg_accounts_.end());
-  if (pending_new_msg_accounts_.empty()) {
-    return true;
-  }
-  async_account_lookup_batch_ =
-      std::make_shared<AsyncAccountLookupBatch>(account_dict->get_root_cell(), std::move(pending_new_msg_accounts_));
-  pending_new_msg_accounts_.clear();
-  return true;
-}
-
-bool Collator::finish_async_account_lookup_batch() {
-  if (!async_account_lookup_batch_) {
-    return true;
-  }
-  td::ScopedRealCpuTimer total_timer{stats_.work_time.account_lookup};
-  auto batch = std::move(async_account_lookup_batch_);
-  auto result = batch->wait();
-  if (result.is_error()) {
-    return fatal_error(result.move_as_error_prefix("asynchronous account lookup failed: "));
-  }
-  auto snapshot = result.move_as_ok();
-  stats_.work_time.account_lookup_batch += snapshot.work_time;
-  ++stats_.account_lookup_batches;
-
-  auto canonical_root = account_dict->get_root_cell();
-  auto target_root = canonical_root->get_tree_node().node_id_for(state_usage_tree_.get());
-  if (target_root == 0) {
-    return fatal_error("canonical ShardAccounts root has no state usage-tree node for asynchronous lookup");
-  }
-  state_usage_tree_->import_loaded_paths_from(*snapshot.usage_tree, target_root);
-  auto previous_proof_size = collated_data_stat.estimate_proof_size();
-  collated_data_stat.add_loaded_cells(*snapshot.loaded_cells);
-  auto merged_proof_size = collated_data_stat.estimate_proof_size();
-  block_limit_status_->collated_data_size_estimate += merged_proof_size - previous_proof_size;
-
-  for (size_t i = 0; i < snapshot.addresses.size(); ++i) {
-    const auto& address = snapshot.addresses[i];
-    if (lookup_account(address.cbits()) != nullptr) {
-      continue;
-    }
-    Ref<vm::CellSlice> value = std::move(snapshot.values[i]);
-    if (value.not_null()) {
-      vm::CellBuilder cb;
-      vm::CellSlice value_copy{*value};
-      if (!cb.store_bits_bool(value_copy.fetch_bits(value_copy.size()))) {
-        return fatal_error("cannot copy asynchronously loaded ShardAccount value bits");
-      }
-      unsigned refs = value->size_refs();
-      for (unsigned ref_id = 0; ref_id < refs; ++ref_id) {
-        auto rebound = rebind_usage_cells_by_path(value->prefetch_ref(ref_id), *snapshot.usage_tree,
-                                                  *state_usage_tree_, target_root);
-        if (rebound.is_error()) {
-          return fatal_error(rebound.move_as_error_prefix("cannot rebind asynchronously loaded account: "));
-        }
-        if (!cb.store_ref_bool(rebound.move_as_ok())) {
-          return fatal_error("cannot copy asynchronously loaded ShardAccount value reference");
-        }
-      }
-      value = vm::load_cell_slice_ref(cb.finalize());
-    }
-    std::unique_ptr<block::Account> account;
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.account_unpack};
-      account = make_account_from(address.cbits(), std::move(value), true);
-    }
-    if (!account) {
-      return fatal_error(PSTRING() << "cannot asynchronously load account " << address.to_hex()
-                                   << " from previous state");
-    }
-    if (!account->belongs_to_shard(shard_)) {
-      return fatal_error(PSTRING() << "asynchronously loaded account " << address.to_hex()
-                                   << " does not belong to shard " << shard_);
-    }
-    if (accounts.emplace(address, std::move(account)).second) {
-      ++stats_.account_lookup_prefetched;
-    }
-  }
-  return true;
-}
-
-bool Collator::prepare_async_account_for_message(const Ref<vm::Cell>& msg) {
-  auto cs = load_cell_slice(msg);
-  if (block::gen::t_CommonMsgInfo.get_tag(cs) != block::gen::CommonMsgInfo::int_msg_info) {
-    return true;
-  }
-  block::gen::CommonMsgInfo::Record_int_msg_info info;
-  if (!tlb::unpack(cs, info)) {
-    return true;
-  }
-  WorkchainId wc;
-  StdSmcAddress address;
-  if (!block::tlb::t_MsgAddressInt.extract_std_address(std::move(info.dest), wc, address) || wc != workchain() ||
-      !is_our_address(address) || lookup_account(address.cbits()) != nullptr) {
-    return true;
-  }
-  if (async_account_lookup_batch_ && async_account_lookup_batch_->done()) {
-    if (!finish_async_account_lookup_batch()) {
-      return false;
-    }
-    if (pending_new_msg_accounts_.size() >= 64 && !start_async_account_lookup_batch()) {
-      return false;
-    }
-  }
-  if (lookup_account(address.cbits()) != nullptr) {
-    return true;
-  }
-  if (async_account_lookup_batch_ && async_account_lookup_batch_->contains(address)) {
-    if (!finish_async_account_lookup_batch()) {
-      return false;
-    }
-    if (pending_new_msg_accounts_.size() >= 64 && !start_async_account_lookup_batch()) {
-      return false;
-    }
-    return true;
-  }
-  if (!async_account_lookup_batch_ && pending_new_msg_accounts_.size() >= 64) {
-    if (!start_async_account_lookup_batch()) {
-      return false;
-    }
-    if (async_account_lookup_batch_ && async_account_lookup_batch_->contains(address)) {
-      return finish_async_account_lookup_batch();
-    }
-  }
-  return true;
-}
-
 /**
  * Registers a new output message.
  *
  * @param new_msg The new output message to be registered.
  */
 void Collator::register_new_msg(block::NewOutMsg new_msg) {
-  if (batch_account_lookup_enabled() || async_account_lookup_enabled()) {
-    track_new_message_account(new_msg.msg);
-    if (async_account_lookup_enabled() && !async_account_lookup_batch_ && pending_new_msg_accounts_.size() >= 64 &&
-        !start_async_account_lookup_batch()) {
-      LOG(ERROR) << "cannot start asynchronous account lookup batch";
-    }
-  }
   if (new_msg.lt < min_new_msg_lt) {
     min_new_msg_lt = new_msg.lt;
   }
@@ -8721,96 +7410,6 @@ td::Result<vm::NewCellStorageStat::Stat> Collator::estimate_analytical_account_d
   }
 }
 
-bool Collator::wait_account_dict_estimator(Ref<vm::Cell>* root, std::shared_ptr<vm::CellUsageTree>* usage_tree,
-                                           std::shared_ptr<vm::ProofStorageStat>* loaded_cells) {
-  CHECK(async_account_dict_estimator_);
-  if (batch_async_account_dict_estimator_enabled() && !account_dict_estimator_pending_updates_.empty()) {
-    std::vector<std::pair<td::Bits256, Ref<vm::Cell>>> updates;
-    updates.reserve(account_dict_estimator_pending_updates_.size());
-    for (auto& update : account_dict_estimator_pending_updates_) {
-      updates.emplace_back(update.address, std::move(update.value));
-    }
-    account_dict_estimator_pending_updates_.clear();
-    if (!async_account_dict_estimator_->enqueue_batch(std::move(updates))) {
-      return false;
-    }
-  }
-  AsyncAccountDictEstimator::Snapshot snapshot;
-  std::string error;
-  if (!async_account_dict_estimator_->wait(snapshot, error)) {
-    LOG(ERROR) << "Asynchronous ShardAccounts estimator failed: " << error;
-    return false;
-  }
-  stats_.work_time.account_dict_estimator_update += snapshot.work_time;
-  stats_.work_time.account_dict_estimator_wait += snapshot.wait_time;
-  stats_.account_dict_estimator_batches += snapshot.batches;
-  stats_.account_dict_estimator_async_batches += snapshot.batches;
-  stats_.account_dict_estimator_async_queue_max =
-      std::max(stats_.account_dict_estimator_async_queue_max, snapshot.max_queue);
-  if (root) {
-    *root = std::move(snapshot.root);
-  }
-  if (usage_tree) {
-    *usage_tree = std::move(snapshot.usage_tree);
-  }
-  if (loaded_cells) {
-    *loaded_cells = std::move(snapshot.loaded_cells);
-  }
-  return true;
-}
-
-bool Collator::enqueue_account_dict_estimator_update(td::Bits256 address, Ref<vm::Cell> value) {
-  CHECK(async_account_dict_estimator_);
-  if (!batch_async_account_dict_estimator_enabled()) {
-    return async_account_dict_estimator_->enqueue(address, std::move(value));
-  }
-  account_dict_estimator_pending_updates_.push_back({address, std::move(value)});
-  if (account_dict_estimator_pending_updates_.size() < 4) {
-    return true;
-  }
-  std::vector<std::pair<td::Bits256, Ref<vm::Cell>>> updates;
-  updates.reserve(account_dict_estimator_pending_updates_.size());
-  for (auto& update : account_dict_estimator_pending_updates_) {
-    updates.emplace_back(update.address, std::move(update.value));
-  }
-  account_dict_estimator_pending_updates_.clear();
-  return async_account_dict_estimator_->enqueue_batch(std::move(updates));
-}
-
-bool Collator::flush_account_dict_estimator_updates() {
-  if (async_account_dict_estimator_) {
-    return wait_account_dict_estimator();
-  }
-  if (account_dict_estimator_pending_updates_.empty()) {
-    return true;
-  }
-  td::RealCpuTimer timer;
-  SCOPE_EXIT {
-    stats_.work_time.account_dict_estimator_update += timer.elapsed_both();
-  };
-  std::vector<std::pair<td::ConstBitPtr, Ref<vm::CellSlice>>> updates;
-  updates.reserve(account_dict_estimator_pending_updates_.size());
-  for (const auto& update : account_dict_estimator_pending_updates_) {
-    updates.emplace_back(update.address.bits(),
-                         update.value.not_null() ? vm::load_cell_slice_ref(update.value) : Ref<vm::CellSlice>{});
-  }
-  if (!account_dict_estimator_->multiset(updates)) {
-    return false;
-  }
-  ++stats_.account_dict_estimator_batches;
-  account_dict_estimator_pending_updates_.clear();
-  return true;
-}
-
-/**
- * Update size estimation for the account dictionary.
- * This is required to count the depth of the ShardAccounts dictionary in the block size estimation.
- * account_dict_estimator_ is used for block limits only.
- *
- * @param trans Newly-created transaction.
- *
- * @returns True on success, false otherwise.
- */
 bool Collator::enqueue_final_account_dict_update(const block::Account& account) {
   CHECK(async_final_account_dict_);
   Ref<vm::Cell> value;
@@ -8824,9 +7423,6 @@ bool Collator::enqueue_final_account_dict_update(const block::Account& account) 
     }
   }
   ++stats_.final_account_dict_async_updates;
-  if (!batch_final_account_dict_enabled()) {
-    return async_final_account_dict_->enqueue(account.addr, std::move(value));
-  }
   final_account_dict_pending_updates_.push_back({account.addr, std::move(value)});
   if (final_account_dict_pending_updates_.size() < 32) {
     return true;
@@ -8848,9 +7444,7 @@ bool Collator::flush_final_account_dict_updates() {
 }
 
 bool Collator::start_early_final_account_rebind() {
-  if (!parallel_fast_final_account_rebind_with_proof_enabled() ||
-      !fast_final_account_rebind_with_proof_enabled() || !async_final_account_dict_ ||
-      stats_.final_account_dict_async_updates == 0 || is_masterchain()) {
+  if (!async_final_account_dict_ || stats_.final_account_dict_async_updates == 0 || is_masterchain()) {
     return true;
   }
   CHECK(!early_final_account_rebind_.started);
@@ -8873,7 +7467,7 @@ bool Collator::start_early_final_account_rebind() {
   early.max_queue = 0;
   early.started = true;
   early.thread = td::thread([this, target_node] {
-    AsyncAccountDictEstimator::Snapshot snapshot;
+    AsyncAccountDictionary::Snapshot snapshot;
     std::string error;
     if (!async_final_account_dict_->wait(snapshot, error)) {
       early_final_account_rebind_.result =
@@ -8897,9 +7491,7 @@ bool Collator::start_early_final_account_rebind() {
       state_usage_tree_->import_loaded_paths_from(*snapshot.usage_tree, target_node, &source_to_target);
       early.result = rebind_usage_cells_by_path(std::move(snapshot.root), *snapshot.usage_tree,
                                                 *state_usage_tree_, target_node, &source_to_target,
-                                                parallel_final_account_rebind_traversal_enabled()
-                                                    ? final_account_rebind_tasks()
-                                                    : 1);
+                                                final_account_rebind_tasks());
     } catch (const std::exception& exception) {
       early.result = td::Status::Error(
           PSTRING() << "early proof-backed final-account rebind failed: " << exception.what());
@@ -8926,7 +7518,7 @@ bool Collator::update_account_dict_estimation(const block::transaction::Transact
       stats_.work_time.account_dict_estimator_update += timer.elapsed_both();
     };
     ++stats_.account_dict_estimator_updates;
-    if (analytical_account_dict_estimator_ && analytical_account_dict_estimator_valid_) {
+    if (analytical_account_dict_estimator_valid_ && analytical_account_dict_estimator_) {
       bool is_replacement = acc.orig_status != block::Account::acc_nonexist && acc.status != block::Account::acc_nonexist;
       if (!is_replacement) {
         analytical_account_dict_estimator_valid_ = false;
@@ -8938,7 +7530,7 @@ bool Collator::update_account_dict_estimation(const block::transaction::Transact
       }
     }
     // see combine_account_transactions
-    if (analytical_account_dict_estimator_enabled()) {
+    if (analytical_account_dict_estimator_) {
       Ref<vm::Cell> value;
       if (acc.status != block::Account::acc_nonexist) {
         vm::CellBuilder cb;
@@ -8963,32 +7555,6 @@ bool Collator::update_account_dict_estimation(const block::transaction::Transact
         }
         analytical_estimator_fallback_updates_.clear();
       }
-    } else if (async_account_dict_estimator_) {
-      Ref<vm::Cell> value;
-      if (acc.status != block::Account::acc_nonexist) {
-        vm::CellBuilder cb;
-        if (!(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
-              && cb.store_bits_bool(acc.last_trans_hash_)    // last_trans_hash:bits256
-              && cb.store_long_bool(acc.last_trans_lt_, 64)  // last_trans_lt:uint64
-              && cb.finalize_to(value))) {
-          return false;
-        }
-      }
-      if (!enqueue_account_dict_estimator_update(acc.addr, std::move(value))) {
-        return false;
-      }
-    } else if (batch_account_dict_estimator_enabled()) {
-      Ref<vm::Cell> value;
-      if (acc.status != block::Account::acc_nonexist) {
-        vm::CellBuilder cb;
-        if (!(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
-              && cb.store_bits_bool(acc.last_trans_hash_)    // last_trans_hash:bits256
-              && cb.store_long_bool(acc.last_trans_lt_, 64)  // last_trans_lt:uint64
-              && cb.finalize_to(value))) {
-          return false;
-        }
-      }
-      account_dict_estimator_pending_updates_.push_back({acc.addr, std::move(value)});
     } else if (acc.status == block::Account::acc_nonexist) {
       account_dict_estimator_->lookup_delete(acc.addr);
     } else {
@@ -8999,26 +7565,6 @@ bool Collator::update_account_dict_estimation(const block::transaction::Transact
             && account_dict_estimator_->set_builder(acc.addr, cb))) {
         return false;
       }
-    }
-    if (reuse_account_dict_estimator_enabled() && !async_account_dict_estimator_) {
-      account_dict_estimator_states_[acc.addr] = AccountDictEstimatorState{
-          acc.status != block::Account::acc_nonexist, td::Bits256{acc.total_state->get_hash().bits()},
-          acc.last_trans_hash_, acc.last_trans_lt_};
-    }
-  } else if (reuse_async_account_dict_enabled() && async_account_dict_estimator_ &&
-             account_dict_estimator_added_accounts_.count(acc.addr) != 0) {
-    Ref<vm::Cell> value;
-    if (acc.status != block::Account::acc_nonexist) {
-      vm::CellBuilder cb;
-      if (!(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
-            && cb.store_bits_bool(acc.last_trans_hash_)    // last_trans_hash:bits256
-            && cb.store_long_bool(acc.last_trans_lt_, 64)  // last_trans_lt:uint64
-            && cb.finalize_to(value))) {
-        return false;
-      }
-    }
-    if (!enqueue_account_dict_estimator_update(acc.addr, std::move(value))) {
-      return false;
     }
   }
   ++account_dict_ops_;
@@ -9031,20 +7577,6 @@ bool Collator::update_account_dict_estimation(const block::transaction::Transact
       }
       analytical_increment = result.move_as_ok();
     }
-    Ref<vm::Cell> estimator_root;
-    std::shared_ptr<vm::CellUsageTree> estimator_usage_tree;
-    if (analytical_account_dict_estimator_enabled() && analytical_account_dict_estimator_valid_) {
-      // No materialized estimator root is needed.
-    } else if (async_account_dict_estimator_) {
-      if (!wait_account_dict_estimator(&estimator_root, &estimator_usage_tree)) {
-        return false;
-      }
-    } else {
-      if (!flush_account_dict_estimator_updates()) {
-        return false;
-      }
-      estimator_root = account_dict_estimator_->get_root_cell();
-    }
     td::RealCpuTimer timer;
     SCOPE_EXIT {
       stats_.work_time.account_dict_estimator_proof += timer.elapsed_both();
@@ -9053,31 +7585,20 @@ bool Collator::update_account_dict_estimation(const block::transaction::Transact
     auto estimated_bytes_before = block_limit_status_->estimate_block_size();
     auto proof_before = block_limit_status_->st_stat.get_proof_stat();
     bool success = true;
-    if (analytical_account_dict_estimator_enabled() && analytical_account_dict_estimator_valid_) {
+    if (analytical_account_dict_estimator_ && analytical_account_dict_estimator_valid_) {
       block_limit_status_->transient_proof_stat += analytical_increment.value();
     } else {
-      success = estimator_usage_tree
-                    ? block_limit_status_->add_proof(std::move(estimator_root), estimator_usage_tree.get())
-                    : block_limit_status_->add_proof(std::move(estimator_root));
+      success = block_limit_status_->add_proof(account_dict_estimator_->get_root_cell());
     }
     auto proof_after = block_limit_status_->st_stat.get_proof_stat();
     vm::NewCellStorageStat::Stat proof_increment{proof_after.cells - proof_before.cells,
                                                  proof_after.bits - proof_before.bits,
                                                  proof_after.internal_refs - proof_before.internal_refs,
                                                  proof_after.external_refs - proof_before.external_refs};
-    if (shadow_analytical_account_dict_estimator_enabled() && analytical_account_dict_estimator_valid_ &&
-        proof_increment != analytical_increment.value()) {
-      const auto& predicted = analytical_increment.value();
-      return fatal_error(PSTRING() << "analytical ShardAccounts proof mismatch: actual=" << proof_increment.cells
-                                   << '/' << proof_increment.bits << '/' << proof_increment.internal_refs << '/'
-                                   << proof_increment.external_refs << " predicted=" << predicted.cells << '/'
-                                   << predicted.bits << '/' << predicted.internal_refs << '/'
-                                   << predicted.external_refs);
-    }
     stats_.account_dict_estimator_estimated_bytes +=
         block_limit_status_->estimate_block_size() - estimated_bytes_before;
     const auto& accounted_increment =
-        analytical_account_dict_estimator_enabled() && analytical_account_dict_estimator_valid_
+        analytical_account_dict_estimator_ && analytical_account_dict_estimator_valid_
             ? analytical_increment.value()
             : proof_increment;
     stats_.account_dict_estimator_proof_cells += accounted_increment.cells;
@@ -9157,105 +7678,15 @@ bool Collator::create_shard_state() {
   }
   stats_.work_time.state_build_root += root_timer.elapsed_both();
   LOG(INFO) << "creating Merkle update for the ShardState";
-  if (parallel_exact_state_proofs_enabled() && full_collated_data_ && !is_masterchain() &&
-      !state_update_aux_usage_tree_) {
-    td::Result<Ref<vm::Cell>> raw_new_proof;
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.state_merkle_update};
-      raw_new_proof = vm::MerkleUpdate::generate_raw_new_proof(state_root, state_usage_tree_.get());
-    }
-    if (raw_new_proof.is_error()) {
-      return fatal_error(raw_new_proof.move_as_error_prefix("cannot prepare new-state Merkle proof: "));
-    }
-    state_usage_tree_->set_use_mark_for_is_loaded(true);
-
-    td::Result<Ref<vm::Cell>> r_state_update;
-    td::RealCpuTimer::Time state_update_time;
-    auto prepared_new_proof = raw_new_proof.move_as_ok();
-    auto update_usage_tree = state_usage_tree_;
-    auto previous_state = prev_state_root_;
-    td::thread state_update_thread([&, prepared_new_proof = std::move(prepared_new_proof), update_usage_tree,
-                                    previous_state = std::move(previous_state)] {
-      td::RealCpuTimer timer;
-      try {
-        r_state_update = vm::MerkleUpdate::complete_from_raw_new_proof(
-            previous_state, prepared_new_proof, update_usage_tree.get());
-      } catch (const std::exception& exception) {
-        r_state_update = td::Status::Error(PSTRING() << "parallel old-state Merkle proof failed: "
-                                                      << exception.what());
-      } catch (...) {
-        r_state_update = td::Status::Error("parallel old-state Merkle proof failed with an unknown exception");
-      }
-      state_update_time = timer.elapsed_both();
-    });
-    state_update_thread.set_name("state-old-proof");
-
-    bool proofs_prepared = false;
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.collated_prepare_proofs};
-      proofs_prepared = prepare_proofs();
-    }
-    state_update_thread.join();
-    stats_.work_time.state_merkle_update += state_update_time;
-
-    if (r_state_update.is_error()) {
-      return fatal_error(r_state_update.move_as_error_prefix("cannot complete Merkle update for ShardState: "));
-    }
-    state_update = r_state_update.move_as_ok();
-    if (!proofs_prepared) {
-      return fatal_error("cannot prepare proof for collated data");
-    }
-    collated_proofs_prepared_ = true;
-    async_state_proof_started_ = true;
-    async_state_proof_thread_ = td::thread([this] {
-      td::RealCpuTimer timer;
-      try {
-        async_state_proof_result_ = vm::MerkleProof::generate(
-            prev_state_root_,
-            [&](const Ref<vm::Cell>& cell) { return !collated_data_stat.is_loaded(cell->get_hash()); });
-      } catch (const std::exception& exception) {
-        async_state_proof_result_ =
-            td::Status::Error(PSTRING() << "asynchronous collated state proof failed: " << exception.what());
-      } catch (...) {
-        async_state_proof_result_ = td::Status::Error("asynchronous collated state proof failed");
-      }
-      async_state_proof_time_ = timer.elapsed_both();
-    });
-    async_state_proof_thread_.set_name("collated-state");
-  } else if (shared_old_state_proofs_enabled() && full_collated_data_ && !is_masterchain() &&
-      !state_update_aux_usage_tree_) {
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.collated_prepare_proofs};
-      if (!prepare_proofs()) {
-        return fatal_error("cannot prepare proof for collated data");
-      }
-    }
-    collated_proofs_prepared_ = true;
-
-    td::ScopedRealCpuTimer timer{stats_.work_time.state_merkle_update};
-    auto result = vm::MerkleUpdate::generate_with_shared_old_proof(
-        prev_state_root_, state_root, state_usage_tree_.get(),
-        [&](const Ref<vm::Cell>& cell) { return !collated_data_stat.is_loaded(cell->get_hash()); },
-        direct_merkle_usage_node_enabled());
-    if (result.is_error()) {
-      return fatal_error(result.move_as_error_prefix("cannot create shared ShardState proofs: "));
-    }
-    state_update = std::move(result.ok().first);
-    precomputed_state_proof_ = std::move(result.ok().second);
-  } else if (pipelined_state_finalization_enabled() && direct_merkle_usage_node_enabled() && full_collated_data_ &&
-             !is_masterchain() && !state_update_aux_usage_tree_) {
+  if (pipelined_state_finalization_enabled() && full_collated_data_ && !is_masterchain()) {
     auto proof_usage_tree = state_usage_tree_->clone_for_proof();
     td::Result<Ref<vm::Cell>> r_state_update;
     td::RealCpuTimer::Time state_update_time;
     td::thread state_update_thread([&, proof_usage_tree] {
       td::RealCpuTimer timer;
       try {
-        r_state_update = vm::MerkleUpdate::generate(prev_state_root_pure_, state_root, state_usage_tree_.get(),
-                                                    nullptr, 0, direct_merkle_usage_node_enabled(),
-                                                    proof_usage_tree.get(),
-                                                    parallel_state_update_old_proof_enabled()
-                                                        ? parallel_state_update_old_proof_tasks()
-                                                        : 1);
+        r_state_update = vm::MerkleUpdate::generate(prev_state_root_pure_, state_root, state_usage_tree_.get(), true,
+                                                    proof_usage_tree.get(), parallel_state_update_old_proof_tasks());
       } catch (const std::exception& exception) {
         r_state_update = td::Status::Error(PSTRING() << "pipelined Merkle update failed: " << exception.what());
       } catch (...) {
@@ -9286,11 +7717,8 @@ bool Collator::create_shard_state() {
           auto is_pruned = [proof_stat](const Ref<vm::Cell>& cell) {
             return !proof_stat->is_loaded(cell->get_hash());
           };
-          async_state_proof_result_ =
-              parallel_pipelined_state_proof_enabled()
-                  ? vm::MerkleProof::generate_parallel(std::move(previous_state), std::move(is_pruned),
-                                                       parallel_pipelined_state_proof_tasks())
-                  : vm::MerkleProof::generate(std::move(previous_state), std::move(is_pruned));
+          async_state_proof_result_ = vm::MerkleProof::generate_parallel(
+              std::move(previous_state), std::move(is_pruned), parallel_pipelined_state_proof_tasks());
         } catch (const std::exception& exception) {
           async_state_proof_result_ =
               td::Status::Error(PSTRING() << "pipelined collated state proof failed: " << exception.what());
@@ -9301,7 +7729,7 @@ bool Collator::create_shard_state() {
       });
       async_state_proof_thread_.set_name("collated-state");
     };
-    if (early_pipelined_state_proof_enabled() && proofs_prepared) {
+    if (proofs_prepared) {
       start_state_proof();
     }
 
@@ -9320,58 +7748,9 @@ bool Collator::create_shard_state() {
     if (!async_state_proof_started_) {
       start_state_proof();
     }
-  } else if (parallel_state_finalization_enabled() && direct_merkle_usage_node_enabled() && full_collated_data_ &&
-      !is_masterchain() && !state_update_aux_usage_tree_) {
-    auto proof_usage_tree = state_usage_tree_->clone_for_proof();
-    td::Result<Ref<vm::Cell>> r_state_update;
-    td::RealCpuTimer::Time state_update_time;
-    td::thread state_update_thread([&, proof_usage_tree] {
-      td::RealCpuTimer timer;
-      try {
-        r_state_update = vm::MerkleUpdate::generate(prev_state_root_pure_, state_root, state_usage_tree_.get(),
-                                                    nullptr, 0, direct_merkle_usage_node_enabled(),
-                                                    proof_usage_tree.get());
-      } catch (const std::exception& exception) {
-        r_state_update = td::Status::Error(PSTRING() << "parallel Merkle update failed: " << exception.what());
-      } catch (...) {
-        r_state_update = td::Status::Error("parallel Merkle update failed with an unknown exception");
-      }
-      state_update_time = timer.elapsed_both();
-    });
-    state_update_thread.set_name("state-update");
-
-    bool proofs_prepared = false;
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.collated_prepare_proofs};
-      proofs_prepared = prepare_proofs();
-    }
-    td::Result<Ref<vm::Cell>> r_state_proof;
-    if (proofs_prepared) {
-      td::ScopedRealCpuTimer timer{stats_.work_time.collated_state_proof};
-      state_usage_tree_->set_use_mark_for_is_loaded(false);
-      r_state_proof = vm::MerkleProof::generate(
-          prev_state_root_, [&](const Ref<vm::Cell>& cell) { return !collated_data_stat.is_loaded(cell->get_hash()); });
-    }
-    state_update_thread.join();
-    stats_.work_time.state_merkle_update += state_update_time;
-
-    if (r_state_update.is_error()) {
-      return fatal_error(r_state_update.move_as_error_prefix("cannot create Merkle update for ShardState: "));
-    }
-    state_update = r_state_update.move_as_ok();
-    if (!proofs_prepared) {
-      return fatal_error("cannot prepare proof for collated data");
-    }
-    collated_proofs_prepared_ = true;
-    if (r_state_proof.is_error()) {
-      return fatal_error(r_state_proof.move_as_error_prefix("cannot generate Merkle proof for previous state: "));
-    }
-    precomputed_state_proof_ = r_state_proof.move_as_ok();
   } else {
     td::ScopedRealCpuTimer timer{stats_.work_time.state_merkle_update};
-    auto r_state_update = vm::MerkleUpdate::generate(
-        prev_state_root_, state_root, state_usage_tree_.get(), state_update_aux_usage_tree_.get(),
-        state_update_aux_target_root_, direct_merkle_usage_node_enabled());
+    auto r_state_update = vm::MerkleUpdate::generate(prev_state_root_, state_root, state_usage_tree_.get());
     if (r_state_update.is_error()) {
       return fatal_error(r_state_update.move_as_error_prefix("cannot create Merkle update for ShardState: "));
     }
@@ -9387,16 +7766,7 @@ bool Collator::create_shard_state() {
   LOG(INFO) << "updating block profile statistics";
   {
     td::ScopedRealCpuTimer timer{stats_.work_time.state_limit_proof};
-    block_limit_status_->add_proof(state_root, state_usage_tree_.get(), state_update_aux_usage_tree_.get());
-  }
-  if (state_update_aux_loaded_cells_) {
-    auto previous_proof_size = collated_data_stat.estimate_proof_size();
-    auto worker_proof_size = state_update_aux_loaded_cells_->estimate_proof_size();
-    collated_data_stat.add_loaded_cells(*state_update_aux_loaded_cells_);
-    auto merged_proof_size = collated_data_stat.estimate_proof_size();
-    block_limit_status_->collated_data_size_estimate += merged_proof_size - previous_proof_size;
-    LOG(WARNING) << "H17 final worker proof: worker=" << worker_proof_size << " before=" << previous_proof_size
-                 << " after=" << merged_proof_size << " delta=" << merged_proof_size - previous_proof_size;
+    block_limit_status_->add_proof(state_root, state_usage_tree_.get());
   }
   LOG(INFO) << "new ShardState and corresponding Merkle update created";
   return true;
@@ -9783,39 +8153,7 @@ Ref<vm::Cell> Collator::collate_shard_block_descr_set() {
  */
 bool Collator::prepare_proofs() {
   auto account_diff_callback = [](td::ConstBitPtr, int, Ref<vm::CellSlice>, Ref<vm::CellSlice>) { return true; };
-  bool res;
-  if (parallel_account_proof_scan_enabled() && !is_masterchain()) {
-    auto scans = old_account_dict->prepare_scan_diff_tasks(*account_dict, account_diff_callback, 2,
-                                                           account_proof_scan_tasks());
-    std::vector<WaveProofStats> proof_stats(scans.size());
-    std::vector<std::exception_ptr> errors(scans.size());
-    std::vector<td::uint8> results(scans.size(), 0);
-    std::vector<std::function<void()>> jobs;
-    jobs.reserve(scans.size());
-    for (size_t i = 0; i < scans.size(); ++i) {
-      jobs.emplace_back([&, i] {
-        current_wave_proof_stats_ = &proof_stats[i];
-        SCOPE_EXIT {
-          current_wave_proof_stats_ = nullptr;
-        };
-        try {
-          results[i] = scans[i]();
-        } catch (...) {
-          errors[i] = std::current_exception();
-        }
-      });
-    }
-    wave_executor().run(jobs);
-    for (size_t i = 0; i < scans.size(); ++i) {
-      if (errors[i]) {
-        std::rethrow_exception(errors[i]);
-      }
-      merge_wave_proof_stats(proof_stats[i]);
-    }
-    res = std::all_of(results.begin(), results.end(), [](td::uint8 result) { return result != 0; });
-  } else {
-    res = old_account_dict->scan_diff(*account_dict, account_diff_callback, 2);
-  }
+  bool res = old_account_dict->scan_diff(*account_dict, account_diff_callback, 2);
   if (!res) {
     return false;
   }
@@ -9933,23 +8271,6 @@ bool Collator::create_collated_data() {
     collated_proofs_prepared_ = true;
   }
 
-  // Merkle-proof traversal through prev_state_root_ normally reports cell loads
-  // back into collated_data_stat. Parallel proof builders instead share the
-  // immutable post-prepare view so one proof cannot change another's pruning
-  // predicate. The pure state root also avoids usage-tree callbacks entirely.
-  std::optional<vm::ProofStorageStat> parallel_proof_stat;
-  Ref<vm::Cell> state_proof_root = prev_state_root_;
-  if (parallel_collated_proofs_enabled() || parallel_state_proof_traversal_enabled()) {
-    {
-      std::lock_guard<std::recursive_mutex> guard{proof_stat_mutex_};
-      parallel_proof_stat.emplace(collated_data_stat);
-    }
-    while (auto* usage_cell = dynamic_cast<const vm::UsageCell*>(state_proof_root.get())) {
-      state_proof_root = usage_cell->underlying_cell();
-    }
-  }
-  const auto& proof_stat = parallel_proof_stat ? *parallel_proof_stat : collated_data_stat;
-
   auto create_state_proofs = [&]() -> ProofMapResult {
     ProofMap result;
     if (!is_masterchain()) {
@@ -9961,13 +8282,9 @@ bool Collator::create_collated_data() {
       if (precomputed_state_proof_.not_null()) {
         state_proof = std::move(precomputed_state_proof_);
       } else {
-        if (!parallel_collated_proofs_enabled() && !parallel_state_proof_traversal_enabled()) {
-          state_usage_tree_->set_use_mark_for_is_loaded(false);
-        }
-        auto is_pruned = [&](const Ref<vm::Cell>& c) { return !proof_stat.is_loaded(c->get_hash()); };
-        auto r_state_proof = parallel_state_proof_traversal_enabled()
-                                 ? vm::MerkleProof::generate_parallel(state_proof_root, is_pruned)
-                                 : vm::MerkleProof::generate(state_proof_root, is_pruned);
+        state_usage_tree_->set_use_mark_for_is_loaded(false);
+        auto r_state_proof = vm::MerkleProof::generate(
+            prev_state_root_, [&](const Ref<vm::Cell>& c) { return !collated_data_stat.is_loaded(c->get_hash()); });
         if (r_state_proof.is_error()) {
           return r_state_proof.move_as_error_prefix("cannot generate Merkle proof for previous state: ");
         }
@@ -9999,7 +8316,7 @@ bool Collator::create_collated_data() {
         continue;
       }
       auto r_proof = vm::MerkleProof::generate(
-          mpb.original_root(), [&](const Ref<vm::Cell>& c) { return !proof_stat.is_loaded(c->get_hash()); });
+          mpb.original_root(), [&](const Ref<vm::Cell>& c) { return !collated_data_stat.is_loaded(c->get_hash()); });
       if (r_proof.is_error()) {
         return r_proof.move_as_error_prefix("cannot generate Merkle proof for neighbor: ");
       }
@@ -10024,7 +8341,7 @@ bool Collator::create_collated_data() {
         continue;
       }
       auto r_proof = vm::MerkleProof::generate(dict.mpb.original_root(), [&](const Ref<vm::Cell>& c) {
-        return !proof_stat.is_loaded(c->get_hash());
+        return !collated_data_stat.is_loaded(c->get_hash());
       });
       if (r_proof.is_error()) {
         return r_proof.move_as_error_prefix("cannot generate account-storage Merkle proof: ");
@@ -10042,57 +8359,17 @@ bool Collator::create_collated_data() {
   ProofMapResult state_proofs;
   ProofMapResult neighbor_proofs;
   StorageProofResult storage_proofs;
-  td::RealCpuTimer::Time state_proof_time;
-  td::RealCpuTimer::Time neighbor_proof_time;
-  td::RealCpuTimer::Time storage_proof_time;
-  if (parallel_collated_proofs_enabled()) {
-    td::thread state_thread([&] {
-      td::RealCpuTimer timer;
-      try {
-        state_proofs = create_state_proofs();
-      } catch (const std::exception& exception) {
-        state_proofs = td::Status::Error(PSTRING() << "state proof generation failed: " << exception.what());
-      } catch (...) {
-        state_proofs = td::Status::Error("state proof generation failed with an unknown exception");
-      }
-      state_proof_time = timer.elapsed_both();
-    });
-    td::thread neighbor_thread([&] {
-      td::RealCpuTimer timer;
-      try {
-        neighbor_proofs = create_neighbor_proofs();
-      } catch (const std::exception& exception) {
-        neighbor_proofs = td::Status::Error(PSTRING() << "neighbor proof generation failed: " << exception.what());
-      } catch (...) {
-        neighbor_proofs = td::Status::Error("neighbor proof generation failed with an unknown exception");
-      }
-      neighbor_proof_time = timer.elapsed_both();
-    });
-    state_thread.set_name("state-proof");
-    neighbor_thread.set_name("neighbor-proof");
-    {
-      td::RealCpuTimer timer;
-      storage_proofs = create_storage_proofs();
-      storage_proof_time = timer.elapsed_both();
-    }
-    state_thread.join();
-    neighbor_thread.join();
-    stats_.work_time.collated_state_proof += state_proof_time;
-    stats_.work_time.collated_neighbor_proofs += neighbor_proof_time;
-    stats_.work_time.collated_storage_proofs += storage_proof_time;
-  } else {
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.collated_state_proof};
-      state_proofs = create_state_proofs();
-    }
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.collated_neighbor_proofs};
-      neighbor_proofs = create_neighbor_proofs();
-    }
-    {
-      td::ScopedRealCpuTimer timer{stats_.work_time.collated_storage_proofs};
-      storage_proofs = create_storage_proofs();
-    }
+  {
+    td::ScopedRealCpuTimer timer{stats_.work_time.collated_state_proof};
+    state_proofs = create_state_proofs();
+  }
+  {
+    td::ScopedRealCpuTimer timer{stats_.work_time.collated_neighbor_proofs};
+    neighbor_proofs = create_neighbor_proofs();
+  }
+  {
+    td::ScopedRealCpuTimer timer{stats_.work_time.collated_storage_proofs};
+    storage_proofs = create_storage_proofs();
   }
   if (state_proofs.is_error()) {
     return fatal_error(state_proofs.move_as_error());
@@ -10148,19 +8425,12 @@ bool Collator::create_block_candidate(td::Result<td::BufferSlice>* early_block_b
     }
     return boc.serialize_to_slice(31);
   };
-  auto collated_reserve_hint =
-      reserve_candidate_boc_cells_enabled()
-          ? std::max<size_t>(1024, static_cast<size_t>(block_limit_status_->collated_data_size_estimate / 32))
-          : 0;
-  auto serialize_collated = [roots = collated_roots_, collated_reserve_hint]() -> td::Result<td::BufferSlice> {
+  auto serialize_collated = [roots = collated_roots_]() -> td::Result<td::BufferSlice> {
     if (roots.empty()) {
       return td::BufferSlice{0};
     }
     vm::BagOfCells boc;
     boc.set_roots(roots);
-    if (collated_reserve_hint != 0) {
-      boc.reserve_cells(collated_reserve_hint);
-    }
     auto res = boc.import_cells();
     if (res.is_error()) {
       return res.move_as_error();
@@ -10168,25 +8438,7 @@ bool Collator::create_block_candidate(td::Result<td::BufferSlice>* early_block_b
     return boc.serialize_to_slice(2);
   };
 
-  // The block and collated roots are immutable and independent at this point.
   td::Result<td::BufferSlice> cdata_res;
-  td::RealCpuTimer::Time parallel_cdata_time;
-  td::thread cdata_thread;
-  if (early_collated_boc == nullptr && parallel_candidate_boc_enabled()) {
-    cdata_thread = td::thread([&] {
-      td::RealCpuTimer timer;
-      try {
-        cdata_res = serialize_collated();
-      } catch (const std::exception& exception) {
-        cdata_res = td::Status::Error(PSTRING() << "collated-data BOC serialization failed: " << exception.what());
-      } catch (...) {
-        cdata_res = td::Status::Error("collated-data BOC serialization failed with an unknown exception");
-      }
-      parallel_cdata_time = timer.elapsed_both();
-    });
-    cdata_thread.set_name("collated-boc");
-  }
-
   // 1. serialize block
   LOG(INFO) << "serializing new Block";
   td::Result<td::BufferSlice> blk_res;
@@ -10199,9 +8451,6 @@ bool Collator::create_block_candidate(td::Result<td::BufferSlice>* early_block_b
   // 2. serialize collated data
   if (early_collated_boc != nullptr) {
     cdata_res = std::move(*early_collated_boc);
-  } else if (parallel_candidate_boc_enabled()) {
-    cdata_thread.join();
-    stats_.work_time.candidate_collated_boc += parallel_cdata_time;
   } else {
     td::ScopedRealCpuTimer timer{stats_.work_time.candidate_collated_boc};
     cdata_res = serialize_collated();
@@ -10237,13 +8486,8 @@ bool Collator::create_block_candidate(td::Result<td::BufferSlice>* early_block_b
   // 3. create a BlockCandidate
   {
     td::ScopedRealCpuTimer timer{stats_.work_time.candidate_construct};
-    if (move_block_candidate_enabled()) {
-      block_candidate = std::make_unique<BlockCandidate>(params_.creator, new_block_id_ext, collated_file_hash,
-                                                         std::move(blk_slice), std::move(cdata_slice));
-    } else {
-      block_candidate = std::make_unique<BlockCandidate>(params_.creator, new_block_id_ext, collated_file_hash,
-                                                         blk_slice.clone(), cdata_slice.clone());
-    }
+    block_candidate = std::make_unique<BlockCandidate>(params_.creator, new_block_id_ext, collated_file_hash,
+                                                       blk_slice.clone(), cdata_slice.clone());
   }
   bool need_out_msg_queue_broadcasts = false;  // Not supported yet
   if (need_out_msg_queue_broadcasts) {
@@ -10320,11 +8564,7 @@ void Collator::return_block_candidate() {
   finalize_stats();
   stats_.status = td::Status::OK();
   td::actor::send_closure(manager, &ValidatorManager::log_collate_query_stats, std::move(stats_));
-  if (move_block_candidate_enabled()) {
-    main_promise.set_value(std::move(*block_candidate));
-  } else {
-    main_promise.set_value(block_candidate->clone());
-  }
+  main_promise.set_value(block_candidate->clone());
   busy_ = false;
   stop();
 }
