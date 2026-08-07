@@ -223,24 +223,81 @@ td::Result<Ref<Cell>> MerkleUpdate::apply_raw(Ref<Cell> from, Ref<Cell> update_f
 }
 
 td::Result<std::pair<Ref<Cell>, Ref<Cell>>> MerkleUpdate::generate_raw(Ref<Cell> from, Ref<Cell> to,
-                                                                       CellUsageTree *usage_tree) {
-  // create Merkle update cell->new_cell
-  TRY_RESULT(update_to, MerkleProof::generate_raw(to, [tree = usage_tree](const Ref<Cell> &cell) {
-               CellUsageTree::NodePtr node;
-               if (cell->is_loaded()) {
-                 auto loaded_cell = cell->load_cell().move_as_ok();
-                 if (loaded_cell.data_cell->size_refs() == 0) {
-                   return false;
-                 }
-                 node = loaded_cell.tree_node;
-               } else {
-                 node = cell->get_tree_node();
-               }
-               return !node.empty() && node.mark_path(tree);
-             }));
-  usage_tree->set_use_mark_for_is_loaded(true);
-  TRY_RESULT(update_from, MerkleProof::generate_raw(from, usage_tree));
+                                                                       CellUsageTree *usage_tree,
+                                                                       CellUsageTree *auxiliary_usage_tree,
+                                                                       CellUsageTree::NodeId auxiliary_target_root,
+                                                                       bool prefer_direct_usage_node,
+                                                                       CellUsageTree *proof_usage_tree,
+                                                                       unsigned parallel_old_proof_tasks) {
+  auto update_usage_tree = proof_usage_tree != nullptr ? proof_usage_tree : usage_tree;
+  if (proof_usage_tree != nullptr && auxiliary_usage_tree != nullptr) {
+    return td::Status::Error("separate proof usage tree does not support an auxiliary usage tree");
+  }
+  TRY_RESULT(update_to, generate_raw_new_proof(std::move(to), usage_tree, auxiliary_usage_tree,
+                                                prefer_direct_usage_node, proof_usage_tree));
+  if (auxiliary_usage_tree != nullptr && auxiliary_target_root != 0) {
+    usage_tree->import_paths_from(*auxiliary_usage_tree, auxiliary_target_root);
+  }
+  update_usage_tree->set_use_mark_for_is_loaded(true);
+  TRY_RESULT(update_from,
+             parallel_old_proof_tasks > 1
+                 ? MerkleProof::generate_raw_parallel(std::move(from), update_usage_tree, parallel_old_proof_tasks)
+                 : MerkleProof::generate_raw(std::move(from), update_usage_tree));
   return std::make_pair(std::move(update_from), std::move(update_to));
+}
+
+td::Result<Ref<Cell>> MerkleUpdate::generate_raw_new_proof(Ref<Cell> to, CellUsageTree *usage_tree,
+                                                            CellUsageTree *auxiliary_usage_tree,
+                                                            bool prefer_direct_usage_node,
+                                                            CellUsageTree *proof_usage_tree) {
+  auto update_usage_tree = proof_usage_tree != nullptr ? proof_usage_tree : usage_tree;
+  return MerkleProof::generate_raw(
+      std::move(to), [tree = usage_tree, auxiliary_usage_tree, prefer_direct_usage_node,
+                     update_usage_tree](const Ref<Cell> &cell) {
+        CellUsageTree::NodePtr node;
+        if (prefer_direct_usage_node) {
+          node = cell->get_tree_node();
+          if (!node.empty() && cell->get_level() == 0 && cell->get_depth() == 0) {
+            return false;
+          }
+        }
+        if ((!prefer_direct_usage_node || node.empty()) && cell->is_loaded()) {
+          auto loaded_cell = cell->load_cell().move_as_ok();
+          if (loaded_cell.data_cell->size_refs() == 0) {
+            return false;
+          }
+          node = loaded_cell.tree_node;
+        } else if (!prefer_direct_usage_node) {
+          node = cell->get_tree_node();
+        }
+        if (node.empty()) {
+          return false;
+        }
+        if (update_usage_tree != tree) {
+          auto node_id = node.node_id_for(tree);
+          if (node_id != 0) {
+            update_usage_tree->mark_path(node_id);
+            return true;
+          }
+        } else if (node.mark_path(tree)) {
+          return true;
+        }
+        return auxiliary_usage_tree != nullptr && node.is_from_tree(auxiliary_usage_tree);
+      });
+}
+
+td::Result<Ref<Cell>> MerkleUpdate::complete_from_raw_new_proof(Ref<Cell> from, Ref<Cell> raw_new_proof,
+                                                                 CellUsageTree *proof_usage_tree) {
+  if (from->get_level() != 0 || raw_new_proof.is_null()) {
+    return td::Status::Error("invalid prepared Merkle update roots");
+  }
+  proof_usage_tree->set_use_mark_for_is_loaded(true);
+  TRY_RESULT(update_from, MerkleProof::generate_raw(std::move(from), proof_usage_tree));
+  auto update = CellBuilder::create_merkle_update(std::move(update_from), std::move(raw_new_proof));
+  if (update.is_null()) {
+    return td::Status::Error("cannot wrap prepared Merkle update");
+  }
+  return update;
 }
 
 td::Status MerkleUpdate::validate_raw(Ref<Cell> update_from, Ref<Cell> update_to, td::uint32 from_level,
@@ -262,12 +319,56 @@ td::Status MerkleUpdate::validate(Ref<Cell> update) {
   return validate_raw(std::move(update_from), std::move(update_to), 0, 0);
 }
 
-td::Result<Ref<Cell>> MerkleUpdate::generate(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree) {
+td::Result<Ref<Cell>> MerkleUpdate::generate(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree,
+                                              CellUsageTree *auxiliary_usage_tree,
+                                              CellUsageTree::NodeId auxiliary_target_root,
+                                              bool prefer_direct_usage_node,
+                                              CellUsageTree *proof_usage_tree,
+                                              unsigned parallel_old_proof_tasks) {
   if (from->get_level() != 0 || to->get_level() != 0) {
     return td::Status::Error("roots have non-zero level");
   }
-  TRY_RESULT(res, generate_raw(std::move(from), std::move(to), usage_tree));
+  TRY_RESULT(res,
+             generate_raw(std::move(from), std::move(to), usage_tree, auxiliary_usage_tree, auxiliary_target_root,
+                          prefer_direct_usage_node, proof_usage_tree, parallel_old_proof_tasks));
   return CellBuilder::create_merkle_update(res.first, res.second);
+}
+
+td::Result<std::pair<Ref<Cell>, Ref<Cell>>> MerkleUpdate::generate_with_shared_old_proof(
+    Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree, MerkleProof::IsPrunnedFunction collated_is_prunned,
+    bool prefer_direct_usage_node) {
+  if (from->get_level() != 0 || to->get_level() != 0) {
+    return td::Status::Error("roots have non-zero level");
+  }
+  TRY_RESULT(update_to, MerkleProof::generate_raw(
+                            to, [usage_tree, prefer_direct_usage_node](const Ref<Cell> &cell) {
+                              CellUsageTree::NodePtr node;
+                              if (prefer_direct_usage_node) {
+                                node = cell->get_tree_node();
+                                if (!node.empty() && cell->get_level() == 0 && cell->get_depth() == 0) {
+                                  return false;
+                                }
+                              }
+                              if ((!prefer_direct_usage_node || node.empty()) && cell->is_loaded()) {
+                                auto loaded_cell = cell->load_cell().move_as_ok();
+                                if (loaded_cell.data_cell->size_refs() == 0) {
+                                  return false;
+                                }
+                                node = loaded_cell.tree_node;
+                              } else if (!prefer_direct_usage_node) {
+                                node = cell->get_tree_node();
+                              }
+                              return !node.empty() && node.mark_path(usage_tree);
+                            }));
+  usage_tree->set_use_mark_for_is_loaded(true);
+  TRY_RESULT(old_proofs,
+             MerkleProof::generate_raw_pair(from, usage_tree, std::move(collated_is_prunned)));
+  Ref<Cell> update = CellBuilder::create_merkle_update(std::move(old_proofs.first), std::move(update_to));
+  Ref<Cell> collated_proof = CellBuilder::create_merkle_proof(std::move(old_proofs.second));
+  if (update.is_null() || collated_proof.is_null()) {
+    return td::Status::Error("cannot wrap shared Merkle update and collated proof");
+  }
+  return std::make_pair(std::move(update), std::move(collated_proof));
 }
 
 namespace detail {

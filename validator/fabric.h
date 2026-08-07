@@ -47,6 +47,10 @@ struct CollateParams {
   // If not empty, should be the same size as prev
   std::vector<Ref<BlockData>> prev_block_data = {};
   std::vector<Ref<vm::Cell>> prev_block_state_roots = {};
+
+  // Optional exact ancestors of prev, newest first. Consensus producers can use this to avoid
+  // reprocessing messages that are already reflected in the branch-local previous state.
+  std::vector<Ref<BlockData>> recent_block_data = {};
 };
 
 struct ValidateParams {

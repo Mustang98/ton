@@ -17,6 +17,9 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #include "common/bitstring.h"
+#include <array>
+#include <deque>
+
 #include "td/utils/Random.h"
 #include "td/utils/bits.h"
 #include "vm/cells.h"
@@ -479,6 +482,140 @@ Ref<CellSlice> DictionaryFixed::lookup(td::ConstBitPtr key, int key_len) {
     //std::cerr << "key bit at position " << key_bits - n << " equals " << sw << std::endl;
     --n;
     cell = label.remainder->prefetch_ref(sw);
+  }
+}
+
+std::vector<Ref<CellSlice>> DictionaryFixed::lookup_multi(td::Span<td::ConstBitPtr> sorted_keys, int key_len) {
+  force_validate();
+  std::vector<Ref<CellSlice>> values(sorted_keys.size());
+  if (key_len != get_key_bits() || sorted_keys.empty() || is_empty()) {
+    return values;
+  }
+  for (size_t i = 1; i < sorted_keys.size(); ++i) {
+    if (td::bitstring::bits_memcmp(sorted_keys[i - 1], sorted_keys[i], key_len) > 0) {
+      throw VmError{Excno::dict_err, "batched dictionary lookup keys are not sorted"};
+    }
+  }
+  dict_lookup_multi(get_root_cell(), sorted_keys, td::MutableSpan<Ref<CellSlice>>{values}, 0, key_len);
+  return values;
+}
+
+DictionaryReplacementStat DictionaryFixed::estimate_replacement_proof_increment(
+    td::Span<td::ConstBitPtr> sorted_current_keys, td::Span<td::ConstBitPtr> sorted_previous_keys, int key_len) {
+  force_validate();
+  DictionaryReplacementStat stat;
+  if (key_len != get_key_bits() || sorted_current_keys.empty() || is_empty()) {
+    return stat;
+  }
+  auto check_sorted = [key_len](td::Span<td::ConstBitPtr> keys) {
+    for (size_t i = 1; i < keys.size(); ++i) {
+      if (td::bitstring::bits_memcmp(keys[i - 1], keys[i], key_len) >= 0) {
+        throw VmError{Excno::dict_err, "replacement proof keys are not strictly sorted"};
+      }
+    }
+  };
+  check_sorted(sorted_current_keys);
+  check_sorted(sorted_previous_keys);
+  dict_estimate_replacement_proof_increment(get_root_cell(), sorted_current_keys, sorted_previous_keys, 0, key_len,
+                                            stat);
+  return stat;
+}
+
+void DictionaryFixed::dict_estimate_replacement_proof_increment(
+    Ref<Cell> cell, td::Span<td::ConstBitPtr> current_keys, td::Span<td::ConstBitPtr> previous_keys, int key_offset,
+    int remaining_bits, DictionaryReplacementStat& stat) {
+  CHECK(!current_keys.empty());
+  CellSlice raw{NoVm(), cell};
+  ++stat.cells;
+  stat.bits += raw.size();
+  ++stat.internal_refs;  // The reference to this newly rebuilt dictionary cell, including the root reference.
+
+  dict::LabelParser label{std::move(cell), remaining_bits, label_mode()};
+  for (auto key : current_keys) {
+    if (!label.is_prefix_of(key + key_offset, remaining_bits)) {
+      throw VmError{Excno::dict_err, "replacement proof key is absent from dictionary"};
+    }
+  }
+  remaining_bits -= label.l_bits;
+  key_offset += label.l_bits;
+  if (remaining_bits == 0) {
+    label.skip_label();
+    // Replacement values have already been counted by Transaction::update_limits. Their references are therefore
+    // internal duplicate references, while the leaf itself is the newly rebuilt dictionary path cell.
+    stat.internal_refs += label.remainder->size_refs();
+    return;
+  }
+
+  auto split_at_bit = [key_offset](td::Span<td::ConstBitPtr> keys) {
+    size_t split = 0;
+    while (split < keys.size() && !keys[split][key_offset]) {
+      ++split;
+    }
+    return split;
+  };
+  size_t current_split = split_at_bit(current_keys);
+  size_t previous_split = split_at_bit(previous_keys);
+  --remaining_bits;
+  ++key_offset;
+  for (unsigned branch = 0; branch < 2; ++branch) {
+    auto current = branch == 0 ? current_keys.substr(0, current_split) : current_keys.substr(current_split);
+    auto previous =
+        branch == 0 ? previous_keys.substr(0, previous_split) : previous_keys.substr(previous_split);
+    if (!current.empty()) {
+      dict_estimate_replacement_proof_increment(label.remainder->prefetch_ref(branch), current, previous, key_offset,
+                                                remaining_bits, stat);
+    } else if (!previous.empty()) {
+      // The sibling was rebuilt by an earlier batch and is already in proof_seen_.
+      ++stat.internal_refs;
+    } else {
+      // The sibling still points into the old usage tree and becomes a pruned external reference.
+      ++stat.external_refs;
+    }
+  }
+}
+
+void DictionaryFixed::dict_lookup_multi(Ref<Cell> cell, td::Span<td::ConstBitPtr> keys,
+                                        td::MutableSpan<Ref<CellSlice>> values, int key_offset, int remaining_bits) {
+  if (keys.empty()) {
+    return;
+  }
+  LabelParser label{std::move(cell), remaining_bits, label_mode()};
+  size_t first = 0;
+  while (first < keys.size() && !label.is_prefix_of(keys[first] + key_offset, remaining_bits)) {
+    ++first;
+  }
+  size_t last = first;
+  while (last < keys.size() && label.is_prefix_of(keys[last] + key_offset, remaining_bits)) {
+    ++last;
+  }
+  if (first == last) {
+    return;
+  }
+  keys = keys.substr(first, last - first);
+  values = values.substr(first, last - first);
+  remaining_bits -= label.l_bits;
+  key_offset += label.l_bits;
+  if (remaining_bits == 0) {
+    label.skip_label();
+    for (auto& value : values) {
+      value = extract_leaf_value(Ref<CellSlice>{true, *label.remainder});
+    }
+    return;
+  }
+
+  size_t split = 0;
+  while (split < keys.size() && !keys[split][key_offset]) {
+    ++split;
+  }
+  --remaining_bits;
+  ++key_offset;
+  if (split != 0) {
+    dict_lookup_multi(label.remainder->prefetch_ref(0), keys.substr(0, split), values.substr(0, split), key_offset,
+                      remaining_bits);
+  }
+  if (split != keys.size()) {
+    dict_lookup_multi(label.remainder->prefetch_ref(1), keys.substr(split), values.substr(split), key_offset,
+                      remaining_bits);
   }
 }
 
@@ -2318,6 +2455,24 @@ bool DictionaryFixed::dict_scan_diff(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPt
   // skip1: remove that much first bits from all keys in dictionary dict1 (its keys are actually n + skip1 bits long)
   // skip2: similar for dict2
   // pretending to compare subdictionaries with n-bit keys
+  auto check_second_fork = [&](Ref<CellSlice> cs, int fork_bits) {
+    try {
+      return check_fork_raw(std::move(cs), fork_bits);
+    } catch (VmVirtError&) {
+      throw VmError{Excno::virt_err,
+                    PSTRING() << "scan_diff reached pruned new augmentation fork: remaining_bits=" << n
+                              << " fork_bits=" << fork_bits << " skip1=" << skip1 << " skip2=" << skip2};
+    }
+  };
+  auto check_second_leaf = [&](Ref<CellSlice> cs, td::ConstBitPtr key) {
+    try {
+      return check_leaf(std::move(cs), key, total_key_len);
+    } catch (VmVirtError&) {
+      throw VmError{Excno::virt_err,
+                    PSTRING() << "scan_diff reached pruned new augmentation leaf: remaining_bits=" << n
+                              << " skip1=" << skip1 << " skip2=" << skip2};
+    }
+  };
   if (dict1.is_null()) {
     if (dict2.is_null()) {
       return true;  // both dictionaries are empty
@@ -2330,14 +2485,14 @@ bool DictionaryFixed::dict_scan_diff(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPt
       assert(label.l_bits == n);
       // leaf in dict2, empty dict1
       auto key = key_buffer + label.l_bits - total_key_len;
-      if ((mode & 2) && !check_leaf(label.remainder, key, total_key_len)) {
+      if ((mode & 2) && !check_second_leaf(label.remainder, key)) {
         throw VmError{Excno::dict_err, "invalid leaf in the second dictionary being compared"};
       }
       return diff_func(key, total_key_len, {}, std::move(label.remainder));
     }
     n -= label.l_bits + 1;
     key_buffer += label.l_bits + 1;
-    if ((mode & 2) && !check_fork_raw(label.remainder, n + 1)) {
+    if ((mode & 2) && !check_second_fork(label.remainder, n + 1)) {
       throw VmError{Excno::dict_err, "invalid fork in the second dictionary being compared"};
     }
     // compare {} with each of children of dict2
@@ -2381,6 +2536,21 @@ bool DictionaryFixed::dict_scan_diff(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPt
     // dictionaries match, subtree comparison not necessary
     return true;
   }
+  auto check_virtualized_node = [n, skip1, skip2](const Ref<Cell>& cell, const char* side) {
+    if (!cell->is_virtualized()) {
+      return;
+    }
+    try {
+      (void)load_cell_slice(cell);
+    } catch (VmVirtError&) {
+      throw VmError{Excno::virt_err,
+                    PSTRING() << "scan_diff reached pruned " << side << " node: remaining_bits=" << n
+                              << " skip1=" << skip1 << " skip2=" << skip2
+                              << " hash=" << cell->get_hash().to_hex()};
+    }
+  };
+  check_virtualized_node(dict1, "old");
+  check_virtualized_node(dict2, "new");
   LabelParser label1{dict1, n + skip1, label_mode()}, label2{dict2, n + skip2, label_mode()};
   int l1 = label1.l_bits - skip1, l2 = label2.l_bits - skip2;
   assert(l1 >= 0 && l2 >= 0);
@@ -2412,7 +2582,7 @@ bool DictionaryFixed::dict_scan_diff(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPt
       if ((mode & 1) && !check_leaf(label1.remainder, key, total_key_len)) {
         throw VmError{Excno::dict_err, "invalid leaf in the first dictionary being compared"};
       }
-      if ((mode & 2) && !check_leaf(label2.remainder, key, total_key_len)) {
+      if ((mode & 2) && !check_second_leaf(label2.remainder, key)) {
         throw VmError{Excno::dict_err, "invalid leaf in the second dictionary being compared"};
       }
       return label1.remainder->contents_equal(*label2.remainder) ||
@@ -2424,7 +2594,7 @@ bool DictionaryFixed::dict_scan_diff(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPt
     if ((mode & 1) && !check_fork_raw(label1.remainder, n + 1)) {
       throw VmError{Excno::dict_err, "invalid fork in the first dictionary being compared"};
     }
-    if ((mode & 2) && !check_fork_raw(label2.remainder, n + 1)) {
+    if ((mode & 2) && !check_second_fork(label2.remainder, n + 1)) {
       throw VmError{Excno::dict_err, "invalid fork in the second dictionary being compared"};
     }
     for (unsigned sw = 0; sw <= 1; sw++) {
@@ -2470,7 +2640,7 @@ bool DictionaryFixed::dict_scan_diff(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPt
     assert(c == l2 && c < l1);
     dict2.clear();
     label2.skip_label();  // dict2 had shorter label anyway, label1 is already unpacked
-    if ((mode & 2) && !check_fork_raw(label2.remainder, n - c)) {
+    if ((mode & 2) && !check_second_fork(label2.remainder, n - c)) {
       throw VmError{Excno::dict_err, "invalid fork in the second dictionary being compared"};
     }
     // children of root node of dict2
@@ -2512,6 +2682,106 @@ bool DictionaryFixed::scan_diff(DictionaryFixed& dict2, const scan_diff_func_t& 
   } catch (CombineError) {
     return false;
   }
+}
+
+std::vector<DictionaryFixed::scan_diff_task_t> DictionaryFixed::prepare_scan_diff_tasks(
+    DictionaryFixed& dict2, const scan_diff_func_t& diff_func, int check_augm, unsigned max_tasks) {
+  force_validate();
+  dict2.force_validate();
+  int key_len = get_key_bits();
+  if (key_len != dict2.get_key_bits()) {
+    throw VmError{Excno::dict_err, "cannot compare dictionaries with different key lengths"};
+  }
+  max_tasks = std::max(1u, max_tasks);
+
+  struct PendingScan {
+    Ref<Cell> first;
+    Ref<Cell> second;
+    std::array<unsigned char, max_key_bytes> key_buffer{};
+    int remaining_bits;
+  };
+
+  std::deque<PendingScan> pending;
+  pending.push_back(PendingScan{get_root_cell(), dict2.get_root_cell(), {}, key_len});
+  std::vector<PendingScan> leaves;
+  leaves.reserve(max_tasks);
+
+  auto split = [&](PendingScan& current, PendingScan& left, PendingScan& right) {
+    if (current.first.is_null() || current.second.is_null() ||
+        current.first->get_hash() == current.second->get_hash()) {
+      return false;
+    }
+    if (current.first->is_virtualized() || current.second->is_virtualized()) {
+      return false;
+    }
+
+    int offset = key_len - current.remaining_bits;
+    td::BitPtr key{current.key_buffer.data()};
+    key += offset;
+    LabelParser first_label{current.first, current.remaining_bits, label_mode()};
+    LabelParser second_label{current.second, current.remaining_bits, label_mode()};
+    int first_bits = first_label.l_bits;
+    int second_bits = second_label.l_bits;
+    first_label.extract_label_to(key);
+    int common = second_label.common_prefix_len(key, first_bits);
+    if (common != first_bits || common != second_bits || common >= current.remaining_bits) {
+      return false;
+    }
+    second_label.skip_label();
+
+    int fork_bits = current.remaining_bits - common;
+    if ((check_augm & 1) && !check_fork_raw(first_label.remainder, fork_bits)) {
+      throw VmError{Excno::dict_err, "invalid fork in the first dictionary being compared"};
+    }
+    if (check_augm & 2) {
+      try {
+        if (!check_fork_raw(second_label.remainder, fork_bits)) {
+          throw VmError{Excno::dict_err, "invalid fork in the second dictionary being compared"};
+        }
+      } catch (VmVirtError&) {
+        throw VmError{Excno::virt_err, "partitioned scan_diff reached pruned new augmentation fork"};
+      }
+    }
+
+    int child_bits = current.remaining_bits - common - 1;
+    left = current;
+    right = current;
+    left.first = first_label.remainder->prefetch_ref(0);
+    left.second = second_label.remainder->prefetch_ref(0);
+    left.remaining_bits = child_bits;
+    right.first = first_label.remainder->prefetch_ref(1);
+    right.second = second_label.remainder->prefetch_ref(1);
+    right.remaining_bits = child_bits;
+    left.key_buffer[(offset + common) >> 3] &= static_cast<unsigned char>(~(1u << (7 - ((offset + common) & 7))));
+    right.key_buffer[(offset + common) >> 3] |= static_cast<unsigned char>(1u << (7 - ((offset + common) & 7)));
+    return true;
+  };
+
+  while (!pending.empty()) {
+    auto current = std::move(pending.front());
+    pending.pop_front();
+    PendingScan left;
+    PendingScan right;
+    if (leaves.size() + pending.size() + 1 < max_tasks && split(current, left, right)) {
+      pending.push_back(std::move(left));
+      pending.push_back(std::move(right));
+    } else {
+      leaves.push_back(std::move(current));
+    }
+  }
+
+  std::vector<scan_diff_task_t> tasks;
+  tasks.reserve(leaves.size());
+  for (auto& leaf : leaves) {
+    tasks.emplace_back([this, first = std::move(leaf.first), second = std::move(leaf.second),
+                        key_buffer = std::move(leaf.key_buffer), remaining_bits = leaf.remaining_bits, key_len,
+                        diff_func, check_augm]() mutable {
+      td::BitPtr key{key_buffer.data()};
+      key += key_len - remaining_bits;
+      return dict_scan_diff(std::move(first), std::move(second), key, remaining_bits, key_len, diff_func, check_augm);
+    });
+  }
+  return tasks;
 }
 
 bool DictionaryFixed::dict_validate_check(Ref<Cell> dict, td::BitPtr key_buffer, int n, int total_key_len,
@@ -3128,6 +3398,213 @@ bool AugmentedDictionary::set_ref(td::ConstBitPtr key, int key_len, Ref<Cell> va
 
 bool AugmentedDictionary::set_builder(td::ConstBitPtr key, int key_len, const CellBuilder& value, SetMode mode) {
   return set(key, key_len, load_cell_slice(value.finalize_copy()), mode);
+}
+
+bool AugmentedDictionary::multiset(td::MutableSpan<MultiSetValue> new_values) {
+  force_validate();
+  auto cmp = [&](const MultiSetValue& a, const MultiSetValue& b) {
+    return td::bitstring::bits_memcmp(a.first, b.first, key_bits) < 0;
+  };
+  if (!std::is_sorted(new_values.begin(), new_values.end(), cmp)) {
+    std::sort(new_values.begin(), new_values.end(), cmp);
+  }
+  for (size_t i = 0; i + 1 < new_values.size(); ++i) {
+    if (td::bitstring::bits_memcmp(new_values[i].first, new_values[i + 1].first, key_bits) == 0) {
+      return false;
+    }
+  }
+  unsigned char key_buffer[max_key_bytes];
+  try {
+    set_root_cell(dict_multiset(get_root_cell(), new_values, key_buffer, key_bits, key_bits, 0));
+    return true;
+  } catch (CombineError) {
+    return false;
+  }
+}
+
+Ref<Cell> AugmentedDictionary::dict_build(td::Span<MultiSetValue> values, int total_key_len, int prefix_len) const {
+  if (values.empty()) {
+    return {};
+  }
+  if (values.size() == 1) {
+    if (values[0].second.is_null()) {
+      throw CombineError{};
+    }
+    CellBuilder cb;
+    append_dict_label(cb, values[0].first + prefix_len, total_key_len - prefix_len, total_key_len - prefix_len);
+    return finish_create_leaf(cb, *values[0].second);
+  }
+  size_t common_prefix_len_s;
+  td::bitstring::bits_memcmp(values.front().first + prefix_len, values.back().first + prefix_len,
+                             total_key_len - prefix_len, &common_prefix_len_s);
+  int common_prefix_len = static_cast<int>(common_prefix_len_s);
+  CHECK(prefix_len + common_prefix_len < total_key_len);
+  size_t idx = 0;
+  while (!values[idx].first[prefix_len + common_prefix_len]) {
+    ++idx;
+  }
+  auto left = dict_build(values.substr(0, idx), total_key_len, prefix_len + common_prefix_len + 1);
+  auto right = dict_build(values.substr(idx), total_key_len, prefix_len + common_prefix_len + 1);
+  CellBuilder cb;
+  append_dict_label(cb, values[0].first + prefix_len, common_prefix_len, total_key_len - prefix_len);
+  return finish_create_fork(cb, std::move(left), std::move(right), total_key_len - prefix_len - common_prefix_len);
+}
+
+Ref<Cell> AugmentedDictionary::dict_multiset(Ref<Cell> dict, td::Span<MultiSetValue> values, td::BitPtr key_buffer,
+                                             int n, int total_key_len, int skip) const {
+  int prefix_len = total_key_len - n;
+  for (const auto& [key, value] : values) {
+    CHECK(td::bitstring::bits_memcmp(key, key_buffer - prefix_len, prefix_len) == 0);
+  }
+  if (dict.is_null()) {
+    return dict_build(values, total_key_len, prefix_len);
+  }
+  if (values.empty()) {
+    assert(!skip);
+    return dict;
+  }
+
+  size_t common_prefix_len_s;
+  td::bitstring::bits_memcmp(values.front().first + prefix_len, values.back().first + prefix_len,
+                             total_key_len - prefix_len, &common_prefix_len_s);
+  int common_prefix_len = static_cast<int>(common_prefix_len_s);
+  assert(prefix_len + common_prefix_len < total_key_len || values.size() == 1);
+  LabelParser label{dict, n + skip, LabelParser::chk_size};
+  int old_label_len = label.l_bits - skip;
+  int new_label_len = common_prefix_len;
+  assert(old_label_len >= 0 && new_label_len >= 0);
+  assert(!skip || label.common_prefix_len(key_buffer - skip, skip) == skip);
+  int common = label.common_prefix_len(values[0].first + prefix_len - skip, skip + new_label_len) - skip;
+  label.extract_label_to(key_buffer - skip);
+  assert(common >= 0 && common <= old_label_len && common <= new_label_len);
+
+  if (common < old_label_len && common < new_label_len) {
+    CellBuilder cb;
+    append_dict_label(cb, key_buffer + common + 1, old_label_len - common - 1, n - common - 1);
+    if (!cell_builder_add_slice_bool(cb, *label.remainder)) {
+      throw VmError{Excno::cell_ov, "cannot prune an augmented dictionary label while batching updates"};
+    }
+    label.remainder.clear();
+    dict = cb.finalize();
+    auto new_dict = dict_build(values, total_key_len, prefix_len + common + 1);
+    if (!values[0].first[prefix_len + common]) {
+      std::swap(dict, new_dict);
+    }
+    append_dict_label(cb, key_buffer, common, n);
+    return finish_create_fork(cb, std::move(dict), std::move(new_dict), n - common);
+  }
+
+  size_t split = 0;
+  while (prefix_len + common_prefix_len < total_key_len && split < values.size() &&
+         !values[split].first[prefix_len + common_prefix_len]) {
+    ++split;
+  }
+  auto left_values = values.substr(0, split);
+  auto right_values = values.substr(split);
+
+  if (common == old_label_len && common == new_label_len) {
+    CellBuilder cb;
+    append_dict_label(cb, key_buffer, common, n);
+    if (common == n) {
+      if (values[0].second.is_null()) {
+        return {};
+      }
+      return finish_create_leaf(cb, *values[0].second);
+    }
+    key_buffer += common + 1;
+    key_buffer[-1] = 0;
+    auto left =
+        dict_multiset(label.remainder->prefetch_ref(0), left_values, key_buffer, n - common - 1, total_key_len, 0);
+    key_buffer[-1] = 1;
+    auto right =
+        dict_multiset(label.remainder->prefetch_ref(1), right_values, key_buffer, n - common - 1, total_key_len, 0);
+    label.remainder.clear();
+    if (left.not_null() && right.not_null()) {
+      return finish_create_fork(cb, std::move(left), std::move(right), n - common);
+    }
+    if (left.is_null() && right.is_null()) {
+      return {};
+    }
+    bool use_right = left.is_null();
+    key_buffer[-1] = use_right;
+    if (use_right) {
+      left = std::move(right);
+    }
+    LabelParser remaining{std::move(left), n - common - 1, LabelParser::chk_size};
+    remaining.extract_label_to(key_buffer);
+    key_buffer -= common + 1;
+    cb.reset();
+    append_dict_label(cb, key_buffer, common + 1 + remaining.l_bits, n);
+    if (!cell_builder_add_slice_bool(cb, *remaining.remainder)) {
+      throw VmError{Excno::cell_ov, "cannot merge augmented dictionary labels after a batched deletion"};
+    }
+    return cb.finalize();
+  }
+
+  if (common == old_label_len) {
+    assert(common < new_label_len);
+    dict.clear();
+    auto left = label.remainder->prefetch_ref(0);
+    auto right = label.remainder->prefetch_ref(1);
+    label.remainder.clear();
+    td::bitstring::bits_memcpy(key_buffer, values[0].first + prefix_len, new_label_len);
+    bool use_right = key_buffer[common];
+    if (use_right) {
+      right = dict_multiset(std::move(right), values, key_buffer + common + 1, n - common - 1, total_key_len, 0);
+    } else {
+      left = dict_multiset(std::move(left), values, key_buffer + common + 1, n - common - 1, total_key_len, 0);
+    }
+    if (left.not_null() && right.not_null()) {
+      CellBuilder cb;
+      append_dict_label(cb, key_buffer, common, n);
+      return finish_create_fork(cb, std::move(left), std::move(right), n - common);
+    }
+    key_buffer[common] = !use_right;
+    if (!use_right) {
+      std::swap(left, right);
+    }
+    assert(left.not_null() && right.is_null());
+    LabelParser remaining{std::move(left), n - common - 1, LabelParser::chk_size};
+    remaining.extract_label_to(key_buffer + common + 1);
+    CellBuilder cb;
+    append_dict_label(cb, key_buffer, common + 1 + remaining.l_bits, n);
+    if (!cell_builder_add_slice_bool(cb, *remaining.remainder)) {
+      throw VmError{Excno::cell_ov, "cannot merge augmented dictionary labels after a batched deletion"};
+    }
+    return cb.finalize();
+  }
+
+  assert(common == new_label_len && common < old_label_len);
+  bool use_right = key_buffer[common];
+  Ref<Cell> left;
+  Ref<Cell> right;
+  if (use_right) {
+    right = dict_multiset(std::move(dict), right_values, key_buffer + common + 1, n - common - 1, total_key_len,
+                          skip + common + 1);
+    left = dict_build(left_values, total_key_len, prefix_len + new_label_len + 1);
+  } else {
+    left = dict_multiset(std::move(dict), left_values, key_buffer + common + 1, n - common - 1, total_key_len,
+                         skip + common + 1);
+    right = dict_build(right_values, total_key_len, prefix_len + new_label_len + 1);
+  }
+  if (left.not_null() && right.not_null()) {
+    CellBuilder cb;
+    append_dict_label(cb, key_buffer, common, n);
+    return finish_create_fork(cb, std::move(left), std::move(right), n - common);
+  }
+  key_buffer[common] = !use_right;
+  if (!use_right) {
+    std::swap(left, right);
+  }
+  assert(left.not_null() && right.is_null());
+  LabelParser remaining{std::move(left), n - common - 1, LabelParser::chk_size};
+  remaining.extract_label_to(key_buffer + common + 1);
+  CellBuilder cb;
+  append_dict_label(cb, key_buffer, common + 1 + remaining.l_bits, n);
+  if (!cell_builder_add_slice_bool(cb, *remaining.remainder)) {
+    throw VmError{Excno::cell_ov, "cannot merge augmented dictionary labels after a batched deletion"};
+  }
+  return cb.finalize();
 }
 
 bool AugmentedDictionary::check_for_each_extra(const foreach_extra_func_t& foreach_extra_func, bool invert_first) {

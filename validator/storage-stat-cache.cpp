@@ -16,7 +16,25 @@
 */
 #include "storage-stat-cache.hpp"
 
+#include <cstdlib>
+
 namespace ton::validator {
+
+td::uint64 StorageStatCache::min_account_cells() {
+  static const td::uint64 value = [] {
+    const char* raw = std::getenv("TON_SIM_STORAGE_STAT_CACHE_MIN_CELLS");
+    if (raw == nullptr || raw[0] == '\0') {
+      return DEFAULT_MIN_ACCOUNT_CELLS;
+    }
+    char* end = nullptr;
+    auto parsed = std::strtoull(raw, &end, 10);
+    if (*end != '\0' || parsed == 0 || parsed > DEFAULT_MIN_ACCOUNT_CELLS) {
+      return DEFAULT_MIN_ACCOUNT_CELLS;
+    }
+    return static_cast<td::uint64>(parsed);
+  }();
+  return value;
+}
 
 void StorageStatCache::get_cache(td::Promise<std::function<td::Ref<vm::Cell>(const td::Bits256&)>> promise) {
   LOG(DEBUG) << "StorageStatCache::get_cache";
@@ -26,7 +44,7 @@ void StorageStatCache::get_cache(td::Promise<std::function<td::Ref<vm::Cell>(con
 
 void StorageStatCache::update(std::vector<std::pair<td::Ref<vm::Cell>, td::uint32>> data) {
   for (auto& [cell, size] : data) {
-    if (size < MIN_ACCOUNT_CELLS) {
+    if (size < min_account_cells()) {
       continue;
     }
     td::Bits256 hash = cell->get_hash().bits();

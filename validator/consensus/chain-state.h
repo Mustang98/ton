@@ -117,10 +117,11 @@ class ChainState : public td::CntObject {
   static td::actor::Task<td::Ref<ChainState>> from_manager(td::actor::ActorId<ManagerFacade> manager, ShardIdFull shard,
                                                            std::vector<BlockIdExt> blocks, BlockIdExt min_mc_block_id);
 
-  ChainState(Tip tip, BlockIdExt min_mc_block_id);
+  ChainState(Tip tip, BlockIdExt min_mc_block_id, std::vector<td::Ref<BlockData>> recent_block_data = {});
 
   std::vector<BlockIdExt> block_ids() const;
   std::vector<td::Ref<BlockData>> block_data() const;
+  const std::vector<td::Ref<BlockData>>& recent_block_data() const;
   std::vector<td::Ref<vm::Cell>> state() const;
   BlockIdExt min_mc_block_id() const;
 
@@ -135,6 +136,7 @@ class ChainState : public td::CntObject {
   Tip tip_;
   BlockIdExt min_mc_block_id_;
   td::Ref<vm::Cell> root_;
+  std::vector<td::Ref<BlockData>> recent_block_data_;
 };
 
 using ChainStateRef = td::Ref<ChainState>;

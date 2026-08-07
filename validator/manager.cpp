@@ -3357,6 +3357,160 @@ td::actor::ActorOwn<ValidatorManagerInterface> ValidatorManagerFactory::create(
 void ValidatorManagerImpl::log_collate_query_stats(CollationStats stats) {
   if (stats.status.is_ok()) {
     ++(stats.block_id.is_masterchain() ? total_collated_blocks_master_ok_ : total_collated_blocks_shard_ok_);
+    const auto &work = stats.work_time;
+    LOG(WARNING)
+        << "JETTON_SIM_COLLATION {\"workchain\":" << stats.block_id.id.workchain << ",\"shard\":\""
+        << td::format::as_hex(stats.block_id.id.shard) << "\""
+        << ",\"seqno\":" << stats.block_id.id.seqno << ",\"root_hash\":\"" << stats.block_id.root_hash.to_hex()
+        << "\",\"transactions\":" << stats.transactions
+        << ",\"ordinary_external\":" << stats.ordinary_external_transactions
+        << ",\"ordinary_internal\":" << stats.ordinary_internal_transactions
+        << ",\"new_msgs_generated\":" << stats.new_msgs_generated
+        << ",\"new_msgs_immediate\":" << stats.new_msgs_immediate
+        << ",\"new_msgs_enqueued\":" << stats.new_msgs_enqueued << ",\"new_msgs_deferred\":" << stats.new_msgs_deferred
+        << ",\"new_msgs_external\":" << stats.new_msgs_external << ",\"peak_new_msgs\":" << stats.peak_new_msgs
+        << ",\"ext_msgs_total\":" << stats.ext_msgs_total << ",\"ext_msgs_filtered\":" << stats.ext_msgs_filtered
+        << ",\"ext_msgs_ancestor_filtered\":" << stats.ext_msgs_ancestor_filtered
+        << ",\"ext_msgs_pool_filtered\":" << stats.ext_msgs_pool_filtered
+        << ",\"ext_msgs_accepted\":" << stats.ext_msgs_accepted << ",\"ext_msgs_rejected\":" << stats.ext_msgs_rejected
+        << ",\"ext_waves\":" << stats.ext_waves << ",\"ext_wave_tasks\":" << stats.ext_wave_tasks
+        << ",\"int_waves\":" << stats.int_waves << ",\"int_wave_tasks\":" << stats.int_wave_tasks
+        << ",\"account_dict_estimator_updates\":" << stats.account_dict_estimator_updates
+        << ",\"account_dict_estimator_proofs\":" << stats.account_dict_estimator_proofs
+        << ",\"account_dict_estimator_batches\":" << stats.account_dict_estimator_batches
+        << ",\"account_dict_estimator_estimated_bytes\":" << stats.account_dict_estimator_estimated_bytes
+        << ",\"account_dict_estimator_proof_cells\":" << stats.account_dict_estimator_proof_cells
+        << ",\"account_dict_estimator_proof_bits\":" << stats.account_dict_estimator_proof_bits
+        << ",\"account_dict_estimator_proof_internal_refs\":" << stats.account_dict_estimator_proof_internal_refs
+        << ",\"account_dict_estimator_proof_external_refs\":" << stats.account_dict_estimator_proof_external_refs
+        << ",\"account_dict_estimator_async_batches\":" << stats.account_dict_estimator_async_batches
+        << ",\"account_dict_estimator_async_queue_max\":" << stats.account_dict_estimator_async_queue_max
+        << ",\"account_dict_estimator_reused\":" << stats.account_dict_estimator_reused
+        << ",\"account_dict_estimator_corrections\":" << stats.account_dict_estimator_corrections
+        << ",\"final_account_dict_async_updates\":" << stats.final_account_dict_async_updates
+        << ",\"final_account_dict_async_batches\":" << stats.final_account_dict_async_batches
+        << ",\"final_account_dict_async_queue_max\":" << stats.final_account_dict_async_queue_max
+        << ",\"account_lookup_batches\":" << stats.account_lookup_batches
+        << ",\"account_lookup_prefetched\":" << stats.account_lookup_prefetched
+        << ",\"storage_cache_small_count\":" << stats.storage_stat_cache.small_cnt.load()
+        << ",\"storage_cache_small_cells\":" << stats.storage_stat_cache.small_cells.load()
+        << ",\"storage_cache_hit_count\":" << stats.storage_stat_cache.hit_cnt.load()
+        << ",\"storage_cache_hit_cells\":" << stats.storage_stat_cache.hit_cells.load()
+        << ",\"storage_cache_miss_count\":" << stats.storage_stat_cache.miss_cnt.load()
+        << ",\"storage_cache_miss_cells\":" << stats.storage_stat_cache.miss_cells.load()
+        << ",\"actual_bytes\":" << stats.actual_bytes
+        << ",\"actual_collated_data_bytes\":" << stats.actual_collated_data_bytes
+        << ",\"estimated_bytes\":" << stats.estimated_bytes
+        << ",\"estimated_collated_data_bytes\":" << stats.estimated_collated_data_bytes << ",\"gas\":" << stats.gas
+        << ",\"lt_delta\":" << stats.lt_delta << ",\"limit_category_bytes\":" << stats.cat_bytes
+        << ",\"limit_category_gas\":" << stats.cat_gas << ",\"limit_category_lt_delta\":" << stats.cat_lt_delta
+        << ",\"limit_category_collated_data_bytes\":" << stats.cat_collated_data_bytes
+        << ",\"old_out_queue\":" << stats.old_out_msg_queue_size
+        << ",\"new_out_queue\":" << stats.new_out_msg_queue_size << ",\"msg_queue_cleaned\":" << stats.msg_queue_cleaned
+        << ",\"peak_limit_class\":" << stats.peak_block_limit_class << ",\"overload_reason\":" << stats.overload_reason
+        << ",\"want_split\":" << (stats.want_split ? "true" : "false")
+        << ",\"want_merge\":" << (stats.want_merge ? "true" : "false")
+        << ",\"overload_history\":" << stats.overload_history << ",\"underload_history\":" << stats.underload_history
+        << ",\"check_load_do_collate_s\":" << stats.check_load_do_collate_time
+        << ",\"check_load_total_s\":" << stats.check_load_total_time
+        << ",\"load_fraction_queue_cleanup\":" << stats.load_fraction_queue_cleanup
+        << ",\"load_fraction_dispatch\":" << stats.load_fraction_dispatch
+        << ",\"load_fraction_internals\":" << stats.load_fraction_internals
+        << ",\"load_fraction_externals\":" << stats.load_fraction_externals
+        << ",\"load_fraction_new_msgs\":" << stats.load_fraction_new_msgs
+        << ",\"wait_externals_s\":" << stats.wait_externals_time << ",\"work_real_s\":{\"total\":" << work.total.real
+        << ",\"preinit\":" << work.preinit.real << ",\"queue_cleanup\":" << work.queue_cleanup.real
+        << ",\"dispatch\":" << work.dispatch.real << ",\"ticktock\":" << work.ticktock.real
+        << ",\"inbound_internal\":" << work.inbound_internal.real
+        << ",\"inbound_external\":" << work.inbound_external.real << ",\"new_messages\":" << work.new_messages.real
+        << ",\"new_messages_route\":" << work.new_messages_route.real
+        << ",\"new_messages_prepare\":" << work.new_messages_prepare.real
+        << ",\"new_messages_execute\":" << work.new_messages_execute.real
+        << ",\"new_messages_commit\":" << work.new_messages_commit.real
+        << ",\"prelim_storage\":" << work.prelim_storage_stat.real << ",\"trx_tvm\":" << work.trx_tvm.real
+        << ",\"trx_storage\":" << work.trx_storage_stat.real << ",\"trx_other\":" << work.trx_other.real
+        << ",\"trx_external\":" << work.trx_external.real << ",\"trx_internal\":" << work.trx_internal.real
+        << ",\"trx_unpack\":" << work.trx_unpack.real << ",\"trx_storage_credit\":" << work.trx_storage_credit.real
+        << ",\"trx_compute\":" << work.trx_compute.real << ",\"trx_action_bounce\":" << work.trx_action_bounce.real
+        << ",\"trx_serialize\":" << work.trx_serialize.real << ",\"msg_parse\":" << work.msg_parse.real
+        << ",\"account_lookup\":" << work.account_lookup.real << ",\"trx_limits\":" << work.trx_limits.real
+        << ",\"account_dict_lookup\":" << work.account_dict_lookup.real
+        << ",\"account_unpack\":" << work.account_unpack.real
+        << ",\"account_lookup_batch\":" << work.account_lookup_batch.real << ",\"trx_commit\":" << work.trx_commit.real
+        << ",\"trx_postprocess\":" << work.trx_postprocess.real
+        << ",\"message_descriptor\":" << work.message_descriptor.real
+        << ",\"account_dict_estimator_update\":" << work.account_dict_estimator_update.real
+        << ",\"account_dict_estimator_proof\":" << work.account_dict_estimator_proof.real
+        << ",\"account_dict_estimator_wait\":" << work.account_dict_estimator_wait.real
+        << ",\"account_block_build\":" << work.account_block_build.real
+        << ",\"final_account_dict_update\":" << work.final_account_dict_update.real
+        << ",\"final_account_dict_async_work\":" << work.final_account_dict_async_work.real
+        << ",\"final_account_dict_async_wait\":" << work.final_account_dict_async_wait.real
+        << ",\"final_account_dict_rebind\":" << work.final_account_dict_rebind.real
+        << ",\"account_storage_dict\":" << work.account_storage_dict.real
+        << ",\"final_storage\":" << work.final_storage_stat.real
+        << ",\"enqueue_new_messages\":" << work.enqueue_new_messages.real
+        << ",\"combine_account_transactions\":" << work.combine_account_transactions.real
+        << ",\"create_shard_state\":" << work.create_shard_state.real << ",\"create_block\":" << work.create_block.real
+        << ",\"state_build_root\":" << work.state_build_root.real
+        << ",\"state_merkle_update\":" << work.state_merkle_update.real
+        << ",\"state_limit_proof\":" << work.state_limit_proof.real
+        << ",\"create_collated_data\":" << work.create_collated_data.real
+        << ",\"collated_prepare_proofs\":" << work.collated_prepare_proofs.real
+        << ",\"collated_state_proof\":" << work.collated_state_proof.real
+        << ",\"collated_neighbor_proofs\":" << work.collated_neighbor_proofs.real
+        << ",\"collated_storage_proofs\":" << work.collated_storage_proofs.real
+        << ",\"create_block_candidate\":" << work.create_block_candidate.real
+        << ",\"candidate_block_boc\":" << work.candidate_block_boc.real
+        << ",\"candidate_collated_boc\":" << work.candidate_collated_boc.real
+        << ",\"candidate_hashes\":" << work.candidate_hashes.real
+        << ",\"candidate_construct\":" << work.candidate_construct.real
+        << "},\"work_cpu_s\":{\"total\":" << work.total.cpu << ",\"preinit\":" << work.preinit.cpu
+        << ",\"queue_cleanup\":" << work.queue_cleanup.cpu << ",\"dispatch\":" << work.dispatch.cpu
+        << ",\"ticktock\":" << work.ticktock.cpu << ",\"inbound_internal\":" << work.inbound_internal.cpu
+        << ",\"inbound_external\":" << work.inbound_external.cpu << ",\"new_messages\":" << work.new_messages.cpu
+        << ",\"new_messages_route\":" << work.new_messages_route.cpu
+        << ",\"new_messages_prepare\":" << work.new_messages_prepare.cpu
+        << ",\"new_messages_execute\":" << work.new_messages_execute.cpu
+        << ",\"new_messages_commit\":" << work.new_messages_commit.cpu
+        << ",\"prelim_storage\":" << work.prelim_storage_stat.cpu << ",\"trx_tvm\":" << work.trx_tvm.cpu
+        << ",\"trx_storage\":" << work.trx_storage_stat.cpu << ",\"trx_other\":" << work.trx_other.cpu
+        << ",\"trx_external\":" << work.trx_external.cpu << ",\"trx_internal\":" << work.trx_internal.cpu
+        << ",\"trx_unpack\":" << work.trx_unpack.cpu << ",\"trx_storage_credit\":" << work.trx_storage_credit.cpu
+        << ",\"trx_compute\":" << work.trx_compute.cpu << ",\"trx_action_bounce\":" << work.trx_action_bounce.cpu
+        << ",\"trx_serialize\":" << work.trx_serialize.cpu << ",\"msg_parse\":" << work.msg_parse.cpu
+        << ",\"account_lookup\":" << work.account_lookup.cpu << ",\"trx_limits\":" << work.trx_limits.cpu
+        << ",\"account_dict_lookup\":" << work.account_dict_lookup.cpu
+        << ",\"account_unpack\":" << work.account_unpack.cpu
+        << ",\"account_lookup_batch\":" << work.account_lookup_batch.cpu << ",\"trx_commit\":" << work.trx_commit.cpu
+        << ",\"trx_postprocess\":" << work.trx_postprocess.cpu
+        << ",\"message_descriptor\":" << work.message_descriptor.cpu
+        << ",\"account_dict_estimator_update\":" << work.account_dict_estimator_update.cpu
+        << ",\"account_dict_estimator_proof\":" << work.account_dict_estimator_proof.cpu
+        << ",\"account_dict_estimator_wait\":" << work.account_dict_estimator_wait.cpu
+        << ",\"account_block_build\":" << work.account_block_build.cpu
+        << ",\"final_account_dict_update\":" << work.final_account_dict_update.cpu
+        << ",\"final_account_dict_async_work\":" << work.final_account_dict_async_work.cpu
+        << ",\"final_account_dict_async_wait\":" << work.final_account_dict_async_wait.cpu
+        << ",\"final_account_dict_rebind\":" << work.final_account_dict_rebind.cpu
+        << ",\"account_storage_dict\":" << work.account_storage_dict.cpu
+        << ",\"final_storage\":" << work.final_storage_stat.cpu
+        << ",\"enqueue_new_messages\":" << work.enqueue_new_messages.cpu
+        << ",\"combine_account_transactions\":" << work.combine_account_transactions.cpu
+        << ",\"create_shard_state\":" << work.create_shard_state.cpu << ",\"create_block\":" << work.create_block.cpu
+        << ",\"state_build_root\":" << work.state_build_root.cpu
+        << ",\"state_merkle_update\":" << work.state_merkle_update.cpu
+        << ",\"state_limit_proof\":" << work.state_limit_proof.cpu
+        << ",\"create_collated_data\":" << work.create_collated_data.cpu
+        << ",\"collated_prepare_proofs\":" << work.collated_prepare_proofs.cpu
+        << ",\"collated_state_proof\":" << work.collated_state_proof.cpu
+        << ",\"collated_neighbor_proofs\":" << work.collated_neighbor_proofs.cpu
+        << ",\"collated_storage_proofs\":" << work.collated_storage_proofs.cpu
+        << ",\"create_block_candidate\":" << work.create_block_candidate.cpu
+        << ",\"candidate_block_boc\":" << work.candidate_block_boc.cpu
+        << ",\"candidate_collated_boc\":" << work.candidate_collated_boc.cpu
+        << ",\"candidate_hashes\":" << work.candidate_hashes.cpu
+        << ",\"candidate_construct\":" << work.candidate_construct.cpu << "}}";
     write_session_stats(stats);
   } else {
     ++(stats.block_id.is_masterchain() ? total_collated_blocks_master_error_ : total_collated_blocks_shard_error_);

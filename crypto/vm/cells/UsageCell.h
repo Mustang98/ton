@@ -67,6 +67,18 @@ class UsageCell : public Cell {
     return tree_node_;
   }
 
+  Ref<Cell> underlying_cell() const {
+    return cell_;
+  }
+
+  bool rebind_tree_node(const CellUsageTree* source_tree, CellUsageTree::NodePtr target_node) const {
+    if (target_node.empty() || tree_node_.node_id_for(source_tree) == 0) {
+      return false;
+    }
+    tree_node_ = std::move(target_node);
+    return true;
+  }
+
   bool is_loaded() const override {
     return cell_->is_loaded();
   }
@@ -86,6 +98,6 @@ class UsageCell : public Cell {
 
  private:
   Ref<Cell> cell_;
-  CellUsageTree::NodePtr tree_node_;
+  mutable CellUsageTree::NodePtr tree_node_;
 };
 }  // namespace vm

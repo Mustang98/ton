@@ -32,6 +32,9 @@ class MerkleProof {
   // works with proofs wrapped in MerkleProof special cell
   // cells must have zero level
   static td::Result<Ref<Cell>> generate(Ref<Cell> cell, IsPrunnedFunction is_prunned);
+  static td::Result<Ref<Cell>> generate_parallel(Ref<Cell> cell, IsPrunnedFunction is_prunned);
+  static td::Result<Ref<Cell>> generate_parallel(Ref<Cell> cell, IsPrunnedFunction is_prunned,
+                                                 unsigned max_tasks);
   static td::Result<Ref<Cell>> generate(Ref<Cell> cell, CellUsageTree *usage_tree);
 
   // cell must have zero level and must be a MerkleProof
@@ -43,7 +46,15 @@ class MerkleProof {
   // works with unwrapped proofs
   // works fine with cell of non-zero level, but this is not supported (yet?) in MerkeProof special cell
   static td::Result<Ref<Cell>> generate_raw(Ref<Cell> cell, IsPrunnedFunction is_prunned);
+  static td::Result<Ref<Cell>> generate_raw_parallel(Ref<Cell> cell, IsPrunnedFunction is_prunned);
+  static td::Result<Ref<Cell>> generate_raw_parallel(Ref<Cell> cell, IsPrunnedFunction is_prunned,
+                                                     unsigned max_tasks);
   static td::Result<Ref<Cell>> generate_raw(Ref<Cell> cell, CellUsageTree *usage_tree);
+  static td::Result<Ref<Cell>> generate_raw_parallel(Ref<Cell> cell, CellUsageTree *usage_tree,
+                                                     unsigned max_tasks);
+  static td::Result<std::pair<Ref<Cell>, Ref<Cell>>> generate_raw_pair(Ref<Cell> cell,
+                                                                       CellUsageTree *first_usage_tree,
+                                                                       IsPrunnedFunction second_is_prunned);
   static Ref<Cell> virtualize_raw(Ref<Cell> cell, td::uint32 effective_level);
   static td::Result<Ref<Cell>> combine_raw(Ref<Cell> a, Ref<Cell> b);
   static td::Result<Ref<Cell>> combine_fast_raw(Ref<Cell> a, Ref<Cell> b);

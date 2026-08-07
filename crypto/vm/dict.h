@@ -18,6 +18,7 @@
 */
 #pragma once
 #include <functional>
+#include <tuple>
 
 #include "common/bitstring.h"
 #include "vm/cells.h"
@@ -106,6 +107,20 @@ struct CombineErrorValue {
 struct DictNonEmpty {};
 struct DictAdvance {};
 
+struct DictionaryReplacementStat {
+  td::uint64 cells{0};
+  td::uint64 bits{0};
+  td::uint64 internal_refs{0};
+  td::uint64 external_refs{0};
+
+  auto key() const {
+    return std::make_tuple(cells, bits, internal_refs, external_refs);
+  }
+  bool operator==(const DictionaryReplacementStat& other) const {
+    return key() == other.key();
+  }
+};
+
 class DictionaryBase {
  protected:
   mutable Ref<CellSlice> root;
@@ -186,6 +201,7 @@ class DictionaryFixed : public DictionaryBase {
   typedef std::function<bool(CellBuilder&, Ref<CellSlice>, Ref<CellSlice>, td::ConstBitPtr, int)> combine_func_t;
   typedef std::function<bool(Ref<CellSlice>, td::ConstBitPtr, int)> foreach_func_t;
   typedef std::function<bool(td::ConstBitPtr, int, Ref<CellSlice>, Ref<CellSlice>)> scan_diff_func_t;
+  typedef std::function<bool()> scan_diff_task_t;
 
   DictionaryFixed(int _n, bool validate = true) : DictionaryBase(_n, validate) {
   }
@@ -214,6 +230,9 @@ class DictionaryFixed : public DictionaryBase {
   bool int_key_exists(long long key);
   bool uint_key_exists(unsigned long long key);
   Ref<CellSlice> lookup(td::ConstBitPtr key, int key_len);
+  std::vector<Ref<CellSlice>> lookup_multi(td::Span<td::ConstBitPtr> sorted_keys, int key_len);
+  DictionaryReplacementStat estimate_replacement_proof_increment(
+      td::Span<td::ConstBitPtr> sorted_current_keys, td::Span<td::ConstBitPtr> sorted_previous_keys, int key_len);
   Ref<CellSlice> lookup_delete(td::ConstBitPtr key, int key_len);
   Ref<CellSlice> get_minmax_key(td::BitPtr key_buffer, int key_len, bool fetch_max = false, bool invert_first = false);
   Ref<CellSlice> extract_minmax_key(td::BitPtr key_buffer, int key_len, bool fetch_max = false,
@@ -230,6 +249,8 @@ class DictionaryFixed : public DictionaryBase {
   bool combine_with(DictionaryFixed& dict2, const simple_combine_func_t& simple_combine_func, int mode = 0);
   bool combine_with(DictionaryFixed& dict2);
   bool scan_diff(DictionaryFixed& dict2, const scan_diff_func_t& diff_func, int check_augm = 0);
+  std::vector<scan_diff_task_t> prepare_scan_diff_tasks(DictionaryFixed& dict2, const scan_diff_func_t& diff_func,
+                                                        int check_augm, unsigned max_tasks);
   bool validate_check(const foreach_func_t& foreach_func, bool invert_first = false);
   bool validate_all();
   DictIterator null_iterator();
@@ -283,6 +304,11 @@ class DictionaryFixed : public DictionaryBase {
   bool check_leaf(Ref<CellSlice> cs_ref, td::ConstBitPtr key, int key_len) const {
     return check_leaf(cs_ref.write(), key, key_len);
   }
+  void dict_lookup_multi(Ref<Cell> cell, td::Span<td::ConstBitPtr> keys, td::MutableSpan<Ref<CellSlice>> values,
+                         int key_offset, int remaining_bits);
+  void dict_estimate_replacement_proof_increment(Ref<Cell> cell, td::Span<td::ConstBitPtr> current_keys,
+                                                 td::Span<td::ConstBitPtr> previous_keys, int key_offset,
+                                                 int remaining_bits, DictionaryReplacementStat& stat);
   bool check_fork_raw(Ref<CellSlice> cs_ref, int n) const;
   friend class DictIterator;
 
@@ -562,6 +588,14 @@ class AugmentedDictionary final : public DictionaryFixed {
   const AugmentationData& aug;
 
  public:
+  using MultiSetValue = std::pair<td::ConstBitPtr, Ref<CellSlice>>;
+
+ private:
+  Ref<Cell> dict_build(td::Span<MultiSetValue> values, int total_key_len, int prefix_len) const;
+  Ref<Cell> dict_multiset(Ref<Cell> dict, td::Span<MultiSetValue> values, td::BitPtr key_buffer, int n,
+                          int total_key_len, int skip) const;
+
+ public:
   typedef std::function<bool(Ref<CellSlice>, Ref<CellSlice>, td::ConstBitPtr, int)> foreach_extra_func_t;
   // return value of traverse_func: < 0 = error, 0 = skip, 1 = visit only left, 2 = visit only right, 5 = visit right, then left, 6 = visit left, then right
   // for leaf nodes, all >0 values mean accept and return node as the final result, 0 = skip (continue scanning)
@@ -592,6 +626,7 @@ class AugmentedDictionary final : public DictionaryFixed {
   bool set(td::ConstBitPtr key, int key_len, Ref<CellSlice> value, SetMode mode = SetMode::Set);
   bool set_ref(td::ConstBitPtr key, int key_len, Ref<Cell> val_ref, SetMode mode = SetMode::Set);
   bool set_builder(td::ConstBitPtr key, int key_len, const CellBuilder& value, SetMode mode = SetMode::Set);
+  bool multiset(td::MutableSpan<MultiSetValue> new_values);
   bool check_for_each_extra(const foreach_extra_func_t& foreach_extra_func, bool invert_first = false);
   std::pair<Ref<CellSlice>, Ref<CellSlice>> traverse_extra(td::BitPtr key_buffer, int key_len,
                                                            const traverse_func_t& traverse_node);

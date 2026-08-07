@@ -285,6 +285,7 @@ struct BlockLimitStatus {
   ton::LogicalTime cur_lt;
   td::uint64 gas_used{};
   vm::NewCellStorageStat st_stat;
+  vm::NewCellStorageStat::Stat transient_proof_stat;
   unsigned accounts{}, transactions{}, extra_out_msgs{};
   td::uint64 collated_data_size_estimate = 0;
   unsigned public_library_diff{};
@@ -294,6 +295,7 @@ struct BlockLimitStatus {
   void reset() {
     cur_lt = limits.start_lt;
     st_stat.set_zero();
+    transient_proof_stat.set_zero();
     transactions = accounts = 0;
     gas_used = 0;
     extra_out_msgs = 0;
@@ -312,6 +314,15 @@ struct BlockLimitStatus {
   }
   bool add_proof(Ref<vm::Cell> cell) {
     st_stat.add_proof(std::move(cell), limits.usage_tree);
+    return true;
+  }
+  bool add_proof(Ref<vm::Cell> cell, const vm::CellUsageTree* usage_tree) {
+    st_stat.add_proof(std::move(cell), usage_tree);
+    return true;
+  }
+  bool add_proof(Ref<vm::Cell> cell, const vm::CellUsageTree* usage_tree,
+                 const vm::CellUsageTree* auxiliary_usage_tree) {
+    st_stat.add_proof(std::move(cell), usage_tree, auxiliary_usage_tree);
     return true;
   }
   bool update_lt(ton::LogicalTime lt) {

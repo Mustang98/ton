@@ -11,10 +11,17 @@
 #include "stats.h"
 #include "window-producer.h"
 
+#include <cstdlib>
+
 namespace ton::validator::consensus {
 
 td::actor::Task<> produce_window(BusHandle bus_handle, ProduceWindowContext ctx) {
   auto& bus = *bus_handle;
+
+  static const bool force_empty_first_shard_slot = [] {
+    const char* value = std::getenv("TON_SIM_FORCE_EMPTY_FIRST_SLOT");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
 
   ChainStateRef state = ctx.state;
   ParentId parent = ctx.base;
@@ -34,6 +41,7 @@ td::actor::Task<> produce_window(BusHandle bus_handle, ProduceWindowContext ctx)
     bool is_first_block = !parent.has_value();
     if (!block_generation_active && (!ctx.should_generate_empty_block(state) || is_first_block)) {
       block_generation_active = true;
+      bool force_empty = force_empty_first_shard_slot && !bus.shard.is_masterchain() && slot == ctx.start_slot;
       CollateParams params{
           .shard = bus.shard,
           .min_masterchain_block_id = state->min_mc_block_id(),
@@ -43,12 +51,16 @@ td::actor::Task<> produce_window(BusHandle bus_handle, ProduceWindowContext ctx)
           .hard_timeout = slot_start + hard_timeout,
           .prev_block_data = state->block_data(),
           .prev_block_state_roots = state->state(),
+          .recent_block_data = state->recent_block_data(),
       };
       if (bus.shard.is_masterchain()) {
         params.soft_timeout = slot_start + ctx.target_rate;
       } else {
-        params.soft_timeout = slot_start;
-        params.wait_externals_until = slot_start;
+        params.soft_timeout = force_empty ? td::Timestamp::now() : slot_start;
+        params.wait_externals_until = params.soft_timeout;
+        if (force_empty) {
+          LOG(WARNING) << "Forcing an empty first shard slot for benchmark window " << ctx.start_slot;
+        }
       }
       if (ctx.collator_node_id) {
         params.collator_node_id = *ctx.collator_node_id;

@@ -14,6 +14,9 @@
     You should have received a copy of the GNU Lesser General Public License
     along with TON Blockchain Library.  If not, see <http://www.gnu.org/licenses/>.
 */
+#include <algorithm>
+#include <cstdlib>
+
 #include "td/utils/Random.h"
 #include "td/utils/Timer.h"
 #include "ton/ton-io.hpp"
@@ -23,6 +26,58 @@
 #include "fabric.h"
 
 namespace ton::validator {
+namespace {
+
+bool batch_collator_queue_delivery_enabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("TON_SIM_BATCH_EXT_POOL_DELIVERY");
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return enabled;
+}
+
+size_t collator_queue_batch_size() {
+  static const size_t size = [] {
+    const char* value = std::getenv("TON_SIM_EXT_POOL_BATCH_SIZE");
+    int parsed = value ? std::atoi(value) : 0;
+    return static_cast<size_t>(parsed > 0 && parsed <= 256 ? parsed : 32);
+  }();
+  return size;
+}
+
+double collator_queue_batch_delay() {
+  static const double delay = [] {
+    const char* value = std::getenv("TON_SIM_EXT_POOL_BATCH_DELAY_MS");
+    double parsed = value ? std::atof(value) : 0.0;
+    return (parsed > 0.0 && parsed <= 500.0 ? parsed : 80.0) / 1000.0;
+  }();
+  return delay;
+}
+
+void flush_collator_queue_batch(ExtMsgCallback& callback) {
+  if (callback.pending_batch.empty()) {
+    callback.batch_flush_at = {};
+    return;
+  }
+  ExtMsgQueueBatch batch;
+  batch.swap(callback.pending_batch);
+  callback.batch_flush_at = {};
+  callback.queue.try_push(std::move(batch)).detach();
+}
+
+bool excludes_message(const ExtMsgCallback& callback, const ExtMessage::Hash& hash_norm) {
+  const auto& hashes = callback.excluded_normalized_hashes;
+  return hashes && std::binary_search(hashes->begin(), hashes->end(), hash_norm);
+}
+
+void count_excluded(const ExtMsgCallback& callback, size_t count = 1) {
+  if (callback.excluded_count) {
+    callback.excluded_count->fetch_add(static_cast<td::uint32>(count), std::memory_order_relaxed);
+  }
+}
+
+}  // namespace
+
 void ExtMessagePool::init_checkers() {
   checker_inflight_.assign(NUM_CHECKERS, 0);
   for (size_t i = 0; i < NUM_CHECKERS; ++i) {
@@ -184,6 +239,37 @@ void ExtMessagePool::install_collator_queue(ShardIdFull shard, std::unique_ptr<E
     }
   }
 
+  // Applied messages from exact ancestors of this candidate are ineligible on this branch. Remove
+  // them only from this collator's snapshot; finalized-block cleanup remains responsible for
+  // deleting them from the global mempool, which preserves fork safety.
+  size_t excluded_existing = 0;
+  if (callback->excluded_normalized_hashes) {
+    for (const auto& hash_norm : *callback->excluded_normalized_hashes) {
+      auto ids_it = ext_messages_hashes_norm_.find(hash_norm);
+      if (ids_it == ext_messages_hashes_norm_.end()) {
+        continue;
+      }
+      for (const auto& normalized_id : ids_it->second) {
+        for (auto& [priority, treap] : snapshot) {
+          if (priority != normalized_id.priority) {
+            continue;
+          }
+          auto message = treap.find(normalized_id.id);
+          if (!message) {
+            break;
+          }
+          auto mempool_message = message.value();
+          if (!mempool_message->expired() && mempool_message->is_active()) {
+            ++excluded_existing;
+          }
+          treap = treap.erase(normalized_id.id);
+          break;
+        }
+      }
+    }
+  }
+  count_excluded(*callback, excluded_existing);
+
   // Spawn a coroutine that drains the shard slices randomly into the queue
   auto push_existing = [](ExtMsgQueue queue, td::CancellationToken token, ShardIdFull shard, Snapshot snapshot,
                           bool sync_only) -> td::actor::Task<> {
@@ -194,6 +280,21 @@ void ExtMessagePool::install_collator_queue(ShardIdFull shard, std::unique_ptr<E
     };
     td::Timer t;
     size_t pushed = 0;
+    ExtMsgQueueBatch pending_batch;
+    pending_batch.reserve(64);
+    auto flush_batch = [&]() -> td::actor::Task<bool> {
+      if (pending_batch.empty()) {
+        co_return true;
+      }
+      size_t count = pending_batch.size();
+      if (!co_await queue.push(std::move(pending_batch))) {
+        co_return false;
+      }
+      pushed += count;
+      pending_batch.clear();
+      pending_batch.reserve(64);
+      co_return true;
+    };
     for (auto &[priority, treap] : snapshot) {
       while (!treap.empty()) {
         if (token.check().is_error()) {
@@ -205,12 +306,22 @@ void ExtMessagePool::install_collator_queue(ShardIdFull shard, std::unique_ptr<E
         if (msg->expired() || !msg->is_active()) {
           continue;
         }
-        bool ok = co_await queue.push(std::make_pair(msg->message, priority));
-        if (!ok) {
-          co_return {};
+        if (batch_collator_queue_delivery_enabled()) {
+          pending_batch.emplace_back(msg->message, priority);
+          if (pending_batch.size() == 64 && !co_await flush_batch()) {
+            co_return {};
+          }
+        } else {
+          bool ok = co_await queue.push(ExtMsgQueueBatch{{msg->message, priority}});
+          if (!ok) {
+            co_return {};
+          }
+          ++pushed;
         }
-        ++pushed;
       }
+    }
+    if (!co_await flush_batch()) {
+      co_return {};
     }
     LOG(WARNING) << "install_collator_queue: pushed " << pushed << " existing messages to shard " << shard << " in "
                  << t.elapsed() << "s";
@@ -333,6 +444,13 @@ void ExtMessagePool::alarm() {
     if (callback->timeout && callback->timeout.is_in_past()) {
       return true;
     }
+    if (batch_collator_queue_delivery_enabled() && callback->batch_flush_at) {
+      if (callback->batch_flush_at.is_in_past()) {
+        flush_collator_queue_batch(*callback);
+      } else {
+        alarm_timestamp().relax(callback->batch_flush_at);
+      }
+    }
     alarm_timestamp().relax(callback->timeout);
     return false;
   });
@@ -377,7 +495,19 @@ void ExtMessagePool::add_message_to_mempool(td::Ref<ExtMessage> message, int pri
       return true;
     }
     if (shard_contains(callback->shard, message->shard())) {
-      callback->queue.try_push(std::make_pair(message, priority)).detach();
+      if (excludes_message(*callback, message->hash_norm())) {
+        count_excluded(*callback);
+      } else if (batch_collator_queue_delivery_enabled()) {
+        callback->pending_batch.emplace_back(message, priority);
+        if (callback->pending_batch.size() >= collator_queue_batch_size()) {
+          flush_collator_queue_batch(*callback);
+        } else if (!callback->batch_flush_at) {
+          callback->batch_flush_at = td::Timestamp::in(collator_queue_batch_delay());
+          alarm_timestamp().relax(callback->batch_flush_at);
+        }
+      } else {
+        callback->queue.try_push(ExtMsgQueueBatch{{message, priority}}).detach();
+      }
     }
     return false;
   });

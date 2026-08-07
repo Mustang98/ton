@@ -98,18 +98,51 @@ struct CollationStats {
   // 0 = none/normal, 1 = load (a block-limit axis hit soft), 2 = out_msg_queue force-split,
   // 3 = long_collation, 4 = dispatch_queue.
   int overload_reason = 0;
-  bool want_split = false;         // the collator's final want_split decision for this block
+  bool want_split = false;  // the collator's final want_split decision for this block
+  bool want_merge = false;  // the collator's final want_merge decision for this block
+  td::uint64 overload_history = 0;
+  td::uint64 underload_history = 0;
   int peak_block_limit_class = 0;  // running-max block_limit_class_ (cat_* only approximates this)
   double total_time = 0.0;
   std::string time_stats;
 
   td::uint32 transactions = 0;
+  td::uint32 ordinary_external_transactions = 0;
+  td::uint32 ordinary_internal_transactions = 0;
+  td::uint32 new_msgs_generated = 0;
+  td::uint32 new_msgs_immediate = 0;
+  td::uint32 new_msgs_enqueued = 0;
+  td::uint32 new_msgs_deferred = 0;
+  td::uint32 new_msgs_external = 0;
+  td::uint32 peak_new_msgs = 0;
   std::vector<BlockIdExt> shard_configuration;
   td::uint32 ext_msgs_total = 0;
   td::uint32 ext_msgs_filtered = 0;
+  td::uint32 ext_msgs_ancestor_filtered = 0;
+  td::uint32 ext_msgs_pool_filtered = 0;
   td::uint32 ext_msgs_accepted = 0;
   td::uint32 ext_msgs_rejected = 0;
-
+  td::uint32 ext_waves = 0;
+  td::uint32 ext_wave_tasks = 0;
+  td::uint32 int_waves = 0;
+  td::uint32 int_wave_tasks = 0;
+  td::uint32 account_dict_estimator_updates = 0;
+  td::uint32 account_dict_estimator_proofs = 0;
+  td::uint32 account_dict_estimator_batches = 0;
+  td::uint64 account_dict_estimator_estimated_bytes = 0;
+  td::uint64 account_dict_estimator_proof_cells = 0;
+  td::uint64 account_dict_estimator_proof_bits = 0;
+  td::uint64 account_dict_estimator_proof_internal_refs = 0;
+  td::uint64 account_dict_estimator_proof_external_refs = 0;
+  td::uint32 account_dict_estimator_async_batches = 0;
+  td::uint32 account_dict_estimator_async_queue_max = 0;
+  td::uint32 account_dict_estimator_reused = 0;
+  td::uint32 account_dict_estimator_corrections = 0;
+  td::uint32 final_account_dict_async_updates = 0;
+  td::uint32 final_account_dict_async_batches = 0;
+  td::uint32 final_account_dict_async_queue_max = 0;
+  td::uint32 account_lookup_batches = 0;
+  td::uint32 account_lookup_prefetched = 0;
   td::uint64 old_out_msg_queue_size = 0;
   td::uint64 new_out_msg_queue_size = 0;
   td::uint32 msg_queue_cleaned = 0;
@@ -140,31 +173,114 @@ struct CollationStats {
     td::RealCpuTimer::Time total;
     td::RealCpuTimer::Time preinit;
     td::RealCpuTimer::Time queue_cleanup;
+    td::RealCpuTimer::Time dispatch;
+    td::RealCpuTimer::Time ticktock;
+    td::RealCpuTimer::Time inbound_internal;
+    td::RealCpuTimer::Time inbound_external;
+    td::RealCpuTimer::Time new_messages;
+    td::RealCpuTimer::Time new_messages_route;
+    td::RealCpuTimer::Time new_messages_prepare;
+    td::RealCpuTimer::Time new_messages_execute;
+    td::RealCpuTimer::Time new_messages_commit;
     td::RealCpuTimer::Time prelim_storage_stat;
     td::RealCpuTimer::Time trx_tvm;
     td::RealCpuTimer::Time trx_storage_stat;
     td::RealCpuTimer::Time trx_other;
+    td::RealCpuTimer::Time trx_unpack;
+    td::RealCpuTimer::Time trx_storage_credit;
+    td::RealCpuTimer::Time trx_compute;
+    td::RealCpuTimer::Time trx_action_bounce;
+    td::RealCpuTimer::Time trx_serialize;
+    td::RealCpuTimer::Time trx_external;
+    td::RealCpuTimer::Time trx_internal;
+    td::RealCpuTimer::Time msg_parse;
+    td::RealCpuTimer::Time account_lookup;
+    td::RealCpuTimer::Time account_dict_lookup;
+    td::RealCpuTimer::Time account_unpack;
+    td::RealCpuTimer::Time account_lookup_batch;
+    td::RealCpuTimer::Time trx_limits;
+    td::RealCpuTimer::Time trx_commit;
+    td::RealCpuTimer::Time trx_postprocess;
+    td::RealCpuTimer::Time message_descriptor;
+    td::RealCpuTimer::Time account_dict_estimator_update;
+    td::RealCpuTimer::Time account_dict_estimator_proof;
+    td::RealCpuTimer::Time account_dict_estimator_wait;
+    td::RealCpuTimer::Time account_block_build;
+    td::RealCpuTimer::Time final_account_dict_update;
+    td::RealCpuTimer::Time final_account_dict_async_work;
+    td::RealCpuTimer::Time final_account_dict_async_wait;
+    td::RealCpuTimer::Time final_account_dict_rebind;
+    td::RealCpuTimer::Time account_storage_dict;
     td::RealCpuTimer::Time final_storage_stat;
     td::RealCpuTimer::Time enqueue_new_messages;
     td::RealCpuTimer::Time combine_account_transactions;
     td::RealCpuTimer::Time create_shard_state;
+    td::RealCpuTimer::Time state_build_root;
+    td::RealCpuTimer::Time state_merkle_update;
+    td::RealCpuTimer::Time state_limit_proof;
     td::RealCpuTimer::Time create_block;
     td::RealCpuTimer::Time create_collated_data;
+    td::RealCpuTimer::Time collated_prepare_proofs;
+    td::RealCpuTimer::Time collated_state_proof;
+    td::RealCpuTimer::Time collated_neighbor_proofs;
+    td::RealCpuTimer::Time collated_storage_proofs;
     td::RealCpuTimer::Time create_block_candidate;
+    td::RealCpuTimer::Time candidate_block_boc;
+    td::RealCpuTimer::Time candidate_collated_boc;
+    td::RealCpuTimer::Time candidate_hashes;
+    td::RealCpuTimer::Time candidate_construct;
 
     std::string to_str(bool is_cpu) const {
       return PSTRING() << "total=" << total.get(is_cpu) << " preinit=" << preinit.get(is_cpu)
-                       << " queue_cleanup=" << queue_cleanup.get(is_cpu)
+                       << " queue_cleanup=" << queue_cleanup.get(is_cpu) << " dispatch=" << dispatch.get(is_cpu)
+                       << " ticktock=" << ticktock.get(is_cpu) << " inbound_internal=" << inbound_internal.get(is_cpu)
+                       << " inbound_external=" << inbound_external.get(is_cpu)
+                       << " new_messages=" << new_messages.get(is_cpu)
+                       << " new_messages_route=" << new_messages_route.get(is_cpu)
+                       << " new_messages_prepare=" << new_messages_prepare.get(is_cpu)
+                       << " new_messages_execute=" << new_messages_execute.get(is_cpu)
+                       << " new_messages_commit=" << new_messages_commit.get(is_cpu)
                        << " prelim_storage_stat=" << prelim_storage_stat.get(is_cpu)
                        << " trx_tvm=" << trx_tvm.get(is_cpu) << " trx_storage_stat=" << trx_storage_stat.get(is_cpu)
-                       << " trx_other=" << trx_other.get(is_cpu)
+                       << " trx_other=" << trx_other.get(is_cpu) << " trx_external=" << trx_external.get(is_cpu)
+                       << " trx_internal=" << trx_internal.get(is_cpu) << " trx_unpack=" << trx_unpack.get(is_cpu)
+                       << " trx_storage_credit=" << trx_storage_credit.get(is_cpu)
+                       << " trx_compute=" << trx_compute.get(is_cpu)
+                       << " trx_action_bounce=" << trx_action_bounce.get(is_cpu)
+                       << " trx_serialize=" << trx_serialize.get(is_cpu) << " msg_parse=" << msg_parse.get(is_cpu)
+                       << " account_lookup=" << account_lookup.get(is_cpu) << " trx_limits=" << trx_limits.get(is_cpu)
+                       << " account_dict_lookup=" << account_dict_lookup.get(is_cpu)
+                       << " account_unpack=" << account_unpack.get(is_cpu)
+                       << " account_lookup_batch=" << account_lookup_batch.get(is_cpu)
+                       << " trx_commit=" << trx_commit.get(is_cpu) << " trx_postprocess=" << trx_postprocess.get(is_cpu)
+                       << " message_descriptor=" << message_descriptor.get(is_cpu)
+                       << " account_dict_estimator_update=" << account_dict_estimator_update.get(is_cpu)
+                       << " account_dict_estimator_proof=" << account_dict_estimator_proof.get(is_cpu)
+                       << " account_dict_estimator_wait=" << account_dict_estimator_wait.get(is_cpu)
+                       << " account_block_build=" << account_block_build.get(is_cpu)
+                       << " final_account_dict_update=" << final_account_dict_update.get(is_cpu)
+                       << " final_account_dict_async_work=" << final_account_dict_async_work.get(is_cpu)
+                       << " final_account_dict_async_wait=" << final_account_dict_async_wait.get(is_cpu)
+                       << " final_account_dict_rebind=" << final_account_dict_rebind.get(is_cpu)
+                       << " account_storage_dict=" << account_storage_dict.get(is_cpu)
                        << " final_storage_stat=" << final_storage_stat.get(is_cpu)
                        << " enqueue_new_messages=" << enqueue_new_messages.get(is_cpu)
                        << " combine_account_transactions=" << combine_account_transactions.get(is_cpu)
                        << " create_shard_state=" << create_shard_state.get(is_cpu)
+                       << " state_build_root=" << state_build_root.get(is_cpu)
+                       << " state_merkle_update=" << state_merkle_update.get(is_cpu)
+                       << " state_limit_proof=" << state_limit_proof.get(is_cpu)
                        << " create_block=" << create_block.get(is_cpu)
                        << " create_collated_data=" << create_collated_data.get(is_cpu)
-                       << " create_block_candidate=" << create_block_candidate.get(is_cpu);
+                       << " collated_prepare_proofs=" << collated_prepare_proofs.get(is_cpu)
+                       << " collated_state_proof=" << collated_state_proof.get(is_cpu)
+                       << " collated_neighbor_proofs=" << collated_neighbor_proofs.get(is_cpu)
+                       << " collated_storage_proofs=" << collated_storage_proofs.get(is_cpu)
+                       << " create_block_candidate=" << create_block_candidate.get(is_cpu)
+                       << " candidate_block_boc=" << candidate_block_boc.get(is_cpu)
+                       << " candidate_collated_boc=" << candidate_collated_boc.get(is_cpu)
+                       << " candidate_hashes=" << candidate_hashes.get(is_cpu)
+                       << " candidate_construct=" << candidate_construct.get(is_cpu);
     }
   };
   WorkTimeStats work_time;
@@ -269,13 +385,19 @@ struct ValidationStats {
   }
 };
 
-using ExtMsgQueue = td::actor::BackpressureQueue<std::pair<td::Ref<ExtMessage>, int>>;
+using ExtMsgQueueEntry = std::pair<td::Ref<ExtMessage>, int>;
+using ExtMsgQueueBatch = std::vector<ExtMsgQueueEntry>;
+using ExtMsgQueue = td::actor::BackpressureQueue<ExtMsgQueueBatch>;
 
 struct ExtMsgCallback {
   ShardIdFull shard;
   ExtMsgQueue queue;
   td::CancellationToken cancellation_token;
   td::Timestamp timeout;
+  std::shared_ptr<const std::vector<ExtMessage::Hash>> excluded_normalized_hashes;
+  std::shared_ptr<std::atomic<td::uint32>> excluded_count;
+  ExtMsgQueueBatch pending_batch;
+  td::Timestamp batch_flush_at;
   bool sync_only = false;
 };
 

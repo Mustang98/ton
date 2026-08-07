@@ -62,7 +62,9 @@ class StorageStatCache : public td::actor::Actor {
   static constexpr td::uint64 MAX_CACHE_TOTAL_CELLS = 1 << 24;
 
  public:
-  static constexpr td::uint64 MIN_ACCOUNT_CELLS = 4000;
+  static td::uint64 min_account_cells();
+
+  static constexpr td::uint64 DEFAULT_MIN_ACCOUNT_CELLS = 4000;
 };
 
 }  // namespace ton::validator

@@ -17,8 +17,14 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #pragma once
+#include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
 #include <map>
+#include <mutex>
 #include <queue>
+#include <thread>
 
 #include "block/block-db.h"
 #include "block/block.h"
@@ -28,6 +34,7 @@
 #include "common/global-version.h"
 #include "common/refcnt.hpp"
 #include "interfaces/validator-manager.h"
+#include "td/utils/port/thread.h"
 #include "vm/cells.h"
 #include "vm/cells/MerkleProof.h"
 #include "vm/cells/MerkleUpdate.h"
@@ -42,6 +49,104 @@ namespace ton {
 
 namespace validator {
 using td::Ref;
+
+class AsyncAccountDictEstimator;
+class AsyncAccountLookupBatch;
+
+// A persistent fork-join pool for deterministic transaction-execution waves. The actor
+// thread participates in each wave; workers only execute tasks and never commit collator state.
+class WaveExecutor {
+ public:
+  explicit WaveExecutor(int threads) {
+    for (int i = 1; i < threads; ++i) {
+      workers_.emplace_back([this] { worker_loop(); });
+    }
+  }
+
+  ~WaveExecutor() {
+    {
+      std::lock_guard<std::mutex> guard{mutex_};
+      stop_ = true;
+    }
+    start_cv_.notify_all();
+    for (auto& worker : workers_) {
+      worker.join();
+    }
+  }
+
+  void run(std::vector<std::function<void()>>& tasks) {
+    if (tasks.empty()) {
+      return;
+    }
+    if (tasks.size() == 1) {
+      tasks.front()();
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> guard{mutex_};
+      tasks_ = &tasks;
+      next_.store(0, std::memory_order_relaxed);
+      done_.store(0, std::memory_order_relaxed);
+      ++generation_;
+    }
+    size_t helpers = std::min(workers_.size(), tasks.size() - 1);
+    for (size_t i = 0; i < helpers; ++i) {
+      start_cv_.notify_one();
+    }
+    drain(tasks);
+    std::unique_lock<std::mutex> lock{mutex_};
+    done_cv_.wait(lock, [&] { return done_.load(std::memory_order_acquire) == tasks.size() && active_ == 0; });
+    tasks_ = nullptr;
+  }
+
+ private:
+  void drain(std::vector<std::function<void()>>& tasks) {
+    while (true) {
+      size_t index = next_.fetch_add(1, std::memory_order_relaxed);
+      if (index >= tasks.size()) {
+        return;
+      }
+      tasks[index]();
+      if (done_.fetch_add(1, std::memory_order_acq_rel) + 1 == tasks.size()) {
+        std::lock_guard<std::mutex> guard{mutex_};
+        done_cv_.notify_all();
+      }
+    }
+  }
+
+  void worker_loop() {
+    td::uint64 seen_generation = 0;
+    while (true) {
+      std::vector<std::function<void()>>* tasks;
+      {
+        std::unique_lock<std::mutex> lock{mutex_};
+        start_cv_.wait(lock, [&] { return stop_ || (tasks_ != nullptr && generation_ != seen_generation); });
+        if (stop_) {
+          return;
+        }
+        seen_generation = generation_;
+        tasks = tasks_;
+        ++active_;
+      }
+      drain(*tasks);
+      {
+        std::lock_guard<std::mutex> guard{mutex_};
+        --active_;
+      }
+      done_cv_.notify_all();
+    }
+  }
+
+  std::vector<std::thread> workers_;
+  std::mutex mutex_;
+  std::condition_variable start_cv_, done_cv_;
+  std::vector<std::function<void()>>* tasks_ = nullptr;
+  std::atomic<size_t> next_{0};
+  std::atomic<size_t> done_{0};
+  size_t active_ = 0;
+  td::uint64 generation_ = 0;
+  bool stop_ = false;
+};
 
 class Collator final : public td::actor::Actor {
  public:
@@ -154,6 +259,12 @@ class Collator final : public td::actor::Actor {
   Ref<vm::Cell> state_root;                              // (new) shardchain state
   Ref<vm::Cell> state_update;                            // Merkle update from prev_state_root to state_root
   std::shared_ptr<vm::CellUsageTree> state_usage_tree_;  // used to construct Merkle update
+  Ref<vm::Cell> precomputed_state_proof_;
+  td::Result<Ref<vm::Cell>> async_state_proof_result_;
+  td::RealCpuTimer::Time async_state_proof_time_;
+  td::thread async_state_proof_thread_;
+  bool async_state_proof_started_{false};
+  bool collated_proofs_prepared_{false};
   Ref<vm::CellSlice> new_config_params_;
   Ref<vm::Cell> old_mparams_;
   ton::LogicalTime prev_state_lt_;
@@ -202,16 +313,26 @@ class Collator final : public td::actor::Actor {
   std::unique_ptr<vm::AugmentedDictionary> fees_import_dict_;
 
   std::set<td::Bits256> registered_ext_msgs_;
+  std::vector<ExtMessage::Hash> ancestor_ext_msg_hashes_;
+  std::shared_ptr<std::atomic<td::uint32>> pool_filtered_ext_msgs_;
   ExtMsgQueue ext_msg_queue_;
-  std::optional<std::pair<td::Ref<ExtMessage>, int>> pending_ext_msg_;
+  std::deque<ExtMsgQueueEntry> pending_ext_msgs_;
   td::CancellationTokenSource ext_msg_cancellation_;
 
   std::priority_queue<NewOutMsg, std::vector<NewOutMsg>, std::greater<NewOutMsg>> new_msgs;
+  std::vector<StdSmcAddress> pending_new_msg_accounts_;
+  std::shared_ptr<AsyncAccountLookupBatch> async_account_lookup_batch_;
   std::pair<ton::LogicalTime, ton::Bits256> last_proc_int_msg_, first_unproc_int_msg_;
   block::tlb::Aug_InMsgDescr aug_InMsgDescr{0};
   block::tlb::Aug_OutMsgDescr aug_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict, out_msg_dict, old_out_msg_queue_, out_msg_queue_,
       sibling_out_msg_queue_;
+  struct MsgDescrUpdate {
+    td::Bits256 key;
+    Ref<vm::Cell> value;
+  };
+  std::vector<MsgDescrUpdate> pending_in_msg_descr_updates_;
+  std::vector<MsgDescrUpdate> pending_out_msg_descr_updates_;
   std::map<StdSmcAddress, size_t> unprocessed_deferred_messages_;  // number of messages from dispatch queue in new_msgs
   td::uint64 out_msg_queue_size_ = 0;
   td::uint64 old_out_msg_queue_size_ = 0;
@@ -237,6 +358,12 @@ class Collator final : public td::actor::Actor {
   };
   std::map<td::Bits256, AccountStorageDict> account_storage_dicts_;
 
+  struct WaveProofStats {
+    vm::ProofStorageStat collated;
+    vm::ProofStorageStat storage;
+    AccountStorageDict* storage_dict{nullptr};
+  };
+
   std::unique_ptr<ton::BlockCandidate> block_candidate;
 
   std::unique_ptr<vm::AugmentedDictionary> dispatch_queue_, old_dispatch_queue_;
@@ -249,7 +376,41 @@ class Collator final : public td::actor::Actor {
   td::uint64 hard_defer_out_queue_size_limit_;
 
   std::unique_ptr<vm::AugmentedDictionary> account_dict_estimator_;
+  std::unique_ptr<vm::AugmentedDictionary> analytical_account_dict_estimator_;
+  std::vector<td::Bits256> analytical_estimator_previous_keys_;
+  std::vector<td::Bits256> analytical_estimator_pending_keys_;
+  bool analytical_account_dict_estimator_valid_{true};
+  std::shared_ptr<AsyncAccountDictEstimator> async_account_dict_estimator_;
+  std::shared_ptr<AsyncAccountDictEstimator> async_final_account_dict_;
+  struct EarlyFinalAccountRebind {
+    td::Result<Ref<vm::Cell>> result;
+    std::shared_ptr<vm::ProofStorageStat> loaded_cells;
+    td::RealCpuTimer::Time worker_time;
+    td::RealCpuTimer::Time wait_time;
+    td::RealCpuTimer::Time rebind_time;
+    td::uint32 batches{0};
+    td::uint32 max_queue{0};
+    td::thread thread;
+    bool started{false};
+  } early_final_account_rebind_;
+  std::shared_ptr<vm::CellUsageTree> state_update_aux_usage_tree_;
+  std::shared_ptr<vm::ProofStorageStat> state_update_aux_loaded_cells_;
+  vm::CellUsageTree::NodeId state_update_aux_target_root_{0};
   std::set<td::Bits256> account_dict_estimator_added_accounts_;
+  struct AccountDictEstimatorState {
+    bool exists;
+    td::Bits256 total_state_hash;
+    td::Bits256 last_trans_hash;
+    ton::LogicalTime last_trans_lt;
+  };
+  struct AccountDictEstimatorUpdate {
+    td::Bits256 address;
+    Ref<vm::Cell> value;
+  };
+  std::vector<AccountDictEstimatorUpdate> analytical_estimator_fallback_updates_;
+  std::map<td::Bits256, AccountDictEstimatorState> account_dict_estimator_states_;
+  std::vector<AccountDictEstimatorUpdate> account_dict_estimator_pending_updates_;
+  std::vector<AccountDictEstimatorUpdate> final_account_dict_pending_updates_;
   unsigned account_dict_ops_{0};
 
   bool msg_metadata_enabled_ = false;
@@ -267,6 +428,7 @@ class Collator final : public td::actor::Actor {
                                                     bool force_create);
   bool init_account_storage_dict(block::Account& account);
   td::Result<block::Account*> make_account(td::ConstBitPtr addr, bool force_create = false);
+  bool prepare_accounts_parallel(const std::vector<StdSmcAddress>& addresses);
   td::actor::ActorId<Collator> get_self() {
     return actor_id(this);
   }
@@ -316,6 +478,10 @@ class Collator final : public td::actor::Actor {
   bool create_ticktock_transaction(const ton::StdSmcAddress& smc_addr, ton::LogicalTime req_start_lt, int mask);
   Ref<vm::Cell> create_ordinary_transaction(Ref<vm::Cell> msg_root, td::optional<block::MsgMetadata> msg_metadata,
                                             LogicalTime after_lt, bool is_special_tx = false);
+  Ref<vm::Cell> commit_ordinary_transaction(std::unique_ptr<block::transaction::Transaction> trans,
+                                            block::Account* acc, bool external,
+                                            td::optional<block::MsgMetadata> msg_metadata, bool is_special_tx);
+  LogicalTime adjust_after_lt(bool external, LogicalTime after_lt, const block::Account& acc) const;
   bool check_cur_validator_set();
   bool unpack_last_mc_state();
   bool unpack_last_state();
@@ -351,15 +517,31 @@ class Collator final : public td::actor::Actor {
   td::actor::Task<> wait_for_external_message(td::Timestamp timeout);
 
   void register_new_msg(block::NewOutMsg msg);
+  void track_new_message_account(const Ref<vm::Cell>& msg);
+  bool prefetch_new_message_accounts();
+  bool start_async_account_lookup_batch();
+  bool finish_async_account_lookup_batch();
+  bool prepare_async_account_for_message(const Ref<vm::Cell>& msg);
   void register_new_msgs(block::transaction::Transaction& trans, td::optional<block::MsgMetadata> msg_metadata);
   bool process_new_messages(bool& enqueue_only);
+  struct NewMsgRoute {
+    StdSmcAddress src_addr;
+    StdSmcAddress dest_addr;
+    td::RefInt256 fwd_fees;
+  };
+  int route_one_new_message(block::NewOutMsg& msg, bool enqueue_only, Ref<vm::Cell>* is_special, NewMsgRoute& route);
+  int finalize_one_new_message(block::NewOutMsg msg, Ref<vm::Cell> trans_root, td::RefInt256 fwd_fees,
+                               Ref<vm::Cell>* is_special);
   int process_one_new_message(block::NewOutMsg msg, bool enqueue_only = false, Ref<vm::Cell>* is_special = nullptr);
+  bool process_new_messages_parallel(bool& enqueue_only);
   bool process_inbound_internal_messages();
   bool precheck_inbound_message(Ref<vm::CellSlice> msg, ton::LogicalTime lt);
   bool process_inbound_message(Ref<vm::CellSlice> msg, ton::LogicalTime lt, td::ConstBitPtr key, int src_nb_idx);
   td::actor::Task<> process_external_and_new_messages();
   td::actor::Task<bool> process_inbound_external_messages();
+  td::actor::Task<bool> process_inbound_external_messages_parallel();
   int process_external_message(Ref<vm::Cell> msg);
+  WaveExecutor& wave_executor();
   bool process_dispatch_queue();
   bool process_deferred_message(Ref<vm::CellSlice> enq_msg, StdSmcAddress src_addr, LogicalTime lt,
                                 td::optional<block::MsgMetadata>& msg_metadata);
@@ -373,8 +555,21 @@ class Collator final : public td::actor::Actor {
   bool insert_in_msg(Ref<vm::Cell> in_msg);
   bool insert_out_msg(Ref<vm::Cell> out_msg);
   bool insert_out_msg(Ref<vm::Cell> out_msg, td::ConstBitPtr msg_hash);
+  bool flush_msg_descr_updates(vm::AugmentedDictionary& dict, std::vector<MsgDescrUpdate>& pending_updates);
+  bool flush_in_msg_descr_updates();
+  bool flush_out_msg_descr_updates();
+  bool flush_message_descriptor_updates();
   bool register_out_msg_queue_op(bool force = false);
   bool register_dispatch_queue_op(bool force = false);
+  bool wait_account_dict_estimator(Ref<vm::Cell>* root = nullptr,
+                                   std::shared_ptr<vm::CellUsageTree>* usage_tree = nullptr,
+                                   std::shared_ptr<vm::ProofStorageStat>* loaded_cells = nullptr);
+  bool enqueue_account_dict_estimator_update(td::Bits256 address, Ref<vm::Cell> value);
+  bool flush_account_dict_estimator_updates();
+  bool enqueue_final_account_dict_update(const block::Account& account);
+  bool flush_final_account_dict_updates();
+  bool start_early_final_account_rebind();
+  td::Result<vm::NewCellStorageStat::Stat> estimate_analytical_account_dict_increment();
   bool update_account_dict_estimation(const block::transaction::Transaction& trans);
   void update_account_storage_dict_info(const block::transaction::Transaction& trans);
   bool update_min_mc_seqno(ton::BlockSeqno some_mc_seqno);
@@ -409,9 +604,12 @@ class Collator final : public td::actor::Actor {
 
   Ref<vm::Cell> collate_shard_block_descr_set();
   bool prepare_proofs();
+  td::Status finish_async_state_proof();
   bool create_collated_data();
 
-  bool create_block_candidate();
+  bool create_block_candidate(td::Result<td::BufferSlice>* early_block_boc = nullptr,
+                              const td::Bits256* early_block_file_hash = nullptr,
+                              td::Result<td::BufferSlice>* early_collated_boc = nullptr);
   void return_block_candidate();
   bool update_last_proc_int_msg(const std::pair<ton::LogicalTime, ton::Bits256>& new_lt_hash);
 
@@ -427,9 +625,13 @@ class Collator final : public td::actor::Actor {
 
   void finalize_stats();
 
-  AccountStorageDict* current_tx_storage_dict_ = nullptr;
+  static thread_local AccountStorageDict* current_tx_storage_dict_;
+  static thread_local WaveProofStats* current_wave_proof_stats_;
+  std::recursive_mutex proof_stat_mutex_;
+  std::unique_ptr<WaveExecutor> wave_executor_;
 
   void on_cell_loaded(const vm::LoadedCell& cell);
+  void merge_wave_proof_stats(WaveProofStats& stats);
   void set_current_tx_storage_dict(const block::Account& account);
 };
 

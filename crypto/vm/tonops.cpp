@@ -16,7 +16,12 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <array>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
+#include <mutex>
 #include <sodium.h>
 
 #include "block/block-auto.h"
@@ -56,6 +61,103 @@ bool debug(int x) {
     std::cerr << '[' << (char)(64 + x / 100) << x % 100 << ']';
   }
   return true;
+}
+
+class Ed25519ChksignuCache {
+ public:
+  bool contains(const unsigned char* data, const unsigned char* signature, const unsigned char* key) {
+    CacheKey cache_key{data, signature, key};
+    auto hash = cache_key.hash();
+    auto& shard = shards_[hash % kShardCount];
+    bool hit;
+    {
+      std::lock_guard guard{shard.mutex};
+      const auto& entry = shard.entries[(hash / kShardCount) % kEntriesPerShard];
+      hit = entry.valid && entry.hash == hash && entry.key == cache_key;
+    }
+    auto lookups = lookups_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (hit) {
+      hits_.fetch_add(1, std::memory_order_relaxed);
+    }
+    if ((lookups & 0x7fff) == 0) {
+      LOG(WARNING) << "TON_SIM_ED25519_CHKSIG_CACHE lookups=" << lookups
+                   << " hits=" << hits_.load(std::memory_order_relaxed)
+                   << " inserts=" << inserts_.load(std::memory_order_relaxed);
+    }
+    return hit;
+  }
+
+  void insert(const unsigned char* data, const unsigned char* signature, const unsigned char* key) {
+    CacheKey cache_key{data, signature, key};
+    auto hash = cache_key.hash();
+    auto& shard = shards_[hash % kShardCount];
+    {
+      std::lock_guard guard{shard.mutex};
+      auto& entry = shard.entries[(hash / kShardCount) % kEntriesPerShard];
+      entry.key = cache_key;
+      entry.hash = hash;
+      entry.valid = true;
+    }
+    inserts_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+ private:
+  static constexpr std::size_t kShardCount = 64;
+  static constexpr std::size_t kEntriesPerShard = 256;
+
+  struct CacheKey {
+    std::array<unsigned char, 128> bytes;
+
+    CacheKey() : bytes{} {
+    }
+
+    CacheKey(const unsigned char* data, const unsigned char* signature, const unsigned char* key) {
+      std::memcpy(bytes.data(), data, 32);
+      std::memcpy(bytes.data() + 32, signature, 64);
+      std::memcpy(bytes.data() + 96, key, 32);
+    }
+
+    td::uint64 hash() const {
+      // Hashing sixteen words is substantially cheaper than an Ed25519 verification.
+      td::uint64 result = 1469598103934665603ULL;
+      for (std::size_t offset = 0; offset < bytes.size(); offset += sizeof(td::uint64)) {
+        td::uint64 word;
+        std::memcpy(&word, bytes.data() + offset, sizeof(word));
+        result ^= word;
+        result *= 1099511628211ULL;
+      }
+      return result;
+    }
+
+    bool operator==(const CacheKey& other) const {
+      return bytes == other.bytes;
+    }
+  };
+
+  struct Entry {
+    CacheKey key;
+    td::uint64 hash = 0;
+    bool valid = false;
+  };
+
+  struct Shard {
+    std::mutex mutex;
+    std::array<Entry, kEntriesPerShard> entries;
+  };
+
+  std::array<Shard, kShardCount> shards_;
+  std::atomic<td::uint64> lookups_{0};
+  std::atomic<td::uint64> hits_{0};
+  std::atomic<td::uint64> inserts_{0};
+};
+
+Ed25519ChksignuCache* ed25519_chksignu_cache() {
+  static bool enabled = [] {
+    const char* value = std::getenv("TON_SIM_ED25519_CHKSIG_CACHE");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+  }();
+  static Ed25519ChksignuCache cache;
+  return enabled ? &cache : nullptr;
 }
 }  // namespace
 
@@ -795,9 +897,16 @@ int exec_ed25519_check_signature(VmState* st, bool from_slice) {
       return 0;
     }
   }
-  td::Ed25519::PublicKey pub_key{td::SecureString(td::Slice{key, 32})};
-  auto res = pub_key.verify_signature(td::Slice{data, data_len}, td::Slice{signature, 64});
-  stack.push_bool(res.is_ok() || st->get_chksig_always_succeed());
+  auto* cache = from_slice ? nullptr : ed25519_chksignu_cache();
+  bool signature_ok = cache != nullptr && cache->contains(data, signature, key);
+  if (!signature_ok) {
+    td::Ed25519::PublicKey pub_key{td::SecureString(td::Slice{key, 32})};
+    signature_ok = pub_key.verify_signature(td::Slice{data, data_len}, td::Slice{signature, 64}).is_ok();
+    if (signature_ok && cache != nullptr) {
+      cache->insert(data, signature, key);
+    }
+  }
+  stack.push_bool(signature_ok || st->get_chksig_always_succeed());
   return 0;
 }
 

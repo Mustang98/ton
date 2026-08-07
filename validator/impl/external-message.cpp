@@ -17,12 +17,16 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 
+#include <algorithm>
+
 #include "block/block-auto.h"
 #include "block/block-parse.h"
 #include "crypto/openssl/rand.hpp"
 #include "td/actor/actor.h"
 #include "td/utils/Random.h"
+#include "ton/ton-io.hpp"
 #include "vm/boc.h"
+#include "vm/dict.h"
 
 #include "collator-impl.h"
 #include "external-message.hpp"
@@ -77,6 +81,64 @@ td::Result<td::Bits256> get_ext_in_msg_hash_norm(td::Ref<vm::Cell> ext_in_msg_ce
     return td::Status::Error("Failed to build normalized message");
   }
   return cb.finalize()->get_hash().bits();
+}
+
+td::Result<std::vector<ExtMessage::Hash>> get_applied_external_messages_hashes(td::Ref<BlockData> block) {
+  if (block.is_null()) {
+    return std::vector<ExtMessage::Hash>{};
+  }
+  try {
+    block::gen::Block::Record blk;
+    block::gen::BlockExtra::Record extra;
+    auto block_root = block->root_cell();
+    if (!(tlb::unpack_cell(block_root, blk) && tlb::unpack_cell(blk.extra, extra))) {
+      return td::Status::Error("cannot unpack applied block");
+    }
+
+    vm::AugmentedDictionary in_msg_dict{vm::load_cell_slice_ref(extra.in_msg_descr), 256,
+                                        block::tlb::aug_InMsgDescrDefault};
+    std::vector<ExtMessage::Hash> hashes;
+    td::Status error;
+    if (!in_msg_dict.check_for_each_extra(
+            [&](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr, int key_len) {
+              if (key_len != 256) {
+                error = td::Status::Error("invalid InMsgDescr key length");
+                return false;
+              }
+              int tag = block::gen::t_InMsg.get_tag(*value);
+              if (tag != block::gen::InMsg::msg_import_ext) {
+                return true;
+              }
+              vm::CellSlice cs{*value};
+              Ref<vm::Cell> msg, transaction;
+              if (!block::gen::t_InMsg.unpack_msg_import_ext(cs, msg, transaction)) {
+                error = td::Status::Error("cannot unpack msg_import_ext");
+                return false;
+              }
+              auto hash = get_ext_in_msg_hash_norm(msg);
+              if (hash.is_error()) {
+                error = hash.move_as_error_prefix("cannot normalize applied external message: ");
+                return false;
+              }
+              hashes.push_back(hash.move_as_ok());
+              return true;
+            })) {
+      if (error.is_error()) {
+        return std::move(error);
+      }
+      return td::Status::Error("failed to iterate applied block InMsgDescr");
+    }
+
+    std::sort(hashes.begin(), hashes.end());
+    hashes.erase(std::unique(hashes.begin(), hashes.end()), hashes.end());
+    return hashes;
+  } catch (vm::VmError& err) {
+    return td::Status::Error(PSTRING() << "error while parsing applied block " << block->block_id() << ": "
+                                       << err.get_msg());
+  } catch (vm::VmVirtError& err) {
+    return td::Status::Error(PSTRING() << "virtualization error while parsing applied block " << block->block_id()
+                                       << ": " << err.get_msg());
+  }
 }
 
 td::Result<Ref<ExtMessageQ>> ExtMessageQ::create_ext_message(td::BufferSlice data,
