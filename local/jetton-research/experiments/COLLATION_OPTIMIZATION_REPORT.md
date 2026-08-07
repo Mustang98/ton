@@ -1159,6 +1159,59 @@ local/jetton-research/experiments/runs/
   cleanup-acceptance-final-20260807-20260807-165706
 ```
 
+### 13.8 Baseline versus optimized with 50,000 wallets
+
+A matched pair was run to test whether the result survives a five-times-larger
+WalletSpam address space. Both runs used the same final binary, 45M-account base
+state, deterministic pool/workload seed, one shard, `init_mode=0`, 380
+requests/s, doubled block and gas limits, forced-empty first slots, 30-second
+load, 5-second warmup, and 12-second drain. Only the 19 optimization settings
+from section 14 differed.
+
+Each harness invocation first deployed 50,001 WalletSpam contracts and their
+prepaid jetton wallets. This deterministic setup produced approximately 100,000
+transactions and took 1,348.9 seconds for baseline and 1,346.8 seconds for
+optimized. Deployment is outside the measurement window; its nearly identical
+duration confirms that it is constrained by the chained reproduce contract and
+block schedule rather than the optimized transfer path.
+
+| Metric | Baseline, 50k wallets | Optimized, 50k wallets | Change |
+|---|---:|---:|---:|
+| Steady jTPS | 330.582 | **378.101** | **+14.4%** |
+| Steady total TPS | 1,317.287 | **1,510.043** | **+14.6%** |
+| Tx/productive block | 715.870 | **820.543** | **+14.6%** |
+| Productive collation mean | 413.355 ms | **111.938 ms** | **-72.9%** |
+| Productive collation P95 | 572.440 ms | **160.548 ms** | **-72.0%** |
+| Validation mean | 122.332 ms | **92.282 ms** | **-24.6%** |
+| Validation P95 | 185.304 ms | **120.563 ms** | **-34.9%** |
+| Mean productive block size | 1.931 MB | **1.635 MB** | **-15.3%** |
+| P95 productive block size | 2.643 MB | **2.025 MB** | **-23.4%** |
+| Collation-deadline blocks | 19 | **0** | eliminated |
+| `want_split` candidates | 36 | **0** | eliminated |
+| Queue at steady-window end | 622 | **67** | -89.2% |
+| Queue after drain | 0 | 0 | unchanged |
+
+The baseline could not sustain the offered rate during the steady window. Its
+queue grew from 218 to 622 messages at 16.2 messages/s; 46 candidates were
+overloaded, including 19 collation-deadline terminations. Optimized queue growth
+fell to 2.7 messages/s, no deadline fired, and the complete workload drained.
+Both runs acknowledged all 11,400 requests with zero send errors and eventually
+completed exactly 45,600 transactions with zero aborts.
+
+The larger working set also changes the transfer pipeline. In the 100 sampled
+steady transfers, baseline completed no TX1-through-TX4 pipeline in one block;
+the median span was four blocks and median external-to-TX4 latency was 3,538.7
+ms. Optimized completed 87% in one block; median span was zero and median
+external-to-TX4 latency was 1,042.5 ms.
+
+Artifacts:
+
+```text
+local/jetton-research/experiments/runs/
+  compare-50k-baseline-double-380-20260807-170748
+  compare-50k-optimized-double-380-20260807-173121
+```
+
 ## 14. Final feature configuration
 
 After cleanup, the complete stack uses 19 settings instead of the previous 31.

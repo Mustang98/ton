@@ -20,6 +20,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", required=True)
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build")
+    parser.add_argument("--pool-size", type=int, default=10_000)
     parser.add_argument("--rate", type=float, default=380.0)
     parser.add_argument("--block-limit-mul", type=int, default=2)
     parser.add_argument("--gas-limit-mul", type=int)
@@ -43,7 +44,7 @@ def main() -> int:
         "--workdir",
         str(run_dir),
         "--pool-size",
-        "10000",
+        str(args.pool_size),
         "--init-mode",
         "0",
         "--rate",
