@@ -172,7 +172,7 @@ class FullNode : public td::actor::Actor {
                                                         QuerySource source) = 0;
 
   static constexpr td::uint32 max_block_size() {
-    return 4 << 20;
+    return 8 << 20;
   }
   static constexpr td::uint32 max_proof_size() {
     return 4 << 20;
