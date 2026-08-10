@@ -102,8 +102,6 @@ int parallel_execution_threads() {
   return static_cast<int>(threads);
 }
 
-constexpr double ext_load_fraction_limit = 0.4;
-
 void merge_parallel_transaction_stats(CollationStats& target, const CollationStats& source, bool external) {
   const auto& src = source.work_time;
   auto& dst = target.work_time;
@@ -5425,6 +5423,7 @@ td::actor::Task<bool> Collator::process_inbound_external_messages_parallel() {
   };
 
   const size_t wave_width = static_cast<size_t>(parallel_execution_threads()) * 4;
+  const double intake_limit = params_.collator_opts->external_message_intake_limit;
   std::vector<std::pair<Ref<ExtMessage>, int>> carry;
   bool full = !block_limit_status_->fits(block::ParamLimits::cl_soft);
   bool stop = false;
@@ -5663,8 +5662,9 @@ td::actor::Task<bool> Collator::process_inbound_external_messages_parallel() {
       }
       ++stats_.ext_msgs_accepted;
       full = !block_limit_status_->fits(block::ParamLimits::cl_soft);
-      if (!full && block_limit_status_->load_fraction(block::ParamLimits::cl_soft) >= ext_load_fraction_limit) {
-        stats_.limits_log += PSTRING() << "INBOUND_EXT_MESSAGES: intake budget " << ext_load_fraction_limit << "\n";
+      if (!full && intake_limit > 0.0 &&
+          block_limit_status_->load_fraction(block::ParamLimits::cl_soft) >= intake_limit) {
+        stats_.limits_log += PSTRING() << "INBOUND_EXT_MESSAGES: intake budget " << intake_limit << "\n";
         full = true;
       }
       block_limit_class_ = std::max(block_limit_class_, block_limit_status_->classify());

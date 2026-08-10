@@ -276,6 +276,7 @@ class ValidatorEngine : public td::actor::Actor {
   ton::adnl::AdnlNodeIdShort shard_block_retainer_adnl_id_ = ton::adnl::AdnlNodeIdShort::zero();
   bool shard_block_retainer_adnl_id_fullnode_ = false;
   bool parallel_validation_ = false;
+  td::optional<double> external_message_intake_limit_;
   std::string db_event_fifo_path_;
   ton::validator::fullnode::FullNodeOptions full_node_options_ = {.config_ = {},
                                                                   .public_broadcast_speed_multiplier_ = 3.33,
@@ -414,6 +415,9 @@ class ValidatorEngine : public td::actor::Actor {
   }
   void set_parallel_validation(bool value) {
     parallel_validation_ = value;
+  }
+  void set_external_message_intake_limit(double value) {
+    external_message_intake_limit_ = value;
   }
   void set_db_event_fifo_path(std::string value) {
     db_event_fifo_path_ = std::move(value);
@@ -570,6 +574,8 @@ class ValidatorEngine : public td::actor::Actor {
                                     td::Promise<td::Unit> promise);
   void del_custom_overlay_from_config(std::string name, td::Promise<td::Unit> promise);
   void load_collator_options();
+  td::Ref<ton::validator::CollatorOptions> apply_collator_options_overrides(
+      td::Ref<ton::validator::CollatorOptions> options) const;
 
   void check_key(ton::PublicKeyHash id, td::Promise<td::Unit> promise);
 

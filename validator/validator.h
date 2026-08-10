@@ -57,6 +57,9 @@ struct PerfTimerStats {
 struct CollatorOptions : public td::CntObject {
   bool deferring_enabled = true;
 
+  // Stop parallel external-message intake at this fraction of the soft block limit. Zero disables the cap.
+  double external_message_intake_limit = 0.4;
+
   // Defer messages from account after Xth message in block (excluding first messages from transactions)
   td::uint32 defer_messages_after = 10;
   // Defer all messages if out msg queue size is greater than X (excluding first messages from transactions)
