@@ -370,6 +370,7 @@ Collator::Collator(CollateParams params, td::actor::ActorId<ValidatorManager> ma
                     send_closure(manager, &ValidatorManager::add_perf_timer_stat, "collate", duration);
                   })
     , cancellation_token_(std::move(cancellation_token)) {
+  stats_.shard = shard_;
   if (params_.collator_opts.is_null()) {
     params_.collator_opts = Ref<CollatorOptions>{true};
   }
@@ -677,6 +678,10 @@ bool Collator::fatal_error(td::Status error) {
       CollateParams new_params = params_;
       ++new_params.attempt_idx;
       LOG(WARNING) << "Repeating collation (attempt #" << new_params.attempt_idx << ")";
+      if (stats_.ext_msgs_total != 0) {
+        td::actor::send_closure(manager, &ValidatorManager::log_collation_external_stats, shard_,
+                                stats_.external_messages());
+      }
       run_collate_query(std::move(new_params), manager, std::move(cancellation_token_), std::move(main_promise));
     } else {
       LOG(INFO) << "collation failed in " << perf_timer_.elapsed() << " s " << error;
@@ -2702,7 +2707,7 @@ td::actor::Task<> Collator::do_collate_inner() {
   // 2-. take messages from dispatch queue
   LOG(INFO) << "process dispatch queue";
   {
-    td::ScopedRealCpuTimer timer{stats_.work_time.dispatch};
+    td::ScopedRealCpuTimer timer{stats_.work_time.dispatch_queue};
     if (!process_dispatch_queue()) {
       co_return td::Status::Error("cannot process dispatch queue");
     }
@@ -2727,7 +2732,7 @@ td::actor::Task<> Collator::do_collate_inner() {
   // 4. import inbound internal messages, process or transit
   LOG(INFO) << "process inbound internal messages";
   {
-    td::ScopedRealCpuTimer timer{stats_.work_time.inbound_internal};
+    td::ScopedRealCpuTimer timer{stats_.work_time.import_internals};
     if (!process_inbound_internal_messages()) {
       co_return td::Status::Error("cannot process inbound internal messages");
     }
@@ -5239,6 +5244,14 @@ bool Collator::process_inbound_internal_messages() {
  * Processes inbound external messages and new internal messages.
  */
 td::actor::Task<> Collator::process_external_and_new_messages() {
+  // The total accumulator also receives the existing per-external-message timers. Subtract those
+  // below to attribute the rest of this scope without adding another pair of clock reads.
+  auto total_before = stats_.work_time.total;
+  auto externals_before = stats_.work_time.import_externals;
+  SCOPE_EXIT {
+    stats_.work_time.process_new_msgs +=
+        (stats_.work_time.total - total_before) - (stats_.work_time.import_externals - externals_before);
+  };
   td::ScopedRealCpuTimer timer_total{stats_.work_time.total};
   if (out_msg_queue_size_ > SKIP_EXTERNALS_QUEUE_SIZE) {
     LOG(INFO) << "skipping processing of inbound external messages (except for high-priority) because out_msg_queue is "
@@ -5308,7 +5321,10 @@ td::actor::Task<> Collator::process_external_and_new_messages() {
  * @returns True if the processing was successful, false otherwise.
  */
 td::actor::Task<bool> Collator::process_inbound_external_messages() {
+  // Existing per-message total timers exclude queue waits, so their delta is this phase's active work.
+  auto total_before = stats_.work_time.total;
   SCOPE_EXIT {
+    stats_.work_time.import_externals += stats_.work_time.total - total_before;
     stats_.load_fraction_externals = block_limit_status_->load_fraction(block::ParamLimits::cl_soft);
   };
   if (skip_extmsg_) {
@@ -5378,6 +5394,7 @@ td::actor::Task<bool> Collator::process_inbound_external_messages() {
       continue;
     }
     if (out_msg_queue_size_ > SKIP_EXTERNALS_QUEUE_SIZE && priority < HIGH_PRIORITY_EXTERNAL) {
+      ++stats_.ext_msgs_skipped_backpressure;
       continue;
     }
     auto ext_msg = ext_msg_ref->root_cell();

@@ -81,6 +81,14 @@ struct StorageStatCacheStats {
 };
 
 struct CollationStats {
+  struct ExternalMessages {
+    td::uint32 total;
+    td::uint32 filtered;
+    td::uint32 accepted;
+    td::uint32 skipped_backpressure;
+  };
+
+  ShardIdFull shard{workchainInvalid, 0};
   BlockIdExt block_id{workchainInvalid, 0, 0, RootHash::zero(), FileHash::zero()};
   td::Status status = td::Status::OK();
 
@@ -136,6 +144,12 @@ struct CollationStats {
   td::uint32 final_account_dict_async_updates = 0;
   td::uint32 final_account_dict_async_batches = 0;
   td::uint32 final_account_dict_async_queue_max = 0;
+  td::uint32 ext_msgs_skipped_backpressure = 0;
+
+  ExternalMessages external_messages() const {
+    return {ext_msgs_total, ext_msgs_filtered, ext_msgs_accepted, ext_msgs_skipped_backpressure};
+  }
+
   td::uint64 old_out_msg_queue_size = 0;
   td::uint64 new_out_msg_queue_size = 0;
   td::uint32 msg_queue_cleaned = 0;
@@ -166,9 +180,7 @@ struct CollationStats {
     td::RealCpuTimer::Time total;
     td::RealCpuTimer::Time preinit;
     td::RealCpuTimer::Time queue_cleanup;
-    td::RealCpuTimer::Time dispatch;
     td::RealCpuTimer::Time ticktock;
-    td::RealCpuTimer::Time inbound_internal;
     td::RealCpuTimer::Time inbound_external;
     td::RealCpuTimer::Time new_messages;
     td::RealCpuTimer::Time new_messages_route;
@@ -220,11 +232,16 @@ struct CollationStats {
     td::RealCpuTimer::Time candidate_collated_boc;
     td::RealCpuTimer::Time candidate_hashes;
     td::RealCpuTimer::Time candidate_construct;
+    td::RealCpuTimer::Time dispatch_queue;
+    td::RealCpuTimer::Time import_internals;
+    td::RealCpuTimer::Time import_externals;
+    td::RealCpuTimer::Time process_new_msgs;
 
     std::string to_str(bool is_cpu) const {
       return PSTRING() << "total=" << total.get(is_cpu) << " preinit=" << preinit.get(is_cpu)
-                       << " queue_cleanup=" << queue_cleanup.get(is_cpu) << " dispatch=" << dispatch.get(is_cpu)
-                       << " ticktock=" << ticktock.get(is_cpu) << " inbound_internal=" << inbound_internal.get(is_cpu)
+                       << " queue_cleanup=" << queue_cleanup.get(is_cpu)
+                       << " dispatch=" << dispatch_queue.get(is_cpu) << " ticktock=" << ticktock.get(is_cpu)
+                       << " inbound_internal=" << import_internals.get(is_cpu)
                        << " inbound_external=" << inbound_external.get(is_cpu)
                        << " new_messages=" << new_messages.get(is_cpu)
                        << " new_messages_route=" << new_messages_route.get(is_cpu)
@@ -269,7 +286,11 @@ struct CollationStats {
                        << " candidate_block_boc=" << candidate_block_boc.get(is_cpu)
                        << " candidate_collated_boc=" << candidate_collated_boc.get(is_cpu)
                        << " candidate_hashes=" << candidate_hashes.get(is_cpu)
-                       << " candidate_construct=" << candidate_construct.get(is_cpu);
+                       << " candidate_construct=" << candidate_construct.get(is_cpu)
+                       << " dispatch_queue=" << dispatch_queue.get(is_cpu)
+                       << " import_internals=" << import_internals.get(is_cpu)
+                       << " import_externals=" << import_externals.get(is_cpu)
+                       << " process_new_msgs=" << process_new_msgs.get(is_cpu);
     }
   };
   WorkTimeStats work_time;
@@ -537,6 +558,8 @@ class ValidatorManager : public ValidatorManagerInterface {
   }
 
   virtual void log_collate_query_stats(CollationStats stats) {
+  }
+  virtual void log_collation_external_stats(ShardIdFull shard, CollationStats::ExternalMessages stats) {
   }
   virtual void log_validate_query_stats(ValidationStats stats) {
   }
