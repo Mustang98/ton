@@ -140,7 +140,7 @@ class Ed25519ChksignuCache {
 Ed25519ChksignuCache* ed25519_chksignu_cache() {
   static bool enabled = [] {
     const char* value = std::getenv("TON_SIM_ED25519_CHKSIG_CACHE");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    return value == nullptr || std::strcmp(value, "0") != 0;
   }();
   static Ed25519ChksignuCache cache;
   return enabled ? &cache : nullptr;

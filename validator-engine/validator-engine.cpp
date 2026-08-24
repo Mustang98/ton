@@ -6179,7 +6179,7 @@ int main(int argc, char *argv[]) {
   });
   p.add_checked_option(
       '\0', "external-message-intake-limit",
-      "stop parallel external-message intake at this fraction of the soft block limit; 0 disables (default: 0.4)",
+      "stop parallel external-message intake at this fraction of the soft block limit; 0 disables (default: disabled)",
       [&](td::Slice arg) -> td::Status {
         std::string str = arg.str();
         char* end = nullptr;

@@ -60,9 +60,18 @@ thread_local Collator::WaveProofStats* Collator::current_wave_proof_stats_ = nul
 
 namespace {
 
-bool read_bool_env(const char* name) {
+bool read_bool_env(const char* name, bool fallback) {
   const char* value = std::getenv(name);
-  return value != nullptr && value[0] == '1' && value[1] == '\0';
+  if (value == nullptr) {
+    return fallback;
+  }
+  if (value[0] == '0' && value[1] == '\0') {
+    return false;
+  }
+  if (value[0] == '1' && value[1] == '\0') {
+    return true;
+  }
+  return fallback;
 }
 
 unsigned read_unsigned_env(const char* name, unsigned fallback, unsigned maximum) {
@@ -73,32 +82,32 @@ unsigned read_unsigned_env(const char* name, unsigned fallback, unsigned maximum
 }
 
 bool filter_ancestor_externals_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_FILTER_ANCESTOR_EXTERNALS");
+  static const bool enabled = read_bool_env("TON_SIM_FILTER_ANCESTOR_EXTERNALS", true);
   return enabled;
 }
 
 bool parallel_execution_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_EXECUTION");
+  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_EXECUTION", true);
   return enabled;
 }
 
 bool parallel_account_prepare_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_ACCOUNT_PREPARE");
+  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_ACCOUNT_PREPARE", true);
   return enabled;
 }
 
 bool parallel_storage_prepare_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_STORAGE_PREPARE");
+  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_STORAGE_PREPARE", true);
   return enabled;
 }
 
 bool parallel_account_blocks_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_ACCOUNT_BLOCKS");
+  static const bool enabled = read_bool_env("TON_SIM_PARALLEL_ACCOUNT_BLOCKS", true);
   return enabled;
 }
 
 int parallel_execution_threads() {
-  static const unsigned threads = read_unsigned_env("TON_SIM_EXECUTION_THREADS", 8, 32);
+  static const unsigned threads = read_unsigned_env("TON_SIM_EXECUTION_THREADS", 32, 32);
   return static_cast<int>(threads);
 }
 
@@ -117,47 +126,47 @@ void merge_parallel_transaction_stats(CollationStats& target, const CollationSta
 }
 
 bool async_final_account_dict_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_ASYNC_FINAL_ACCOUNT_DICT");
+  static const bool enabled = read_bool_env("TON_SIM_ASYNC_FINAL_ACCOUNT_DICT", true);
   return enabled;
 }
 
 bool batch_message_descriptors_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_BATCH_MESSAGE_DESCRIPTORS");
+  static const bool enabled = read_bool_env("TON_SIM_BATCH_MESSAGE_DESCRIPTORS", true);
   return enabled;
 }
 
 unsigned message_descriptor_batch_size() {
-  static const unsigned batch_size = read_unsigned_env("TON_SIM_MESSAGE_DESCRIPTOR_BATCH_SIZE", 64, 4096);
+  static const unsigned batch_size = read_unsigned_env("TON_SIM_MESSAGE_DESCRIPTOR_BATCH_SIZE", 256, 4096);
   return batch_size;
 }
 
 bool early_block_boc_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_EARLY_BLOCK_BOC");
+  static const bool enabled = read_bool_env("TON_SIM_EARLY_BLOCK_BOC", true);
   return enabled;
 }
 
 bool pipelined_state_finalization_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_PIPELINED_STATE_FINALIZATION");
+  static const bool enabled = read_bool_env("TON_SIM_PIPELINED_STATE_FINALIZATION", true);
   return enabled;
 }
 
 unsigned parallel_pipelined_state_proof_tasks() {
-  static const unsigned tasks = read_unsigned_env("TON_SIM_PIPELINED_STATE_PROOF_TASKS", 8, 32);
+  static const unsigned tasks = read_unsigned_env("TON_SIM_PIPELINED_STATE_PROOF_TASKS", 16, 32);
   return tasks;
 }
 
 unsigned parallel_state_update_old_proof_tasks() {
-  static const unsigned tasks = read_unsigned_env("TON_SIM_STATE_UPDATE_OLD_PROOF_TASKS", 8, 32);
+  static const unsigned tasks = read_unsigned_env("TON_SIM_STATE_UPDATE_OLD_PROOF_TASKS", 16, 32);
   return tasks;
 }
 
 unsigned final_account_rebind_tasks() {
-  static const unsigned tasks = read_unsigned_env("TON_SIM_FINAL_ACCOUNT_REBIND_TASKS", 8, 32);
+  static const unsigned tasks = read_unsigned_env("TON_SIM_FINAL_ACCOUNT_REBIND_TASKS", 16, 32);
   return tasks;
 }
 
 bool analytical_account_dict_estimator_enabled() {
-  static const bool enabled = read_bool_env("TON_SIM_ANALYTICAL_ACCOUNT_DICT_ESTIMATOR");
+  static const bool enabled = read_bool_env("TON_SIM_ANALYTICAL_ACCOUNT_DICT_ESTIMATOR", true);
   return enabled;
 }
 

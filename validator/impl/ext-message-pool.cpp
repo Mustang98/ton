@@ -31,7 +31,7 @@ namespace {
 bool batch_collator_queue_delivery_enabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("TON_SIM_BATCH_EXT_POOL_DELIVERY");
-    return value != nullptr && value[0] == '1' && value[1] == '\0';
+    return value == nullptr || value[0] != '0' || value[1] != '\0';
   }();
   return enabled;
 }
