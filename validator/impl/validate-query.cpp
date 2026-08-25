@@ -62,6 +62,19 @@ namespace validator {
 using td::Ref;
 using namespace std::literals::string_literals;
 
+namespace {
+
+bool scheduler_has_at_least_eight_threads() {
+  auto& scheduler_context = td::actor::SchedulerContext::get();
+  auto* scheduler_group = scheduler_context.scheduler_group();
+  auto scheduler_id = scheduler_context.get_scheduler_id();
+  return scheduler_group != nullptr && scheduler_id.is_valid() &&
+         scheduler_id.value() < scheduler_group->schedulers.size() &&
+         scheduler_group->schedulers[scheduler_id.value()].cpu_threads_count >= 8;
+}
+
+}  // namespace
+
 /**
  * Converts the error context to a string representation to show it in case of validation error.
  *
@@ -102,6 +115,8 @@ ValidateQuery::ValidateQuery(BlockCandidate candidate, ValidateParams params,
     , parallel_accounts_validation_(params.parallel_validation)
     , shard_pfx_(shard_.shard)
     , shard_pfx_len_(ton::shard_prefix_length(shard_))
+    , preloaded_prev_block_state_roots_supplied_(!params.prev_block_state_roots.empty() &&
+                                                 params.prev_block_state_roots.size() == prev_blocks.size())
     , preloaded_prev_block_state_roots_(std::move(params.prev_block_state_roots))
     , perf_timer_("validateblock", 0.1, [manager](double duration) {
       send_closure(manager, &ValidatorManager::add_perf_timer_stat, "validateblock", duration);
@@ -113,6 +128,10 @@ ValidateQuery::ValidateQuery(BlockCandidate candidate, ValidateParams params,
  * Raises an error when timeout is reached.
  */
 void ValidateQuery::alarm() {
+  if (stage0_parallel_validation_pending_) {
+    stage0_parallel_validation_timeout_deferred_ = true;
+    return;
+  }
   if (!parallel_accounts_validation_pending_) {
     abort_query(td::Status::Error(ErrorCode::timeout, "timeout"));
   }
@@ -1441,6 +1460,237 @@ bool ValidateQuery::check_this_shard_mc_info() {
  *
  */
 
+Ref<vm::Cell> ValidateQuery::get_parallel_stage0_prev_root() {
+  if (!parallel_accounts_validation_ || !scheduler_has_at_least_eight_threads() ||
+      stage0_parallel_validation_pending_ || stage0_parallel_validation_ready_ || after_merge_ || after_split_ ||
+      !preloaded_prev_block_state_roots_supplied_ || prev_states.size() != 1 || block_root_.is_null() ||
+      state_update_.is_null()) {
+    return {};
+  }
+
+  Ref<vm::Cell> prev_root;
+  try {
+    if (full_collated_data_ && !is_masterchain()) {
+      // Resolve the exact virtual root that compute_prev_state() will use later,
+      // without publishing any query state from this speculative path.
+      if (prev_blocks.size() != 1) {
+        return {};
+      }
+      prev_root = get_virt_state_root(prev_blocks[0]);
+    } else {
+      if (prev_states[0].is_null()) {
+        return {};
+      }
+      prev_root = prev_states[0]->root_cell();
+    }
+
+    if (prev_root.is_null() || prev_root->get_level() != 0 || state_update_->get_level() != 0 ||
+        td::Bits256{prev_root->get_hash(0).bits()} != prev_state_hash_) {
+      return {};
+    }
+  } catch (vm::VmError&) {
+    return {};
+  } catch (vm::CellBuilder::CellCreateError&) {
+    return {};
+  } catch (vm::CellBuilder::CellWriteError&) {
+    return {};
+  } catch (vm::VmVirtError&) {
+    return {};
+  }
+
+  // CellUsageTree nodes are mutable traversal recorders and must not be shared
+  // by the two scheduler workers.
+  if (!prev_root->get_tree_node().empty() || !block_root_->get_tree_node().empty() ||
+      !state_update_->get_tree_node().empty()) {
+    return {};
+  }
+  return prev_root;
+}
+
+td::actor::Task<ValidateQuery::GeneratedBlockTlbResult> ValidateQuery::validate_generated_block_tlb_task(
+    Ref<vm::Cell> block_root) {
+  GeneratedBlockTlbResult result;
+  td::RealCpuTimer timer;
+  try {
+    // This is deliberately the same short-lived cache used by the retained
+    // serial path. No cross-stage TLB collector is required by this overlap.
+    auto tlb_cache = tlb::TLB::ValidateCache::create_for_type(&block::gen::t_Transaction);
+    tlb::TLB::ValidateCache::Guard guard(&tlb_cache);
+    result.valid = block::gen::t_Block.validate_ref(10000000, block_root);
+  } catch (vm::VmError& err) {
+    result.failure = {Stage0WorkerFailureKind::FatalVmError, err.get_msg()};
+  } catch (vm::CellBuilder::CellCreateError&) {
+    result.failure.kind = Stage0WorkerFailureKind::RejectCellCreate;
+  } catch (vm::CellBuilder::CellWriteError&) {
+    result.failure.kind = Stage0WorkerFailureKind::RejectCellWrite;
+  } catch (vm::VmVirtError& err) {
+    result.failure = {Stage0WorkerFailureKind::RejectVmVirtError, err.get_msg()};
+  }
+  result.work_time = timer.elapsed_both();
+  co_return std::move(result);
+}
+
+td::actor::Task<ValidateQuery::StateApplyResult> ValidateQuery::apply_state_update_task(Ref<vm::Cell> prev_root,
+                                                                                        Ref<vm::Cell> state_update) {
+  StateApplyResult result;
+  result.captured_prev_root = prev_root;
+  result.captured_state_update = state_update;
+  td::RealCpuTimer timer;
+  try {
+    auto state_root = vm::MerkleUpdate::validate_and_apply(std::move(prev_root), std::move(state_update));
+    if (state_root.is_error()) {
+      result.apply_error = state_root.move_as_error();
+    } else {
+      result.state_root = state_root.move_as_ok();
+    }
+  } catch (vm::VmError& err) {
+    result.failure = {Stage0WorkerFailureKind::FatalVmError, err.get_msg()};
+  } catch (vm::CellBuilder::CellCreateError&) {
+    result.failure.kind = Stage0WorkerFailureKind::RejectCellCreate;
+  } catch (vm::CellBuilder::CellWriteError&) {
+    result.failure.kind = Stage0WorkerFailureKind::RejectCellWrite;
+  } catch (vm::VmVirtError& err) {
+    result.failure = {Stage0WorkerFailureKind::RejectVmVirtError, err.get_msg()};
+  }
+  result.work_time = timer.elapsed_both();
+  co_return std::move(result);
+}
+
+void ValidateQuery::start_parallel_stage0(Ref<vm::Cell> prev_root) {
+  CHECK(prev_root.not_null());
+  auto captured_prev_root = prev_root;
+  auto captured_state_update = state_update_;
+
+  auto generated_task = validate_generated_block_tlb_task(block_root_);
+  auto state_task = apply_state_update_task(std::move(prev_root), captured_state_update);
+  generated_task.set_executor(td::actor::Executor::on_scheduler());
+  state_task.set_executor(td::actor::Executor::on_scheduler());
+
+  stage0_parallel_validation_pending_ = true;
+  stats_.stage0_parallel_validation_used = true;
+  parallel_work_timer_.resume();
+  // Start both workers before the coordinator awaits either result.
+  auto started_generated_task = std::move(generated_task).start();
+  auto started_state_task = std::move(state_task).start();
+  finish_parallel_stage0(std::move(started_generated_task), std::move(started_state_task),
+                         std::move(captured_prev_root), std::move(captured_state_update))
+      .start()
+      .detach("ValidateQuery stage-0 coordinator");
+}
+
+td::actor::Task<> ValidateQuery::finish_parallel_stage0(td::actor::StartedTask<GeneratedBlockTlbResult> generated_task,
+                                                        td::actor::StartedTask<StateApplyResult> state_task,
+                                                        Ref<vm::Cell> captured_prev_root,
+                                                        Ref<vm::Cell> captured_state_update) {
+  auto generated_result = co_await std::move(generated_task).wrap();
+  auto state_result = co_await std::move(state_task).wrap();
+
+  GeneratedBlockTlbResult generated;
+  if (generated_result.is_error()) {
+    generated.failure = {Stage0WorkerFailureKind::FatalVmError,
+                         PSTRING() << "generated Block TL-B task failed: " << generated_result.move_as_error()};
+  } else {
+    generated = generated_result.move_as_ok();
+  }
+  StateApplyResult state;
+  if (state_result.is_error()) {
+    state.captured_prev_root = std::move(captured_prev_root);
+    state.captured_state_update = std::move(captured_state_update);
+    state.failure = {Stage0WorkerFailureKind::FatalVmError,
+                     PSTRING() << "state application task failed: " << state_result.move_as_error()};
+  } else {
+    state = state_result.move_as_ok();
+  }
+
+  stats_.work_time.validate_block_tlb += generated.work_time;
+  stats_.work_time.stage0_state_apply += state.work_time;
+  const auto parallel_work = generated.work_time + state.work_time;
+  stats_.work_time.total += parallel_work;
+  parallel_total_real_time_ += parallel_work.real;
+  parallel_work_timer_.pause();
+
+  stage0_parallel_validation_pending_ = false;
+  if (stage0_parallel_validation_timeout_deferred_) {
+    stage0_parallel_validation_timeout_deferred_ = false;
+    // Re-arm for the serial continuation. compute_prev_state() may still
+    // extend the timeout before the actor yields again.
+    alarm_timestamp() = timeout;
+  }
+  stage0_generated_block_tlb_result_ = std::move(generated);
+  stage0_state_apply_result_ = std::move(state);
+  stage0_parallel_validation_ready_ = true;
+  if (!try_validate()) {
+    fatal_error("cannot validate new block");
+  }
+  co_return {};
+}
+
+bool ValidateQuery::process_stage0_worker_failure(const Stage0WorkerFailure& failure) {
+  switch (failure.kind) {
+    case Stage0WorkerFailureKind::None:
+      return true;
+    case Stage0WorkerFailureKind::FatalVmError:
+      return fatal_error(-666, failure.message);
+    case Stage0WorkerFailureKind::RejectCellCreate:
+      return reject_query("cell create error");
+    case Stage0WorkerFailureKind::RejectCellWrite:
+      return reject_query("cell write error");
+    case Stage0WorkerFailureKind::RejectVmVirtError:
+      return reject_query(failure.message);
+  }
+  UNREACHABLE();
+}
+
+bool ValidateQuery::consume_parallel_stage0_results() {
+  CHECK(stage0_parallel_validation_ready_);
+  CHECK(stage0_generated_block_tlb_result_.has_value());
+  CHECK(stage0_state_apply_result_.has_value());
+  auto generated = std::move(*stage0_generated_block_tlb_result_);
+  auto state = std::move(*stage0_state_apply_result_);
+  stage0_generated_block_tlb_result_.reset();
+  stage0_state_apply_result_.reset();
+  stage0_parallel_validation_ready_ = false;
+
+  // Preserve the serial path's failure priority: generated Block TL-B first.
+  if (!process_stage0_worker_failure(generated.failure)) {
+    return false;
+  }
+  if (!generated.valid) {
+    return reject_query("block "s + id_.to_str() + " failed to pass automated validity checks");
+  }
+  if (!compute_prev_state()) {
+    return fatal_error(-666, "cannot compute previous state");
+  }
+  if (!unpack_prev_state()) {
+    return fatal_error("cannot unpack previous state");
+  }
+
+  // Publish only a result computed from the exact Cell occurrences selected by
+  // the serial path. Otherwise rerun the unchanged serial computation.
+  const bool exact_inputs = prev_state_root_.get() == state.captured_prev_root.get() &&
+                            state_update_.get() == state.captured_state_update.get();
+  if (!exact_inputs) {
+    if (!compute_next_state()) {
+      return reject_query("cannot compute next state");
+    }
+    return true;
+  }
+
+  LOG(DEBUG) << "computing next state";
+  state_info_.reset();
+  if (!process_stage0_worker_failure(state.failure)) {
+    return false;
+  }
+  if (state.apply_error.has_value()) {
+    reject_query("state update is invalid or cannot be applied: "s + state.apply_error->to_string());
+    return reject_query("cannot compute next state");
+  }
+  if (!check_next_state_root(std::move(state.state_root))) {
+    return reject_query("cannot compute next state");
+  }
+  return true;
+}
+
 /**
  * Computes the previous shard state.
  *
@@ -1499,7 +1749,15 @@ bool ValidateQuery::compute_next_state() {
   if (r_state_root.is_error()) {
     return reject_query("state update is invalid or cannot be applied: "s + r_state_root.move_as_error().to_string());
   }
-  state_root_ = r_state_root.move_as_ok();
+  return check_next_state_root(r_state_root.move_as_ok());
+}
+
+/**
+ * Checks and unpacks a next-state root after its Merkle update has been applied.
+ * The split keeps all query-state mutation on the validator actor.
+ */
+bool ValidateQuery::check_next_state_root(Ref<vm::Cell> state_root) {
+  state_root_ = std::move(state_root);
   Bits256 state_hash{state_root_->get_hash().bits()};
   if (state_hash != state_hash_) {
     return reject_query("next state hash mismatch for block "s + id_.to_str() + " : block header declares " +
@@ -7578,8 +7836,17 @@ bool ValidateQuery::try_validate() {
   td::ScopedRealCpuTimer timer_total{stats_.work_time.total};
   try {
     if (stage_ == 0) {
-      LOG(WARNING) << "try_validate stage 0";
-      {
+      if (stage0_parallel_validation_pending_) {
+        return true;
+      }
+      if (!stage0_parallel_validation_ready_) {
+        LOG(WARNING) << "try_validate stage 0";
+      }
+      if (auto prev_root = get_parallel_stage0_prev_root(); prev_root.not_null()) {
+        start_parallel_stage0(std::move(prev_root));
+        return true;
+      }
+      if (!stage0_parallel_validation_ready_) {
         td::ScopedRealCpuTimer timer{stats_.work_time.validate_block_tlb};
         auto tlb_cache = tlb::TLB::ValidateCache::create_for_type(&block::gen::t_Transaction);
         tlb::TLB::ValidateCache::Guard guard(&tlb_cache);
@@ -7589,14 +7856,20 @@ bool ValidateQuery::try_validate() {
       }
       {
         td::ScopedRealCpuTimer timer{stats_.work_time.unpack_state};
-        if (!compute_prev_state()) {
-          return fatal_error(-666, "cannot compute previous state");
-        }
-        if (!unpack_prev_state()) {
-          return fatal_error("cannot unpack previous state");
-        }
-        if (!compute_next_state()) {
-          return reject_query("cannot compute next state");
+        if (stage0_parallel_validation_ready_) {
+          if (!consume_parallel_stage0_results()) {
+            return false;
+          }
+        } else {
+          if (!compute_prev_state()) {
+            return fatal_error(-666, "cannot compute previous state");
+          }
+          if (!unpack_prev_state()) {
+            return fatal_error("cannot unpack previous state");
+          }
+          if (!compute_next_state()) {
+            return reject_query("cannot compute next state");
+          }
         }
         if (is_masterchain() && !check_shard_layout()) {
           return fatal_error("new shard layout is invalid");

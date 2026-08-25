@@ -234,6 +234,7 @@ struct ValidationStats {
   std::string time_stats;
   double actual_time = 0.0;
   bool parallel_accounts_validation = false;
+  bool stage0_parallel_validation_used = false;
 
   struct WorkTimeStats {
     td::RealCpuTimer::Time total;
@@ -244,6 +245,7 @@ struct ValidationStats {
     td::RealCpuTimer::Time trx_other;
     td::RealCpuTimer::Time check_transactions_other;
     td::RealCpuTimer::Time unpack_state;
+    td::RealCpuTimer::Time stage0_state_apply;
     td::RealCpuTimer::Time validate_block_tlb;
     td::RealCpuTimer::Time unpack_block_data;
     td::RealCpuTimer::Time precheck_account_updates;
@@ -264,6 +266,7 @@ struct ValidationStats {
                        << " trx_storage_stat=" << trx_storage_stat.get(is_cpu) << " trx_other=" << trx_other.get(is_cpu)
                        << " check_transactions_other=" << check_transactions_other.get(is_cpu)
                        << " unpack_state=" << unpack_state.get(is_cpu)
+                       << " stage0_state_apply=" << stage0_state_apply.get(is_cpu)
                        << " validate_block_tlb=" << validate_block_tlb.get(is_cpu)
                        << " unpack_block_data=" << unpack_block_data.get(is_cpu)
                        << " precheck_account_updates=" << precheck_account_updates.get(is_cpu)

@@ -153,6 +153,9 @@ class ValidateQuery : public td::actor::Actor {
   bool debug_checks_{false};
   bool parallel_accounts_validation_{false};
   bool parallel_accounts_validation_pending_{false};
+  bool stage0_parallel_validation_pending_{false};
+  bool stage0_parallel_validation_ready_{false};
+  bool stage0_parallel_validation_timeout_deferred_{false};
   bool check_account_failed_{false};
   td::Timer parallel_work_timer_{/*is_paused=*/true};
   double parallel_total_real_time_ = 0.0;
@@ -164,6 +167,7 @@ class ValidateQuery : public td::actor::Actor {
   td::BitArray<64> shard_pfx_;
   int shard_pfx_len_;
   td::Bits256 created_by_;
+  bool preloaded_prev_block_state_roots_supplied_{false};
   std::vector<Ref<vm::Cell>> preloaded_prev_block_state_roots_;
 
   Ref<vm::Cell> prev_state_root_;
@@ -240,6 +244,26 @@ class ValidateQuery : public td::actor::Actor {
   block::tlb::InMsgDescr t_InMsgDescr{0};
   block::tlb::OutMsgDescr t_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict_, out_msg_dict_, account_blocks_dict_;
+  enum class Stage0WorkerFailureKind { None, FatalVmError, RejectCellCreate, RejectCellWrite, RejectVmVirtError };
+  struct Stage0WorkerFailure {
+    Stage0WorkerFailureKind kind{Stage0WorkerFailureKind::None};
+    std::string message;
+  };
+  struct GeneratedBlockTlbResult {
+    bool valid{false};
+    Stage0WorkerFailure failure;
+    td::RealCpuTimer::Time work_time;
+  };
+  struct StateApplyResult {
+    Ref<vm::Cell> captured_prev_root;
+    Ref<vm::Cell> captured_state_update;
+    Ref<vm::Cell> state_root;
+    std::optional<td::Status> apply_error;
+    Stage0WorkerFailure failure;
+    td::RealCpuTimer::Time work_time;
+  };
+  std::optional<GeneratedBlockTlbResult> stage0_generated_block_tlb_result_;
+  std::optional<StateApplyResult> stage0_state_apply_result_;
   block::ValueFlow value_flow_;
   block::CurrencyCollection import_created_, transaction_fees_, total_burned_{0}, fees_burned_{0};
   td::RefInt256 import_fees_;
@@ -343,6 +367,16 @@ class ValidateQuery : public td::actor::Actor {
   bool try_validate();
   bool compute_prev_state();
   bool compute_next_state();
+  bool check_next_state_root(Ref<vm::Cell> state_root);
+  Ref<vm::Cell> get_parallel_stage0_prev_root();
+  void start_parallel_stage0(Ref<vm::Cell> prev_root);
+  static td::actor::Task<GeneratedBlockTlbResult> validate_generated_block_tlb_task(Ref<vm::Cell> block_root);
+  static td::actor::Task<StateApplyResult> apply_state_update_task(Ref<vm::Cell> prev_root, Ref<vm::Cell> state_update);
+  td::actor::Task<> finish_parallel_stage0(td::actor::StartedTask<GeneratedBlockTlbResult> generated_task,
+                                           td::actor::StartedTask<StateApplyResult> state_task,
+                                           Ref<vm::Cell> captured_prev_root, Ref<vm::Cell> captured_state_update);
+  bool process_stage0_worker_failure(const Stage0WorkerFailure& failure);
+  bool consume_parallel_stage0_results();
   bool unpack_merge_prev_state();
   bool unpack_prev_state();
   bool unpack_next_state();

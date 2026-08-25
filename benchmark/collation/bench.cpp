@@ -1399,6 +1399,7 @@ NamedTimes validation_stages(const ton::validator::ValidationStats& stats) {
           {"trx_other", w.trx_other},
           {"check_transactions_other", w.check_transactions_other},
           {"unpack_state", w.unpack_state},
+          {"stage0_state_apply", w.stage0_state_apply},
           {"validate_block_tlb", w.validate_block_tlb},
           {"unpack_block_data", w.unpack_block_data},
           {"precheck_account_updates", w.precheck_account_updates},
@@ -1432,7 +1433,8 @@ void print_sample(const Sample& sample) {
               << " validate_active_ms=" << stats.work_time.total.real * 1000.0
               << " validate_cpu_ms=" << stats.work_time.total.cpu * 1000.0
               << " validation_collated_bytes=" << stats.actual_collated_data_bytes
-              << " validation_collated_hash=" << stats.collated_data_hash.to_hex();
+              << " validation_collated_hash=" << stats.collated_data_hash.to_hex()
+              << " stage0_parallel_validation_used=" << stats.stage0_parallel_validation_used;
   }
   std::cout << '\n';
 }
