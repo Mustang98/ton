@@ -220,12 +220,18 @@ td::Result<int> BagOfCells::import_cell(td::Ref<vm::Cell> cell, int depth) {
   if (logger_ptr_) {
     TRY_STATUS(logger_ptr_->on_cells_processed(1));
   }
-  auto it = cells.find(cell->get_hash());
-  if (it != cells.end()) {
-    auto pos = it->second;
+  auto hash = cell->get_hash();
+  auto [it, inserted] = cells.emplace(hash, static_cast<int>(cell_import_idx_.size()));
+  if (!inserted) {
+    auto pos = cell_import_idx_[it->second];
+    if (pos < 0) {
+      return td::Status::Error("error while importing a cell into a bag of cells: cyclic cell graph");
+    }
     cell_list_[pos].should_cache = true;
     return pos;
   }
+  auto import_idx = it->second;
+  cell_import_idx_.push_back(-1);
   if (cell->is_virtualized()) {
     return td::Status::Error(
         "error while importing a cell into a bag of cells: cell has non-zero virtualization level");
@@ -251,14 +257,14 @@ td::Result<int> BagOfCells::import_cell(td::Ref<vm::Cell> cell, int depth) {
   }
   DCHECK(cell_list_.size() == static_cast<std::size_t>(cell_count));
   auto dc = cs.move_as_loaded_cell().data_cell;
-  auto res = cells.emplace(dc->get_hash(), cell_count);
-  DCHECK(res.second);
+  DCHECK(dc->get_hash() == hash);
   cell_list_.emplace_back(dc, dc->size_refs(), refs);
   CellInfo& dc_info = cell_list_.back();
   dc_info.hcnt = static_cast<unsigned char>(dc->get_level_mask().get_hashes_count());
   dc_info.wt = static_cast<unsigned char>(std::min(0xffU, sum_child_wt));
   dc_info.new_idx = -1;
   data_bytes += dc->get_serialized_size();
+  cell_import_idx_[import_idx] = cell_count;
   return cell_count++;
 }
 

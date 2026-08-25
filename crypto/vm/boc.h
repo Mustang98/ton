@@ -304,7 +304,11 @@ class BagOfCells {
   int max_depth{1024};
   Info info;
   unsigned long long data_bytes{0};
+  // The hash table owns the first-seen registration slot.  A separate vector
+  // holds -1 while that cell is being imported and its final CellInfo index
+  // afterwards, so import_cell() never has to probe the hash table twice.
   td::HashMap<Hash, int> cells;
+  std::vector<int> cell_import_idx_;
   struct CellInfo {
     Ref<DataCell> dc_ref;
     std::array<int, 4> ref_idx;
@@ -385,6 +389,7 @@ class BagOfCells {
     int_refs = 0;
     data_bytes = 0;
     cells.clear();
+    cell_import_idx_.clear();
     cell_list_.clear();
   }
   td::uint64 compute_sizes(int mode, int& r_size, int& o_size);
