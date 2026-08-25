@@ -17,6 +17,7 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #pragma once
+#include <algorithm>
 #include <map>
 #include <queue>
 
@@ -42,6 +43,18 @@ namespace ton {
 
 namespace validator {
 using td::Ref;
+
+class NewOutMsgQueue
+    : public std::priority_queue<block::NewOutMsg, std::vector<block::NewOutMsg>, std::greater<block::NewOutMsg>> {
+ public:
+  // Like priority_queue::pop(), this requires the queue to be non-empty.
+  block::NewOutMsg pop_move() {
+    std::pop_heap(c.begin(), c.end(), comp);
+    auto result = std::move(c.back());
+    c.pop_back();
+    return result;
+  }
+};
 
 class Collator final : public td::actor::Actor {
  public:
@@ -206,7 +219,7 @@ class Collator final : public td::actor::Actor {
   std::optional<std::pair<td::Ref<ExtMessage>, int>> pending_ext_msg_;
   td::CancellationTokenSource ext_msg_cancellation_;
 
-  std::priority_queue<NewOutMsg, std::vector<NewOutMsg>, std::greater<NewOutMsg>> new_msgs;
+  NewOutMsgQueue new_msgs;
   std::pair<ton::LogicalTime, ton::Bits256> last_proc_int_msg_, first_unproc_int_msg_;
   block::tlb::Aug_InMsgDescr aug_InMsgDescr{0};
   block::tlb::Aug_OutMsgDescr aug_OutMsgDescr{0};
