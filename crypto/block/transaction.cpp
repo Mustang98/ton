@@ -835,12 +835,11 @@ namespace transaction {
  * @param req_start_lt The minimal logical time of the transaction.
  * @param _now The current Unix time.
  * @param _inmsg The input message that caused the transaction.
- * @param _collect_storage_stat_updates Whether to retain cells used to update collator storage statistics.
  *
  * @returns None
  */
 Transaction::Transaction(const Account& _account, int ttype, ton::LogicalTime req_start_lt, ton::UnixTime _now,
-                         Ref<vm::Cell> _inmsg, bool _collect_storage_stat_updates)
+                         Ref<vm::Cell> _inmsg)
     : trans_type(ttype)
     , is_first(_account.transactions.empty())
     , new_tick(_account.tick)
@@ -857,8 +856,7 @@ Transaction::Transaction(const Account& _account, int ttype, ton::LogicalTime re
     , new_code(_account.code)
     , new_data(_account.data)
     , new_library(_account.library)
-    , in_msg(std::move(_inmsg))
-    , collect_storage_stat_updates(_collect_storage_stat_updates) {
+    , in_msg(std::move(_inmsg)) {
   start_lt = std::max(req_start_lt, account.last_trans_end_lt_);
   end_lt = start_lt + 1;
   acc_status = (account.status == Account::acc_nonexist ? Account::acc_uninit : account.status);
@@ -3335,7 +3333,7 @@ td::Status Transaction::check_state_limits(const SizeLimitsConfig& size_limits, 
     }
     StorageStatCalculationContext context{is_account_stat};
     StorageStatCalculationContext::Guard guard{&context};
-    if (is_account_stat && collect_storage_stat_updates) {
+    if (is_account_stat) {
       storage_stat_updates.push_back(new_code);
       storage_stat_updates.push_back(new_data);
       storage_stat_updates.push_back(new_library);
@@ -3673,9 +3671,7 @@ bool Transaction::compute_state(const SerializeConfig& cfg) {
     AccountStorageStat& stats = new_account_storage_stat.value_force();
     // Don't check Merkle depth and size here - they were checked in check_state_limits
     auto roots = new_storage_for_stat->prefetch_all_refs();
-    if (collect_storage_stat_updates) {
-      storage_stat_updates.insert(storage_stat_updates.end(), roots.begin(), roots.end());
-    }
+    storage_stat_updates.insert(storage_stat_updates.end(), roots.begin(), roots.end());
     {
       td::RealCpuTimer timer;
       StorageStatCalculationContext context{true};
