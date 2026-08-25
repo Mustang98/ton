@@ -34,6 +34,11 @@ class MerkleUpdate {
   // must not fail.
   static td::Result<Ref<Cell>> apply(Ref<Cell> from, Ref<Cell> update, StoreCellHint *hint = nullptr);
 
+  // Validates `update` and applies it to `from` in one traversal. This is
+  // equivalent to validate(update) + may_apply(from, update) + apply(from,
+  // update): matching previous-state cells must not bypass proof validation.
+  static td::Result<Ref<Cell>> validate_and_apply(Ref<Cell> from, Ref<Cell> update, StoreCellHint *hint = nullptr);
+
   // check if update is valid
   static TD_WARN_UNUSED_RESULT td::Status validate(Ref<Cell> update);
   // check that hash in from is same as hash stored in update. Do not validate update

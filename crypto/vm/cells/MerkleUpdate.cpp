@@ -16,6 +16,8 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <vector>
+
 #include "td/utils/HashMap.h"
 #include "td/utils/HashSet.h"
 #include "vm/cells/MerkleProof.h"
@@ -181,6 +183,140 @@ class MerkleUpdateValidator {
     return td::Status::OK();
   }
 };
+
+// Validation and application walk the same proof trees. Keep the independent
+// implementations above as reference paths, and share those walks only for
+// callers which explicitly request both operations.
+class MerkleUpdateValidateApply {
+ public:
+  td::Result<Ref<Cell>> apply(Ref<Cell> from, Ref<Cell> update_from, Ref<Cell> update_to, td::uint32 from_level,
+                              td::uint32 to_level, StoreCellHint *hint = nullptr) {
+    if (from_level != from->get_level()) {
+      return td::Status::Error("level mismatch");
+    }
+    hint_ = hint;
+    if (hint_ != nullptr) {
+      *hint_ = StoreCellHint{};
+    }
+    TRY_STATUS(dfs_from(std::move(from), std::move(update_from), from_level));
+    return dfs_to(std::move(update_to), to_level);
+  }
+
+ private:
+  using Key = std::pair<Cell::Hash, unsigned>;
+
+  struct KnownCell {
+    Ref<Cell> proof;
+    Ref<Cell> original;
+    unsigned proof_merkle_depth;
+  };
+
+  // Validation and application index the same effective hash. Retain both the
+  // first proof cell and the first matching original cell, preserving the
+  // legacy replacement choice when equal hashes have distinct object context.
+  td::HashMap<Cell::Hash, KnownCell> known_cells_;
+
+  // Publish a rebuilt cell only after its children are complete. A stable slot
+  // also turns an in-progress same-key revisit into an error instead of using a
+  // partially built result.
+  td::HashMap<Key, std::size_t> ready_slots_;
+  std::vector<Ref<Cell>> ready_cells_;
+  td::HashSet<Key> visited_from_;
+  StoreCellHint *hint_{nullptr};
+
+  td::Status dfs_from(Ref<Cell> original, Ref<Cell> update_from, unsigned merkle_depth) {
+    Key key{update_from->get_hash(), merkle_depth};
+    if (!visited_from_.emplace(key).second) {
+      return td::Status::OK();
+    }
+
+    CellSlice update_slice(NoVm(), update_from);
+    auto effective_hash = update_from->get_hash(merkle_depth);
+    auto [it, added] = known_cells_.emplace(effective_hash, KnownCell{update_from, {}, merkle_depth});
+    if (!added) {
+      TRY_STATUS(compare_cells(update_from, merkle_depth, it->second.proof, it->second.proof_merkle_depth));
+    }
+
+    // This is the comparison performed by MerkleUpdateApply::dfs_both. It also
+    // proves that every expanded update_from node has a corresponding node in
+    // the supplied previous state.
+    TRY_STATUS(compare_cells(original, merkle_depth, update_from, merkle_depth));
+    if (added) {
+      it->second.original = original;
+    }
+
+    if (update_slice.special_type() == Cell::SpecialType::PrunnedBranch) {
+      return td::Status::OK();
+    }
+    auto child_merkle_depth = update_slice.child_merkle_depth(merkle_depth);
+    CellSlice original_slice(NoVm(), original);
+    if (original_slice.size_refs() != update_slice.size_refs()) {
+      return td::Status::Error("cell ref count mismatch");
+    }
+    for (unsigned i = 0; i < update_slice.size_refs(); ++i) {
+      TRY_STATUS(dfs_from(original_slice.prefetch_ref(i), update_slice.prefetch_ref(i), child_merkle_depth));
+    }
+    return td::Status::OK();
+  }
+
+  td::Result<Ref<Cell>> dfs_to(Ref<Cell> cell, unsigned merkle_depth) {
+    Key key{cell->get_hash(), merkle_depth};
+    auto [slot_it, inserted] = ready_slots_.emplace(key, ready_cells_.size());
+    if (!inserted) {
+      auto &ready = ready_cells_[slot_it->second];
+      if (ready.is_null()) {
+        return td::Status::Error("incomplete Merkle update traversal");
+      }
+      return ready;
+    }
+    auto slot = slot_it->second;
+    ready_cells_.emplace_back();
+
+    CellSlice cs(NoVm(), cell);
+    if (cs.special_type() == Cell::SpecialType::PrunnedBranch) {
+      Ref<Cell> result = cell;
+      if (cell->get_level() == merkle_depth + 1) {
+        CellHash hash = cell->get_hash(merkle_depth);
+
+        // First preserve MerkleUpdateValidator's proof-consistency check.
+        auto known_it = known_cells_.find(hash);
+        if (known_it == known_cells_.end()) {
+          return td::Status::Error(PSLICE() << "Unknown prunned cell (validate): " << hash.to_hex());
+        }
+        auto &known = known_it->second;
+        TRY_STATUS(compare_cells(cell, merkle_depth, known.proof, known.proof_merkle_depth));
+
+        // Then perform MerkleUpdateApply's replacement with the actual
+        // previous-state cell.
+        if (known.original.is_null()) {
+          return td::Status::Error(PSTRING() << "unknown prunned branch " << hash.to_hex());
+        }
+        TRY_STATUS(compare_cells(known.original, known.original->get_level(), cell, merkle_depth));
+        if (hint_ != nullptr) {
+          hint_->prev_state_cells.insert(hash);
+        }
+        result = known.original;
+      }
+      ready_cells_[slot] = result;
+      return result;
+    }
+
+    auto child_merkle_depth = cs.child_merkle_depth(merkle_depth);
+    CellBuilder cb;
+    cb.store_bits(cs.fetch_bits(cs.size()));
+    for (unsigned i = 0; i < cs.size_refs(); ++i) {
+      TRY_RESULT(ref, dfs_to(cs.prefetch_ref(i), child_merkle_depth));
+      cb.store_ref(std::move(ref));
+    }
+    auto hash_hint = [&](unsigned level, const Cell::LevelMask &, CellHash &hash) {
+      hash = cell->get_hash(std::min(level, merkle_depth));
+      return true;
+    };
+    auto result = cb.finalize(cs.is_special(), std::move(hash_hint));
+    ready_cells_[slot] = result;
+    return result;
+  }
+};
 }  // namespace detail
 
 td::Status MerkleUpdate::may_apply(Ref<Cell> from, Ref<Cell> update) {
@@ -209,6 +345,23 @@ td::Result<Ref<Cell>> MerkleUpdate::apply(Ref<Cell> from, Ref<Cell> update, Stor
   auto update_from = cs.fetch_ref();
   auto update_to = cs.fetch_ref();
   return apply_raw(std::move(from), std::move(update_from), std::move(update_to), 0, 0, hint);
+}
+
+td::Result<Ref<Cell>> MerkleUpdate::validate_and_apply(Ref<Cell> from, Ref<Cell> update, StoreCellHint *hint) {
+  if (update->get_level() != 0) {
+    return td::Status::Error("nonzero level");
+  }
+  CellSlice cs(NoVm(), std::move(update));
+  if (cs.special_type() != Cell::SpecialType::MerkleUpdate) {
+    return td::Status::Error("not a MerkleUpdate cell");
+  }
+  if (from->get_level() != 0) {
+    return td::Status::Error("Level of update of from is not zero");
+  }
+  auto update_from = cs.fetch_ref();
+  auto update_to = cs.fetch_ref();
+  return detail::MerkleUpdateValidateApply().apply(std::move(from), std::move(update_from), std::move(update_to), 0, 0,
+                                                   hint);
 }
 
 td::Result<Ref<Cell>> MerkleUpdate::apply_raw(Ref<Cell> from, Ref<Cell> update_from, Ref<Cell> update_to,
