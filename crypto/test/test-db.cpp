@@ -751,6 +751,143 @@ class VirtualizeOverrideProbe final : public Cell {
   std::shared_ptr<VirtualizeOverrideProbeState> state_;
 };
 
+struct BocTraversalProbeState {
+  std::vector<std::string> events;
+  std::vector<td::uint32> requested_levels;
+  std::vector<unsigned> refcounts_during_virtualize;
+  unsigned destructions{0};
+};
+
+class BocTraversalProbe final : public Cell {
+ public:
+  static Ref<Cell> create(Ref<Cell> view, std::string name, std::shared_ptr<BocTraversalProbeState> state,
+                          bool fail_load = false) {
+    return Ref<BocTraversalProbe>{true, std::move(view), std::move(name), std::move(state), fail_load};
+  }
+
+  BocTraversalProbe(Ref<Cell> view, std::string name, std::shared_ptr<BocTraversalProbeState> state, bool fail_load)
+      : view_(std::move(view)), name_(std::move(name)), state_(std::move(state)), fail_load_(fail_load) {
+  }
+
+  ~BocTraversalProbe() override {
+    ++state_->destructions;
+  }
+
+  td::Status set_data_cell(Ref<DataCell> &&data_cell) const override {
+    return view_->set_data_cell(std::move(data_cell));
+  }
+
+  td::Result<LoadedCell> load_cell() const override {
+    state_->events.push_back(name_ + ".load");
+    if (fail_load_) {
+      return td::Status::Error("synthetic direct-ref load failure");
+    }
+    return view_->load_cell();
+  }
+
+  Ref<Cell> virtualize(td::uint32 effective_level) const override {
+    state_->events.push_back(name_ + ".virtualize." + std::to_string(effective_level));
+    state_->requested_levels.push_back(effective_level);
+    state_->refcounts_during_virtualize.push_back(static_cast<unsigned>(get_refcnt()));
+    if (get_level() <= effective_level) {
+      return Ref<Cell>(this);
+    }
+    return view_->virtualize(effective_level);
+  }
+
+  bool is_virtualized() const override {
+    return view_->is_virtualized();
+  }
+
+  CellUsageTree::NodePtr get_tree_node() const override {
+    return view_->get_tree_node();
+  }
+
+  bool is_loaded() const override {
+    return view_->is_loaded();
+  }
+
+  LevelMask get_level_mask() const override {
+    return view_->get_level_mask();
+  }
+
+ private:
+  td::uint16 do_get_depth(td::uint32 level) const override {
+    return view_->get_depth(level);
+  }
+
+  const Hash do_get_hash(td::uint32 level) const override {
+    return view_->get_hash(level);
+  }
+
+  Ref<Cell> view_;
+  std::string name_;
+  std::shared_ptr<BocTraversalProbeState> state_;
+  bool fail_load_;
+};
+
+struct BocCycleProbeState {
+  Ref<DataCell> loaded;
+  unsigned load_calls{0};
+  unsigned virtualize_calls{0};
+};
+
+class BocCycleProbe final : public Cell {
+ public:
+  static Ref<Cell> create(Ref<Cell> hash_claim, std::shared_ptr<BocCycleProbeState> state) {
+    return Ref<BocCycleProbe>{true, std::move(hash_claim), std::move(state)};
+  }
+
+  BocCycleProbe(Ref<Cell> hash_claim, std::shared_ptr<BocCycleProbeState> state)
+      : hash_claim_(std::move(hash_claim)), state_(std::move(state)) {
+  }
+
+  td::Status set_data_cell(Ref<DataCell> &&data_cell) const override {
+    state_->loaded = std::move(data_cell);
+    return td::Status::OK();
+  }
+
+  td::Result<LoadedCell> load_cell() const override {
+    ++state_->load_calls;
+    CHECK(state_->loaded.not_null());
+    return LoadedCell{state_->loaded, state_->loaded->get_level(), {}};
+  }
+
+  Ref<Cell> virtualize(td::uint32 effective_level) const override {
+    ++state_->virtualize_calls;
+    CHECK(get_level() <= effective_level);
+    return Ref<Cell>(this);
+  }
+
+  bool is_virtualized() const override {
+    return false;
+  }
+
+  CellUsageTree::NodePtr get_tree_node() const override {
+    return {};
+  }
+
+  bool is_loaded() const override {
+    return true;
+  }
+
+  LevelMask get_level_mask() const override {
+    return hash_claim_->get_level_mask();
+  }
+
+ private:
+  td::uint16 do_get_depth(td::uint32 level) const override {
+    return hash_claim_->get_depth(level);
+  }
+
+  const Hash do_get_hash(td::uint32 level) const override {
+    return hash_claim_->get_hash(level);
+  }
+
+  Ref<Cell> hash_claim_;
+  std::shared_ptr<BocCycleProbeState> state_;
+};
+
 }  // namespace
 
 TEST(Cell, VirtualizeRefDataCellPaths) {
@@ -936,6 +1073,210 @@ TEST(TonDb, VirtualizeRefPreservesStaticBocRootSemantics) {
   ASSERT_TRUE(root.is_null());
   ASSERT_TRUE(result.get() == inner_root_ptr);
   ASSERT_TRUE(weak_db.expired());
+}
+
+TEST(TonDb, BocDirectRefsPreserveEffectiveLevelAndOverrideLifetime) {
+  auto check = [](Ref<Cell> expected_root, Ref<Cell> actual_root, const std::shared_ptr<BocTraversalProbeState> &state,
+                  std::vector<std::string> expected_events, std::vector<td::uint32> expected_levels,
+                  unsigned expected_destructions) {
+    ASSERT_EQ(expected_root->get_hash(), actual_root->get_hash());
+    ASSERT_EQ(serialize_boc(expected_root, 31), serialize_boc(actual_root, 31));
+    ASSERT_TRUE(state->events == expected_events);
+    ASSERT_TRUE(state->requested_levels == expected_levels);
+    ASSERT_EQ(expected_levels.size(), state->refcounts_during_virtualize.size());
+    for (auto refcount : state->refcounts_during_virtualize) {
+      ASSERT_EQ(2u, refcount);
+    }
+    ASSERT_EQ(0u, state->destructions);
+    actual_root.clear();
+    ASSERT_EQ(expected_destructions, state->destructions);
+  };
+
+  {
+    auto child = make_level_three_pruned_data_cell();
+    auto expected_root = CellBuilder{}.store_long(0x61, 8).store_ref(child).finalize_novm();
+    auto state = std::make_shared<BocTraversalProbeState>();
+    auto wrapped_child = BocTraversalProbe::create(child, "ordinary", state);
+    auto actual_root = CellBuilder{}.store_long(0x61, 8).store_ref(std::move(wrapped_child)).finalize_novm();
+    check(std::move(expected_root), std::move(actual_root), state, {"ordinary.virtualize.3", "ordinary.load"}, {3}, 1);
+  }
+
+  {
+    auto child = make_level_three_pruned_data_cell();
+    auto expected_root = CellBuilder::create_merkle_proof(child);
+    auto state = std::make_shared<BocTraversalProbeState>();
+    auto wrapped_child = BocTraversalProbe::create(child, "proof", state);
+    auto actual_root = CellBuilder::create_merkle_proof(std::move(wrapped_child));
+    check(std::move(expected_root), std::move(actual_root), state, {"proof.virtualize.3", "proof.load"}, {3}, 1);
+  }
+
+  {
+    auto make_pruned = [](unsigned tag) {
+      auto leaf = CellBuilder{}.store_long(tag, 16).finalize_novm();
+      auto branch = CellBuilder{}.store_long(tag ^ 0x55aa, 16).store_ref(std::move(leaf)).finalize_novm();
+      return CellBuilder::do_create_pruned_branch(std::move(branch), 3);
+    };
+    auto from = make_pruned(0x6201);
+    auto to = make_pruned(0x6202);
+    auto expected_root = CellBuilder::create_merkle_update(from, to);
+    auto state = std::make_shared<BocTraversalProbeState>();
+    auto wrapped_from = BocTraversalProbe::create(from, "update.from", state);
+    auto wrapped_to = BocTraversalProbe::create(to, "update.to", state);
+    auto actual_root = CellBuilder::create_merkle_update(std::move(wrapped_from), std::move(wrapped_to));
+    check(std::move(expected_root), std::move(actual_root), state,
+          {"update.from.virtualize.3", "update.from.load", "update.to.virtualize.3", "update.to.load"}, {3, 3}, 2);
+  }
+}
+
+TEST(TonDb, BocDirectRefsPreserveUsageTreeOrderAndExpiredContext) {
+  auto grandchild = CellBuilder{}.store_long(0x51, 8).finalize_novm();
+  auto expected_left = CellBuilder{}.store_long(0x52, 8).store_ref(grandchild).finalize_novm();
+  auto right = CellBuilder{}.store_long(0x53, 8).finalize_novm();
+  auto expected_root = CellBuilder{}.store_long(0x54, 8).store_ref(expected_left).store_ref(right).finalize_novm();
+  auto expected = serialize_boc(expected_root, 31);
+
+  auto state = std::make_shared<BocTraversalProbeState>();
+  auto grandchild_probe = BocTraversalProbe::create(grandchild, "grandchild", state);
+  auto actual_left = CellBuilder{}.store_long(0x52, 8).store_ref(std::move(grandchild_probe)).finalize_novm();
+  auto left_probe = BocTraversalProbe::create(actual_left, "left", state);
+  auto right_probe = BocTraversalProbe::create(right, "right", state);
+  auto actual_root = CellBuilder{}
+                         .store_long(0x54, 8)
+                         .store_ref(std::move(left_probe))
+                         .store_ref(std::move(right_probe))
+                         .finalize_novm();
+  ASSERT_EQ(expected_root->get_hash(), actual_root->get_hash());
+
+  auto usage_tree = std::make_shared<CellUsageTree>();
+  std::vector<td::uint32> callback_levels;
+  usage_tree->set_cell_load_callback([&](const LoadedCell &loaded) {
+    callback_levels.push_back(loaded.effective_level);
+    if (loaded.data_cell->get_hash() == actual_root->get_hash()) {
+      state->events.push_back("root.usage_load");
+    } else if (loaded.data_cell->get_hash() == actual_left->get_hash()) {
+      state->events.push_back("left.usage_load");
+    } else if (loaded.data_cell->get_hash() == grandchild->get_hash()) {
+      state->events.push_back("grandchild.usage_load");
+    } else if (loaded.data_cell->get_hash() == right->get_hash()) {
+      state->events.push_back("right.usage_load");
+    } else {
+      UNREACHABLE();
+    }
+  });
+  auto usage_root = UsageCell::create(actual_root, usage_tree->root_ptr());
+  ASSERT_EQ(expected, serialize_boc(std::move(usage_root), 31));
+  ASSERT_TRUE(state->events ==
+              (std::vector<std::string>{"root.usage_load", "left.virtualize.0", "left.load", "left.usage_load",
+                                        "grandchild.virtualize.0", "grandchild.load", "grandchild.usage_load",
+                                        "right.virtualize.0", "right.load", "right.usage_load"}));
+  ASSERT_TRUE(callback_levels == (std::vector<td::uint32>{0, 0, 0, 0}));
+
+  auto root_id = usage_tree->root_id();
+  auto left_id = usage_tree->get_child(root_id, 0);
+  auto right_id = usage_tree->get_child(root_id, 1);
+  auto grandchild_id = usage_tree->get_child(left_id, 0);
+  ASSERT_TRUE(usage_tree->is_loaded(root_id));
+  ASSERT_TRUE(usage_tree->is_loaded(left_id));
+  ASSERT_TRUE(usage_tree->is_loaded(right_id));
+  ASSERT_TRUE(usage_tree->is_loaded(grandchild_id));
+
+  auto expired_tree = std::make_shared<CellUsageTree>();
+  auto expired_root = UsageCell::create(expected_root, expired_tree->root_ptr());
+  expired_tree.reset();
+  ASSERT_EQ(expected, serialize_boc(std::move(expired_root), 31));
+}
+
+TEST(TonDb, BocDirectRefsPreserveLazyRootOwnership) {
+  auto shared_leaf = CellBuilder{}.store_long(0x123456, 24).finalize_novm();
+  auto left = CellBuilder{}.store_long(0x71, 8).store_ref(shared_leaf).finalize_novm();
+  auto right = CellBuilder{}.store_long(0x72, 8).store_ref(shared_leaf).finalize_novm();
+  auto source = CellBuilder{}.store_long(0x73, 8).store_ref(left).store_ref(right).finalize_novm();
+
+  for (auto mode : get_serialization_modes()) {
+    auto expected = serialize_boc(source, mode);
+    auto db = StaticBagOfCellsDbLazy::create(td::BufferSlice(expected)).move_as_ok();
+    std::weak_ptr<StaticBagOfCellsDb> weak_db = db;
+    auto root = db->get_root_cell(0).move_as_ok();
+    db.reset();
+    ASSERT_TRUE(!weak_db.expired());
+
+    BagOfCells boc;
+    ASSERT_EQ(1, boc.set_root(std::move(root)));
+    boc.import_cells().ensure();
+    ASSERT_TRUE(!weak_db.expired());
+    ASSERT_EQ(expected, boc.serialize_to_string(mode));
+    boc.clear();
+    ASSERT_TRUE(weak_db.expired());
+  }
+}
+
+TEST(TonDb, BocDirectRefsPreserveLoadFailureOrderAndRetry) {
+  auto state = std::make_shared<BocTraversalProbeState>();
+  auto bad_view = CellBuilder{}.store_long(0x81, 8).finalize_novm();
+  auto later_view = CellBuilder{}.store_long(0x82, 8).finalize_novm();
+  auto bad = BocTraversalProbe::create(bad_view, "bad", state, true);
+  auto later = BocTraversalProbe::create(later_view, "later", state);
+  auto root_view =
+      CellBuilder{}.store_long(0x83, 8).store_ref(std::move(bad)).store_ref(std::move(later)).finalize_novm();
+  auto root = BocTraversalProbe::create(std::move(root_view), "root", state);
+
+  BagOfCells boc;
+  ASSERT_EQ(1, boc.set_root(root));
+  const std::string expected_error =
+      "error while importing a cell into a bag of cells: [Error : 0 : synthetic direct-ref load failure]";
+  for (unsigned attempt = 0; attempt < 2; ++attempt) {
+    auto status = boc.import_cells();
+    ASSERT_TRUE(status.is_error());
+    ASSERT_EQ(expected_error, status.message().str());
+    ASSERT_TRUE(state->events == (std::vector<std::string>{"root.load", "bad.virtualize.0", "bad.load"}));
+    state->events.clear();
+    state->requested_levels.clear();
+    state->refcounts_during_virtualize.clear();
+  }
+  ASSERT_EQ(0u, state->destructions);
+  boc.clear();
+  root.clear();
+  ASSERT_EQ(3u, state->destructions);
+}
+
+TEST(TonDb, BocDirectRefsPreserveMalformedCycleDepthError) {
+  auto claim = CellBuilder{}.store_long(0x91, 8).finalize_novm();
+  auto state = std::make_shared<BocCycleProbeState>();
+  auto cycle = BocCycleProbe::create(std::move(claim), state);
+  state->loaded = CellBuilder{}.store_ref(cycle).finalize_novm();
+
+  BagOfCells boc;
+  ASSERT_EQ(1, boc.set_root(cycle));
+  auto status = boc.import_cells();
+  ASSERT_TRUE(status.is_error());
+  ASSERT_EQ("error while importing a cell into a bag of cells: cell depth too large", status.message().str());
+  ASSERT_EQ(1025u, state->load_calls);
+  ASSERT_EQ(1025u, state->virtualize_calls);
+
+  boc.clear();
+  state->loaded.clear();
+  cycle.clear();
+}
+
+TEST(TonDb, BocDirectRefsPreserveDuplicateDagAndAllModes) {
+  auto equal_leaf_a = CellBuilder{}.store_long(0x123456, 24).finalize_novm();
+  auto equal_leaf_b = CellBuilder{}.store_long(0x123456, 24).finalize_novm();
+  ASSERT_TRUE(equal_leaf_a.get() != equal_leaf_b.get());
+  ASSERT_EQ(equal_leaf_a->get_hash(), equal_leaf_b->get_hash());
+  auto branch = CellBuilder{}.store_long(0xa7, 8).store_ref(equal_leaf_a).store_ref(equal_leaf_b).finalize_novm();
+
+  ASSERT_EQ("b5ee9c7201010201000a000202a701010006123456", td::hex_encode(serialize_boc(branch, 0)));
+  std::vector<Ref<Cell>> roots{branch, branch, equal_leaf_b};
+  ASSERT_EQ("b5ee9c7201010203000a0000010202a701010006123456", td::hex_encode(serialize_boc(roots, 0)));
+  ASSERT_EQ("b5ee9c72e1010203000a0000010b150202a70101000612345615a57a8e", td::hex_encode(serialize_boc(roots, 31)));
+
+  for (auto mode : get_serialization_modes()) {
+    auto serialized = serialize_boc(branch, mode);
+    ASSERT_EQ(serialized, serialize_boc(deserialize_boc(serialized), mode));
+
+    auto multi = serialize_boc(roots, mode);
+    ASSERT_EQ(multi, serialize_boc(deserialize_boc_multiple(multi), mode));
+  }
 }
 
 TEST(Cell, MerkleProof) {

@@ -236,12 +236,27 @@ td::Result<int> BagOfCells::import_cell(td::Ref<vm::Cell> cell, int depth) {
                              r_loaded_dc.move_as_error().to_string());
   }
   auto loaded_dc = r_loaded_dc.move_as_ok();
-  CellSlice cs(std::move(loaded_dc));
+  auto dc = std::move(loaded_dc.data_cell);
   std::array<int, 4> refs{-1};
-  DCHECK(cs.size_refs() <= 4);
+  auto refs_count = dc->get_refs_cnt();
+  DCHECK(refs_count <= 4);
+  auto child_effective_level = loaded_dc.effective_level;
+  if (refs_count != 0 &&
+      (dc->special_type() == Cell::SpecialType::MerkleProof || dc->special_type() == Cell::SpecialType::MerkleUpdate)) {
+    ++child_effective_level;
+  }
   unsigned sum_child_wt = 1;
-  for (unsigned i = 0; i < cs.size_refs(); i++) {
-    auto ref = import_cell(cs.prefetch_ref(i), depth + 1);
+  for (unsigned i = 0; i < refs_count; i++) {
+    // This is exactly CellSlice::prefetch_ref()'s context propagation. BOC
+    // import doesn't consume bits, so constructing and preloading a full
+    // CellSlice for every cell only to enumerate its references is redundant.
+    auto child = dc->get_ref(i);
+    auto* child_ptr = child.get();
+    child = child_ptr->virtualize_ref(std::move(child), child_effective_level);
+    if (!loaded_dc.tree_node.empty()) {
+      child = UsageCell::create(std::move(child), loaded_dc.tree_node.create_child(i));
+    }
+    auto ref = import_cell(std::move(child), depth + 1);
     if (ref.is_error()) {
       return ref.move_as_error();
     }
@@ -250,10 +265,9 @@ td::Result<int> BagOfCells::import_cell(td::Ref<vm::Cell> cell, int depth) {
     ++int_refs;
   }
   DCHECK(cell_list_.size() == static_cast<std::size_t>(cell_count));
-  auto dc = cs.move_as_loaded_cell().data_cell;
   auto res = cells.emplace(dc->get_hash(), cell_count);
   DCHECK(res.second);
-  cell_list_.emplace_back(dc, dc->size_refs(), refs);
+  cell_list_.emplace_back(dc, refs_count, refs);
   CellInfo& dc_info = cell_list_.back();
   dc_info.hcnt = static_cast<unsigned char>(dc->get_level_mask().get_hashes_count());
   dc_info.wt = static_cast<unsigned char>(std::min(0xffU, sum_child_wt));
