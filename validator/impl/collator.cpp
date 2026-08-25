@@ -6424,12 +6424,13 @@ bool Collator::create_block_candidate() {
   if (collated_roots_.empty()) {
     cdata_slice = td::BufferSlice{0};
   } else {
-    boc.set_roots(collated_roots_);
-    res = boc.import_cells();
+    vm::BagOfCells boc_collated;
+    boc_collated.set_roots(collated_roots_);
+    res = boc_collated.import_cells();
     if (res.is_error()) {
       return fatal_error(res.move_as_error());
     }
-    auto cdata_res = boc.serialize_to_slice(2);
+    auto cdata_res = boc_collated.serialize_to_slice(2);
     if (cdata_res.is_error()) {
       LOG(ERROR) << "cannot serialize collated data";
       return fatal_error(cdata_res.move_as_error());
