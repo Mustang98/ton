@@ -255,8 +255,6 @@ class Collator final : public td::actor::Actor {
 
   std::unique_ptr<vm::AugmentedDictionary> account_dict_estimator_;
   std::set<td::Bits256> account_dict_estimator_added_accounts_;
-  // Keys point into the set above; std::set keeps element addresses stable across insertions.
-  std::vector<std::pair<td::ConstBitPtr, Ref<vm::CellBuilder>>> account_dict_estimator_pending_;
   unsigned account_dict_ops_{0};
 
   bool msg_metadata_enabled_ = false;

@@ -5761,33 +5761,23 @@ bool Collator::register_dispatch_queue_op(bool force) {
  */
 bool Collator::update_account_dict_estimation(const block::transaction::Transaction& trans) {
   const block::Account& acc = trans.account;
-  if (acc.orig_total_state->get_hash() != acc.total_state->get_hash()) {
-    auto [account_it, inserted] = account_dict_estimator_added_accounts_.insert(acc.addr);
-    if (inserted) {
-      // see combine_account_transactions
-      if (acc.status == block::Account::acc_nonexist) {
-        account_dict_estimator_pending_.emplace_back(account_it->bits(), Ref<vm::CellBuilder>{});
-      } else {
-        Ref<vm::CellBuilder> value{true};
-        auto& builder = value.write();
-        if (!(builder.store_ref_bool(acc.total_state) &&           // account_descr$_ account:^Account
-              builder.store_bits_bool(acc.last_trans_hash_) &&     // last_trans_hash:bits256
-              builder.store_long_bool(acc.last_trans_lt_, 64))) {  // last_trans_lt:uint64
-          account_dict_estimator_added_accounts_.erase(account_it);
-          return false;
-        }
-        account_dict_estimator_pending_.emplace_back(account_it->bits(), std::move(value));
+  if (acc.orig_total_state->get_hash() != acc.total_state->get_hash() &&
+      account_dict_estimator_added_accounts_.insert(acc.addr).second) {
+    // see combine_account_transactions
+    if (acc.status == block::Account::acc_nonexist) {
+      account_dict_estimator_->lookup_delete(acc.addr);
+    } else {
+      vm::CellBuilder cb;
+      if (!(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
+            && cb.store_bits_bool(acc.last_trans_hash_)    // last_trans_hash:bits256
+            && cb.store_long_bool(acc.last_trans_lt_, 64)  // last_trans_lt:uint64
+            && account_dict_estimator_->set_builder(acc.addr, cb))) {
+        return false;
       }
     }
   }
   ++account_dict_ops_;
   if (!(account_dict_ops_ & 15)) {
-    if (!account_dict_estimator_pending_.empty()) {
-      if (!account_dict_estimator_->multiset(account_dict_estimator_pending_)) {
-        return false;
-      }
-      account_dict_estimator_pending_.clear();
-    }
     return block_limit_status_->add_proof(account_dict_estimator_->get_root_cell());
   }
   return true;
