@@ -57,14 +57,6 @@ DispatchTable* OpcodeTable::finalize() {
   }
 
   instruction_list.shrink_to_fit();
-  std::size_t interval = 0;
-  for (unsigned prefix = 0; prefix < lookup_prefix_count; ++prefix) {
-    unsigned opcode = prefix << (max_opcode_bits - lookup_prefix_bits);
-    while (interval + 1 < instruction_list.size() && instruction_list[interval + 1].first <= opcode) {
-      ++interval;
-    }
-    instruction_prefix_index[prefix] = static_cast<unsigned>(interval);
-  }
   final = true;
   return this;
 }
@@ -109,14 +101,7 @@ bool OpcodeTable::insert_bool(const OpcodeInstr* instr) {
 }
 
 const OpcodeInstr* OpcodeTable::lookup_instr(unsigned opcode, unsigned bits) const {
-  unsigned prefix = opcode >> (max_opcode_bits - lookup_prefix_bits);
-  std::size_t i = instruction_prefix_index[prefix];
-  if (i + 1 == instruction_list.size() || instruction_list[i + 1].first > opcode) {
-    return instruction_list[i].second;
-  }
-
-  // A small minority of prefixes contain more than one range. Limit the legacy binary search to that prefix.
-  std::size_t j = prefix + 1 < lookup_prefix_count ? instruction_prefix_index[prefix + 1] + 1 : instruction_list.size();
+  std::size_t i = 0, j = instruction_list.size();
   assert(j);
   while (j - i > 1) {
     auto k = ((j + i) >> 1);

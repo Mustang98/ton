@@ -17,7 +17,6 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #pragma once
-#include <array>
 #include <functional>
 #include <map>
 #include <utility>
@@ -90,15 +89,9 @@ dump_arg_instr_func_t dump_2c_add(unsigned add, std::string prefix, std::string 
 
 }  // namespace instr
 
-class OpcodeTableTestAccess;
-
 class OpcodeTable : public DispatchTable {
-  static constexpr unsigned lookup_prefix_bits = 12;
-  static constexpr unsigned lookup_prefix_count = 1U << lookup_prefix_bits;
-
   std::map<unsigned, const OpcodeInstr*> instructions;
   std::vector<std::pair<unsigned, const OpcodeInstr*>> instruction_list;
-  std::array<unsigned, lookup_prefix_count> instruction_prefix_index{};
   std::string name;
   Codepage codepage;
   bool final;
@@ -122,8 +115,6 @@ class OpcodeTable : public DispatchTable {
   OpcodeTable& insert(const OpcodeInstr*);
 
  private:
-  friend class OpcodeTableTestAccess;
-
   const OpcodeInstr* lookup_instr(unsigned opcode, unsigned bits) const;
   const OpcodeInstr* lookup_instr(const CellSlice& cs, unsigned& opcode, unsigned& bits) const;
 };
