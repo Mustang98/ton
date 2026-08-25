@@ -1591,36 +1591,33 @@ Ref<vm::Tuple> Transaction::prepare_vm_c7(const ComputePhaseConfig& cfg) const {
 Ref<vm::Tuple> Transaction::prepare_in_msg_params_tuple(const gen::CommonMsgInfo::Record_int_msg_info* info,
                                                         const Ref<vm::Cell>& state_init,
                                                         const CurrencyCollection& msg_balance_remaining) {
-  std::vector<vm::StackEntry> in_msg_params;
-  in_msg_params.reserve(10);
+  std::vector<vm::StackEntry> in_msg_params(10);
   if (info != nullptr) {
-    in_msg_params.emplace_back(td::make_refint(info->bounce ? -1 : 0));   // bounce
-    in_msg_params.emplace_back(td::make_refint(info->bounced ? -1 : 0));  // bounced
-    in_msg_params.emplace_back(info->src);                                // src_addr
-    in_msg_params.emplace_back(info->fwd_fee.is_null() ? td::zero_refint()
-                                                       : tlb::t_Grams.as_integer(info->fwd_fee));  // fwd_fee
-    in_msg_params.emplace_back(td::make_refint(info->created_lt));                                 // created_lt
-    in_msg_params.emplace_back(td::make_refint(info->created_at));                                 // created_at
+    in_msg_params[0] = td::make_refint(info->bounce ? -1 : 0);   // bounce
+    in_msg_params[1] = td::make_refint(info->bounced ? -1 : 0);  // bounced
+    in_msg_params[2] = info->src;                                // src_addr
+    in_msg_params[3] = info->fwd_fee.is_null() ? td::zero_refint() : tlb::t_Grams.as_integer(info->fwd_fee);  // fwd_fee
+    in_msg_params[4] = td::make_refint(info->created_lt);  // created_lt
+    in_msg_params[5] = td::make_refint(info->created_at);  // created_at
     auto value = info->value;
-    in_msg_params.emplace_back(info->value.is_null() ? td::zero_refint()
-                                                     : tlb::t_Grams.as_integer_skip(value.write()));  // original value
-    in_msg_params.emplace_back(msg_balance_remaining.is_valid() ? msg_balance_remaining.grams
-                                                                : td::zero_refint());  // value
-    in_msg_params.emplace_back(msg_balance_remaining.is_valid() ? vm::StackEntry::maybe(msg_balance_remaining.extra)
-                                                                : vm::StackEntry{});  // value extra
-    in_msg_params.emplace_back(vm::StackEntry::maybe(state_init));                    // state_init
+    in_msg_params[6] =
+        info->value.is_null() ? td::zero_refint() : tlb::t_Grams.as_integer_skip(value.write());  // original value
+    in_msg_params[7] = msg_balance_remaining.is_valid() ? msg_balance_remaining.grams : td::zero_refint();  // value
+    in_msg_params[8] = msg_balance_remaining.is_valid() ? vm::StackEntry::maybe(msg_balance_remaining.extra)
+                                                        : vm::StackEntry{};  // value extra
+    in_msg_params[9] = vm::StackEntry::maybe(state_init);                    // state_init
   } else {
-    in_msg_params.emplace_back(td::zero_refint());  // bounce
-    in_msg_params.emplace_back(td::zero_refint());  // bounced
+    in_msg_params[0] = td::zero_refint();  // bounce
+    in_msg_params[1] = td::zero_refint();  // bounced
     static Ref<vm::CellSlice> addr_none = vm::CellBuilder{}.store_zeroes(2).as_cellslice_ref();
-    in_msg_params.emplace_back(addr_none);          // src_addr
-    in_msg_params.emplace_back(td::zero_refint());  // fed_fee
-    in_msg_params.emplace_back(td::zero_refint());  // created_lt
-    in_msg_params.emplace_back(td::zero_refint());  // created_at
-    in_msg_params.emplace_back(td::zero_refint());  // original value
-    in_msg_params.emplace_back(td::zero_refint());  // value
-    in_msg_params.emplace_back();                   // value extra
-    in_msg_params.emplace_back();                   // state_init
+    in_msg_params[2] = addr_none;          // src_addr
+    in_msg_params[3] = td::zero_refint();  // fed_fee
+    in_msg_params[4] = td::zero_refint();  // created_lt
+    in_msg_params[5] = td::zero_refint();  // created_at
+    in_msg_params[6] = td::zero_refint();  // original value
+    in_msg_params[7] = td::zero_refint();  // value
+    in_msg_params[8] = vm::StackEntry{};   // value extra
+    in_msg_params[9] = vm::StackEntry{};   // state_init
   }
   return td::make_cnt_ref<std::vector<vm::StackEntry>>(std::move(in_msg_params));
 }
