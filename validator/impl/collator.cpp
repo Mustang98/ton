@@ -3022,29 +3022,29 @@ bool Collator::process_account_storage_dict(block::Account& account) {
  */
 bool Collator::combine_account_transactions() {
   vm::AugmentedDictionary dict{256, block::tlb::aug_ShardAccountBlocks};
+  std::vector<vm::AugmentedDictionary::BatchSetEntry> account_blocks;
+  account_blocks.reserve(accounts.size());
   for (auto& z : accounts) {
     block::Account& acc = *(z.second);
     CHECK(acc.addr == z.first);
     if (!acc.transactions.empty()) {
       // have transactions for this account
-      vm::CellBuilder cb;
-      if (!acc.create_account_block(cb)) {
+      Ref<vm::CellBuilder> account_block{true};
+      if (!acc.create_account_block(account_block.write())) {
         return fatal_error("cannot create AccountBlock for account "s + z.first.to_hex());
       }
-      auto cell = cb.finalize();
-      auto csr = vm::load_cell_slice_ref(cell);
       if (verbosity > 2) {
+        auto cell = account_block->finalize_copy();
+        auto csr = vm::load_cell_slice_ref(cell);
         FLOG(INFO) {
           sb << "new AccountBlock for " << z.first.to_hex() << ": ";
           block::gen::t_AccountBlock.print_ref(sb, cell);
           csr->print_rec(sb);
         };
       }
-      if (!dict.set(z.first, csr, vm::Dictionary::SetMode::Add)) {
-        return fatal_error(std::string{"new AccountBlock for "} + z.first.to_hex() +
-                           " could not be added to ShardAccountBlocks");
-      }
+      account_blocks.push_back({z.first.bits(), std::move(account_block), vm::Dictionary::SetMode::Add});
       // update account_dict
+      vm::CellBuilder cb;
       if (acc.total_state->get_hash() != acc.orig_total_state->get_hash()) {
         // account changed
         if (acc.orig_status == block::Account::acc_nonexist) {
@@ -3095,6 +3095,9 @@ bool Collator::combine_account_transactions() {
                            " miraculously changed without transactions");
       }
     }
+  }
+  if (!dict.multiset(account_blocks)) {
+    return fatal_error("cannot add account blocks to ShardAccountBlocks");
   }
   vm::CellBuilder cb;
   if (!(cb.append_cellslice_bool(std::move(dict).extract_root()) && cb.finalize_to(shard_account_blocks_))) {
