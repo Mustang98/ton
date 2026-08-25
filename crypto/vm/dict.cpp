@@ -530,6 +530,63 @@ bool stack_dict_label_is_prefix(const CellSlice& cs, const StackDictLabel& label
   return cs.has_prefix(key, label.bits);
 }
 
+// Read-only traversals visit enough short-lived dictionary edges that wrapping
+// every one in Ref<CellSlice> is measurable. Keep the LoadedCell (including
+// virtualization and UsageCell context) in a stack CellSlice until a leaf is
+// handed to the caller.
+class StackDictionaryLabelParser {
+ public:
+  StackDictionaryLabelParser(Ref<Cell> cell, int max_label_len, int mode) {
+    remainder_.load(std::move(cell));
+    label_ = parse_stack_dict_label_checked(remainder_, max_label_len, mode);
+  }
+
+  int bits() const {
+    return label_.bits;
+  }
+
+  int common_prefix_len(td::ConstBitPtr key, int len) const {
+    int checked_len = std::min(label_.bits, len);
+    if (label_.same) {
+      return static_cast<int>(td::bitstring::bits_memscan(key, checked_len, label_.same & 1));
+    }
+    return remainder_.common_prefix_len(key, checked_len);
+  }
+
+  void extract_label_to(td::BitPtr to) {
+    if (label_.same) {
+      to.fill(label_.same & 1, label_.bits);
+    } else {
+      to.copy_from(remainder_.data_bits(), label_.bits);
+      remainder_.advance(label_.bits);
+    }
+  }
+
+  void skip_label() {
+    remainder_.advance(label_.stored_bits);
+  }
+
+  const CellSlice& remainder() const {
+    return remainder_;
+  }
+
+  CellSlice& remainder() {
+    return remainder_;
+  }
+
+  void clear_remainder() {
+    remainder_.clear();
+  }
+
+  Ref<CellSlice> move_remainder_ref() {
+    return Ref<CellSlice>{true, std::move(remainder_)};
+  }
+
+ private:
+  CellSlice remainder_;
+  StackDictLabel label_;
+};
+
 // Single-key lookup visits one node at a time. Keep intermediate slices on the
 // stack and allocate a ref-counted CellSlice only when lookup() returns a leaf.
 // CellSlice remains responsible for lazy loads, virtualization and usage-tree
@@ -2417,6 +2474,57 @@ bool DictionaryFixed::check_for_each(const foreach_func_t& foreach_func, bool in
                              shuffle);
 }
 
+bool DictionaryFixed::dict_check_for_each_stack(Ref<Cell> dict, td::BitPtr key_buffer, int n, int total_key_len,
+                                                const DictionaryFixed::foreach_stack_func_t& foreach_func,
+                                                bool invert_first, bool shuffle) const {
+  if (dict.is_null()) {
+    return true;
+  }
+  StackDictionaryLabelParser label{std::move(dict), n, label_mode()};
+  int l = label.bits();
+  label.extract_label_to(key_buffer);
+  if (l == n) {
+    return foreach_func(std::move(label.remainder()), key_buffer + n - total_key_len, total_key_len);
+  }
+  assert(l >= 0 && l < n);
+  auto c1 = label.remainder().prefetch_ref(0);
+  auto c2 = label.remainder().prefetch_ref(1);
+  label.clear_remainder();
+  key_buffer += l + 1;
+  if (l) {
+    invert_first = false;
+  }
+  bool invert = shuffle ? td::Random::fast(0, 1) == 1 : invert_first;
+  if (invert) {
+    std::swap(c1, c2);
+  }
+  key_buffer[-1] = invert;
+  if (!dict_check_for_each_stack(std::move(c1), key_buffer, n - l - 1, total_key_len, foreach_func, false, shuffle)) {
+    return false;
+  }
+  key_buffer[-1] = !invert;
+  return dict_check_for_each_stack(std::move(c2), key_buffer, n - l - 1, total_key_len, foreach_func, false, shuffle);
+}
+
+bool DictionaryFixed::check_for_each_stack_slice(const foreach_stack_func_t& foreach_func, bool invert_first,
+                                                 bool shuffle) {
+  force_validate();
+  if (is_empty()) {
+    return true;
+  }
+  int key_len = get_key_bits();
+  unsigned char key_buffer[max_key_bytes];
+  return dict_check_for_each_stack(get_root_cell(), td::BitPtr{key_buffer}, key_len, key_len, foreach_func,
+                                   invert_first, shuffle);
+}
+
+bool DictionaryFixed::check_for_each_stack(const foreach_func_t& foreach_func, bool invert_first, bool shuffle) {
+  foreach_stack_func_t stack_func = [&foreach_func](CellSlice&& value, td::ConstBitPtr key, int key_len) {
+    return foreach_func(Ref<CellSlice>{true, std::move(value)}, key, key_len);
+  };
+  return check_for_each_stack_slice(stack_func, invert_first, shuffle);
+}
+
 static inline bool set_bit(td::BitPtr ptr, bool value = true) {
   *ptr = value;
   return true;
@@ -2608,6 +2716,196 @@ bool DictionaryFixed::dict_scan_diff(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPt
   }
 }
 
+bool DictionaryFixed::dict_scan_diff_stack(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPtr key_buffer, int n,
+                                           int total_key_len, const scan_diff_func_t& diff_func, int mode, int skip1,
+                                           int skip2) const {
+  auto check_leaf_slice = [this](const CellSlice& remainder, td::ConstBitPtr key, int key_len) {
+    CellSlice checked{remainder};
+    return check_leaf(checked, key, key_len);
+  };
+  auto check_fork_slice = [this](const CellSlice& remainder, int fork_key_len) {
+    if (!remainder.is_valid()) {
+      return false;
+    }
+    CellSlice checked{remainder};
+    Ref<Cell> c1, c2;
+    return checked.fetch_ref_to(c1) && checked.fetch_ref_to(c2) &&
+           check_fork(checked, std::move(c1), std::move(c2), fork_key_len);
+  };
+
+  // skip1/skip2 remove an already-consumed prefix from the corresponding
+  // dictionary label while comparing subdictionaries with n-bit keys.
+  if (dict1.is_null()) {
+    if (dict2.is_null()) {
+      return true;
+    }
+    assert(!skip2);
+    StackDictionaryLabelParser label{dict2, n, label_mode()};
+    label.extract_label_to(key_buffer);
+    if (label.bits() >= n) {
+      assert(label.bits() == n);
+      auto key = key_buffer + label.bits() - total_key_len;
+      if ((mode & 2) && !check_leaf_slice(label.remainder(), key, total_key_len)) {
+        throw VmError{Excno::dict_err, "invalid leaf in the second dictionary being compared"};
+      }
+      return diff_func(key, total_key_len, {}, label.move_remainder_ref());
+    }
+    n -= label.bits() + 1;
+    key_buffer += label.bits() + 1;
+    if ((mode & 2) && !check_fork_slice(label.remainder(), n + 1)) {
+      throw VmError{Excno::dict_err, "invalid fork in the second dictionary being compared"};
+    }
+    for (unsigned branch = 0; branch < 2; ++branch) {
+      key_buffer[-1] = static_cast<bool>(branch);
+      if (!dict_scan_diff_stack({}, label.remainder().prefetch_ref(branch), key_buffer, n, total_key_len, diff_func,
+                                mode)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (dict2.is_null()) {
+    assert(!skip1);
+    StackDictionaryLabelParser label{dict1, n, label_mode()};
+    label.extract_label_to(key_buffer);
+    if (label.bits() >= n) {
+      assert(label.bits() == n);
+      auto key = key_buffer + label.bits() - total_key_len;
+      if ((mode & 1) && !check_leaf_slice(label.remainder(), key, total_key_len)) {
+        throw VmError{Excno::dict_err, "invalid leaf in the first dictionary being compared"};
+      }
+      return diff_func(key, total_key_len, label.move_remainder_ref(), {});
+    }
+    n -= label.bits() + 1;
+    key_buffer += label.bits() + 1;
+    if ((mode & 1) && !check_fork_slice(label.remainder(), n + 1)) {
+      throw VmError{Excno::dict_err, "invalid fork in the first dictionary being compared"};
+    }
+    for (unsigned branch = 0; branch < 2; ++branch) {
+      key_buffer[-1] = static_cast<bool>(branch);
+      if (!dict_scan_diff_stack(label.remainder().prefetch_ref(branch), {}, key_buffer, n, total_key_len, diff_func,
+                                mode)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (skip1 == skip2 && (dict1 == dict2 || dict1->get_hash() == dict2->get_hash())) {
+    return true;
+  }
+
+  StackDictionaryLabelParser label1{dict1, n + skip1, label_mode()};
+  StackDictionaryLabelParser label2{dict2, n + skip2, label_mode()};
+  int l1 = label1.bits() - skip1;
+  int l2 = label2.bits() - skip2;
+  assert(l1 >= 0 && l2 >= 0);
+  assert(!skip1 || label1.common_prefix_len(key_buffer - skip1, skip1) == skip1);
+  assert(!skip2 || label2.common_prefix_len(key_buffer - skip2, skip2) == skip2);
+  label1.extract_label_to(key_buffer - skip1);
+  int common = label2.common_prefix_len(key_buffer - skip2, skip2 + l1) - skip2;
+  assert(common >= 0 && common <= l1 && common <= l2);
+
+  if (common < l1 && common < l2) {
+    if (!key_buffer[common]) {
+      return dict_scan_diff_stack(std::move(dict1), {}, key_buffer - skip1, n + skip1, total_key_len, diff_func,
+                                  mode) &&
+             dict_scan_diff_stack({}, std::move(dict2), key_buffer - skip2, n + skip2, total_key_len, diff_func, mode);
+    }
+    return dict_scan_diff_stack({}, std::move(dict2), key_buffer - skip2, n + skip2, total_key_len, diff_func, mode) &&
+           dict_scan_diff_stack(std::move(dict1), {}, key_buffer - skip1, n + skip1, total_key_len, diff_func, mode);
+  }
+
+  if (common == l1 && common == l2) {
+    dict1.clear();
+    dict2.clear();
+    label2.skip_label();
+    if (common == n) {
+      auto key = key_buffer + n - total_key_len;
+      if ((mode & 1) && !check_leaf_slice(label1.remainder(), key, total_key_len)) {
+        throw VmError{Excno::dict_err, "invalid leaf in the first dictionary being compared"};
+      }
+      if ((mode & 2) && !check_leaf_slice(label2.remainder(), key, total_key_len)) {
+        throw VmError{Excno::dict_err, "invalid leaf in the second dictionary being compared"};
+      }
+      if (label1.remainder().contents_equal(label2.remainder())) {
+        return true;
+      }
+      auto remainder1 = label1.move_remainder_ref();
+      auto remainder2 = label2.move_remainder_ref();
+      return diff_func(key, total_key_len, std::move(remainder1), std::move(remainder2));
+    }
+    assert(common < n);
+    key_buffer += common + 1;
+    n -= common + 1;
+    if ((mode & 1) && !check_fork_slice(label1.remainder(), n + 1)) {
+      throw VmError{Excno::dict_err, "invalid fork in the first dictionary being compared"};
+    }
+    if ((mode & 2) && !check_fork_slice(label2.remainder(), n + 1)) {
+      throw VmError{Excno::dict_err, "invalid fork in the second dictionary being compared"};
+    }
+    for (unsigned branch = 0; branch < 2; ++branch) {
+      key_buffer[-1] = static_cast<bool>(branch);
+      if (!dict_scan_diff_stack(label1.remainder().prefetch_ref(branch), label2.remainder().prefetch_ref(branch),
+                                key_buffer, n, total_key_len, diff_func, mode)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (common == l1) {
+    assert(common < l2);
+    dict1.clear();
+    if ((mode & 1) && !check_fork_slice(label1.remainder(), n - common)) {
+      throw VmError{Excno::dict_err, "invalid fork in the first dictionary being compared"};
+    }
+    auto left = label1.remainder().prefetch_ref(0);
+    auto right = label1.remainder().prefetch_ref(1);
+    label1.clear_remainder();
+    label2.extract_label_to(key_buffer - skip2);
+    key_buffer += common + 1;
+    n -= common + 1;
+    bool branch = key_buffer[-1];
+    key_buffer[-1] = false;
+    if (!branch) {
+      return dict_scan_diff_stack(std::move(left), std::move(dict2), key_buffer, n, total_key_len, diff_func, mode, 0,
+                                  skip2 + common + 1) &&
+             set_bit(key_buffer - 1) &&
+             dict_scan_diff_stack(std::move(right), {}, key_buffer, n, total_key_len, diff_func, mode);
+    }
+    return dict_scan_diff_stack(std::move(left), {}, key_buffer, n, total_key_len, diff_func, mode) &&
+           set_bit(key_buffer - 1) &&
+           dict_scan_diff_stack(std::move(right), std::move(dict2), key_buffer, n, total_key_len, diff_func, mode, 0,
+                                skip2 + common + 1);
+  }
+
+  assert(common == l2 && common < l1);
+  dict2.clear();
+  label2.skip_label();
+  if ((mode & 2) && !check_fork_slice(label2.remainder(), n - common)) {
+    throw VmError{Excno::dict_err, "invalid fork in the second dictionary being compared"};
+  }
+  auto left = label2.remainder().prefetch_ref(0);
+  auto right = label2.remainder().prefetch_ref(1);
+  label2.clear_remainder();
+  key_buffer += common + 1;
+  n -= common + 1;
+  bool branch = key_buffer[-1];
+  key_buffer[-1] = false;
+  if (!branch) {
+    return dict_scan_diff_stack(std::move(dict1), std::move(left), key_buffer, n, total_key_len, diff_func, mode,
+                                skip1 + common + 1, 0) &&
+           set_bit(key_buffer - 1) &&
+           dict_scan_diff_stack({}, std::move(right), key_buffer, n, total_key_len, diff_func, mode);
+  }
+  return dict_scan_diff_stack({}, std::move(left), key_buffer, n, total_key_len, diff_func, mode) &&
+         set_bit(key_buffer - 1) &&
+         dict_scan_diff_stack(std::move(dict1), std::move(right), key_buffer, n, total_key_len, diff_func, mode,
+                              skip1 + common + 1, 0);
+}
+
 bool DictionaryFixed::scan_diff(DictionaryFixed& dict2, const scan_diff_func_t& diff_func, int check_augm) {
   force_validate();
   dict2.force_validate();
@@ -2619,6 +2917,22 @@ bool DictionaryFixed::scan_diff(DictionaryFixed& dict2, const scan_diff_func_t& 
   try {
     return dict_scan_diff(get_root_cell(), dict2.get_root_cell(), td::BitPtr{key_buffer}, key_len, key_len, diff_func,
                           check_augm);
+  } catch (CombineError) {
+    return false;
+  }
+}
+
+bool DictionaryFixed::scan_diff_stack(DictionaryFixed& dict2, const scan_diff_func_t& diff_func, int check_augm) {
+  force_validate();
+  dict2.force_validate();
+  int key_len = get_key_bits();
+  if (key_len != dict2.get_key_bits()) {
+    throw VmError{Excno::dict_err, "cannot compare dictionaries with different key lengths"};
+  }
+  unsigned char key_buffer[max_key_bytes];
+  try {
+    return dict_scan_diff_stack(get_root_cell(), dict2.get_root_cell(), td::BitPtr{key_buffer}, key_len, key_len,
+                                diff_func, check_augm);
   } catch (CombineError) {
     return false;
   }
@@ -3249,6 +3563,20 @@ bool AugmentedDictionary::check_for_each_extra(const foreach_extra_func_t& forea
     return extra.not_null() && foreach_extra_func(std::move(value_extra), std::move(extra), key, key_len);
   };
   return DictionaryFixed::check_for_each(foreach_func, invert_first);
+}
+
+bool AugmentedDictionary::check_for_each_value_stack(const foreach_func_t& foreach_func, bool invert_first) {
+  force_validate();
+  const auto& augm = aug;
+  foreach_stack_func_t value_func = [&foreach_func, &augm](CellSlice&& value_extra, td::ConstBitPtr key, int key_len) {
+    CellSlice extra;
+    if (!augm.extract_extra_to(value_extra, extra)) {
+      return false;
+    }
+    extra.clear();
+    return foreach_func(Ref<CellSlice>{true, std::move(value_extra)}, key, key_len);
+  };
+  return check_for_each_stack_slice(value_func, invert_first);
 }
 
 std::pair<Ref<CellSlice>, Ref<CellSlice>> AugmentedDictionary::dict_traverse_extra(

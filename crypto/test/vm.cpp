@@ -1021,3 +1021,494 @@ TEST(VM, dictionary_stack_lookup_preserves_lazy_virtual_and_usage_context) {
   ASSERT_TRUE(legacy_ref_context.value_ref->get_tree_node().is_from_tree(legacy_ref_context.usage_tree.get()));
   ASSERT_TRUE(stack_ref_context.value_ref->get_tree_node().is_from_tree(stack_ref_context.usage_tree.get()));
 }
+
+namespace {
+
+struct TraversalSliceFingerprint {
+  bool present{false};
+  unsigned bits{0};
+  unsigned refs{0};
+  std::string data;
+  std::string base_hash;
+  std::vector<std::string> ref_hashes;
+
+  bool operator==(const TraversalSliceFingerprint&) const = default;
+};
+
+TraversalSliceFingerprint fingerprint_traversal_slice(const td::Ref<vm::CellSlice>& value) {
+  if (value.is_null()) {
+    return {};
+  }
+  TraversalSliceFingerprint result;
+  result.present = true;
+  result.bits = value->size();
+  result.refs = value->size_refs();
+  result.data = value->data_bits().to_hex(value->size());
+  result.base_hash = value->get_base_cell()->get_hash().to_hex();
+  for (unsigned i = 0; i < value->size_refs(); ++i) {
+    result.ref_hashes.push_back(value->prefetch_ref(i)->get_hash().to_hex());
+  }
+  return result;
+}
+
+struct TraversalEvent {
+  unsigned key{0};
+  TraversalSliceFingerprint first;
+  TraversalSliceFingerprint second;
+
+  bool operator==(const TraversalEvent&) const = default;
+};
+
+unsigned traversal_key(td::ConstBitPtr key, int key_len) {
+  CHECK(key_len == 8);
+  return static_cast<unsigned>(td::bitstring::bits_load_ulong(key, static_cast<unsigned>(key_len)));
+}
+
+struct TraversalRun {
+  bool result{false};
+  std::vector<TraversalEvent> events;
+};
+
+class ToggleTraversalAugmentation final : public vm::dict::AugmentationData {
+ public:
+  bool skip_extra(vm::CellSlice& cs) const override {
+    return allow_reads && cs.advance(16);
+  }
+
+  bool eval_leaf(vm::CellBuilder& cb, vm::CellSlice& value) const override {
+    return cb.store_long_bool((value.size() << 3) | value.size_refs(), 16);
+  }
+
+  bool eval_fork(vm::CellBuilder& cb, vm::CellSlice& left, vm::CellSlice& right) const override {
+    return left.have(16) && right.have(16) &&
+           cb.store_long_bool(left.prefetch_ulong(16) ^ right.prefetch_ulong(16), 16);
+  }
+
+  bool eval_empty(vm::CellBuilder& cb) const override {
+    return cb.store_zeroes_bool(16);
+  }
+
+  bool allow_reads{true};
+};
+
+}  // namespace
+
+TEST(VM, dictionary_stack_for_each_matches_legacy_order_values_and_short_circuit) {
+  vm::Dictionary dictionary{8};
+  constexpr std::array<unsigned, 7> keys{0x00, 0x01, 0x17, 0x55, 0x80, 0xfe, 0xff};
+  for (unsigned key_value : keys) {
+    td::BitArray<8> key{key_value};
+    vm::CellBuilder value;
+    value.store_long(key_value * 5 + 3, 12);
+    value.store_ref(vm::CellBuilder{}.store_long(key_value, 8).finalize_novm());
+    ASSERT_TRUE(dictionary.set_builder(key, value, vm::Dictionary::SetMode::Add));
+  }
+
+  auto run = [&](bool stack, bool invert_first, unsigned stop_key) {
+    TraversalRun observation;
+    auto callback = [&](td::Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
+      auto key_value = traversal_key(key, key_len);
+      observation.events.push_back({key_value, fingerprint_traversal_slice(value), {}});
+      return key_value != stop_key;
+    };
+    observation.result = stack ? dictionary.check_for_each_stack(callback, invert_first)
+                               : dictionary.check_for_each(callback, invert_first);
+    return observation;
+  };
+
+  auto legacy_forward = run(false, false, 0x100);
+  auto stack_forward = run(true, false, 0x100);
+  ASSERT_TRUE(legacy_forward.result && stack_forward.result);
+  ASSERT_TRUE(legacy_forward.events == stack_forward.events);
+  ASSERT_EQ(legacy_forward.events.size(), keys.size());
+
+  auto legacy_inverted = run(false, true, 0x100);
+  auto stack_inverted = run(true, true, 0x100);
+  ASSERT_TRUE(legacy_inverted.result && stack_inverted.result);
+  ASSERT_TRUE(legacy_inverted.events == stack_inverted.events);
+
+  auto legacy_stopped = run(false, false, 0x55);
+  auto stack_stopped = run(true, false, 0x55);
+  ASSERT_TRUE(!legacy_stopped.result && !stack_stopped.result);
+  ASSERT_TRUE(legacy_stopped.events == stack_stopped.events);
+  ASSERT_EQ(legacy_stopped.events.back().key, 0x55u);
+}
+
+TEST(VM, augmented_dictionary_value_stack_matches_legacy_extra_traversal) {
+  ToggleTraversalAugmentation augmentation;
+  vm::AugmentedDictionary dictionary{8, augmentation};
+  constexpr std::array<unsigned, 6> keys{0x00, 0x10, 0x40, 0x55, 0x80, 0xff};
+  for (unsigned key_value : keys) {
+    td::BitArray<8> key{key_value};
+    auto value = vm::CellBuilder{}.store_long(0x100 + key_value, 16).finalize_novm();
+    ASSERT_TRUE(dictionary.set_ref(key, std::move(value), vm::Dictionary::SetMode::Add));
+  }
+
+  auto run = [&](bool stack, unsigned stop_key) {
+    TraversalRun observation;
+    if (stack) {
+      observation.result =
+          dictionary.check_for_each_value_stack([&](td::Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
+            auto key_value = traversal_key(key, key_len);
+            observation.events.push_back({key_value, fingerprint_traversal_slice(value), {}});
+            return key_value != stop_key;
+          });
+    } else {
+      observation.result = dictionary.check_for_each_extra(
+          [&](td::Ref<vm::CellSlice> value, td::Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+            CHECK(extra.not_null() && extra->size() == 16);
+            auto key_value = traversal_key(key, key_len);
+            observation.events.push_back({key_value, fingerprint_traversal_slice(value), {}});
+            return key_value != stop_key;
+          });
+    }
+    return observation;
+  };
+
+  auto legacy = run(false, 0x100);
+  auto stack = run(true, 0x100);
+  ASSERT_TRUE(legacy.result && stack.result);
+  ASSERT_TRUE(legacy.events == stack.events);
+
+  auto legacy_stopped = run(false, 0x55);
+  auto stack_stopped = run(true, 0x55);
+  ASSERT_TRUE(!legacy_stopped.result && !stack_stopped.result);
+  ASSERT_TRUE(legacy_stopped.events == stack_stopped.events);
+
+  augmentation.allow_reads = false;
+  std::size_t legacy_callbacks = 0;
+  std::size_t stack_callbacks = 0;
+  ASSERT_TRUE(
+      !dictionary.check_for_each_extra([&](td::Ref<vm::CellSlice>, td::Ref<vm::CellSlice>, td::ConstBitPtr, int) {
+        ++legacy_callbacks;
+        return true;
+      }));
+  ASSERT_TRUE(!dictionary.check_for_each_value_stack([&](td::Ref<vm::CellSlice>, td::ConstBitPtr, int) {
+    ++stack_callbacks;
+    return true;
+  }));
+  ASSERT_EQ(legacy_callbacks, 0u);
+  ASSERT_EQ(stack_callbacks, legacy_callbacks);
+}
+
+TEST(VM, dictionary_stack_scan_diff_matches_legacy_order_values_and_short_circuit) {
+  vm::Dictionary old_dictionary{8};
+  vm::Dictionary new_dictionary{8};
+  constexpr std::array<std::pair<unsigned, unsigned>, 4> old_values{std::pair{0x10u, 1u}, std::pair{0x30u, 3u},
+                                                                    std::pair{0x50u, 5u}, std::pair{0x70u, 7u}};
+  constexpr std::array<std::pair<unsigned, unsigned>, 5> new_values{
+      std::pair{0x00u, 10u}, std::pair{0x10u, 11u}, std::pair{0x40u, 4u}, std::pair{0x50u, 5u}, std::pair{0x60u, 6u}};
+  for (auto [key_value, value] : old_values) {
+    td::BitArray<8> key{key_value};
+    ASSERT_TRUE(old_dictionary.set_builder(key, vm::CellBuilder{}.store_long(value, 16), vm::Dictionary::SetMode::Add));
+  }
+  for (auto [key_value, value] : new_values) {
+    td::BitArray<8> key{key_value};
+    ASSERT_TRUE(new_dictionary.set_builder(key, vm::CellBuilder{}.store_long(value, 16), vm::Dictionary::SetMode::Add));
+  }
+
+  auto run = [&](bool stack, unsigned stop_key) {
+    vm::Dictionary old_run{old_dictionary.get_root_cell(), 8};
+    vm::Dictionary new_run{new_dictionary.get_root_cell(), 8};
+    TraversalRun observation;
+    auto callback = [&](td::ConstBitPtr key, int key_len, td::Ref<vm::CellSlice> old_value,
+                        td::Ref<vm::CellSlice> new_value) {
+      auto key_value = traversal_key(key, key_len);
+      observation.events.push_back(
+          {key_value, fingerprint_traversal_slice(old_value), fingerprint_traversal_slice(new_value)});
+      return key_value != stop_key;
+    };
+    observation.result = stack ? old_run.scan_diff_stack(new_run, callback) : old_run.scan_diff(new_run, callback);
+    return observation;
+  };
+
+  auto legacy = run(false, 0x100);
+  auto stack = run(true, 0x100);
+  ASSERT_TRUE(legacy.result && stack.result);
+  ASSERT_TRUE(legacy.events == stack.events);
+  constexpr std::array<unsigned, 6> expected_keys{0x00, 0x10, 0x30, 0x40, 0x60, 0x70};
+  ASSERT_EQ(legacy.events.size(), expected_keys.size());
+  for (std::size_t i = 0; i < expected_keys.size(); ++i) {
+    ASSERT_EQ(legacy.events[i].key, expected_keys[i]);
+  }
+
+  auto legacy_stopped = run(false, 0x40);
+  auto stack_stopped = run(true, 0x40);
+  ASSERT_TRUE(!legacy_stopped.result && !stack_stopped.result);
+  ASSERT_TRUE(legacy_stopped.events == stack_stopped.events);
+  ASSERT_EQ(legacy_stopped.events.back().key, 0x40u);
+}
+
+TEST(VM, dictionary_stack_scan_diff_matches_legacy_generated_shapes) {
+  for (unsigned round = 0; round < 48; ++round) {
+    vm::Dictionary old_dictionary{8};
+    vm::Dictionary new_dictionary{8};
+    for (unsigned key_value = 0; key_value < 256; ++key_value) {
+      bool in_old = ((key_value * 17 + round * 13) % 11) < 4;
+      bool in_new = ((key_value * 29 + round * 7) % 13) < 5;
+      unsigned old_value = (key_value << 4) ^ (round * 37 + 1);
+      unsigned new_value = ((key_value + round) % 4 == 0) ? old_value : old_value ^ 0x5a5a;
+      td::BitArray<8> key{key_value};
+      if (in_old) {
+        ASSERT_TRUE(
+            old_dictionary.set_builder(key, vm::CellBuilder{}.store_long(old_value, 20), vm::Dictionary::SetMode::Add));
+      }
+      if (in_new) {
+        ASSERT_TRUE(
+            new_dictionary.set_builder(key, vm::CellBuilder{}.store_long(new_value, 20), vm::Dictionary::SetMode::Add));
+      }
+    }
+
+    auto run = [&](bool stack, std::size_t callback_limit) {
+      vm::Dictionary old_run{old_dictionary.get_root_cell(), 8};
+      vm::Dictionary new_run{new_dictionary.get_root_cell(), 8};
+      TraversalRun observation;
+      auto callback = [&](td::ConstBitPtr key, int key_len, td::Ref<vm::CellSlice> old_value,
+                          td::Ref<vm::CellSlice> new_value) {
+        observation.events.push_back({traversal_key(key, key_len), fingerprint_traversal_slice(old_value),
+                                      fingerprint_traversal_slice(new_value)});
+        return observation.events.size() < callback_limit;
+      };
+      observation.result = stack ? old_run.scan_diff_stack(new_run, callback) : old_run.scan_diff(new_run, callback);
+      return observation;
+    };
+
+    auto legacy_full = run(false, 257);
+    auto stack_full = run(true, 257);
+    ASSERT_TRUE(legacy_full.result && stack_full.result);
+    ASSERT_TRUE(legacy_full.events == stack_full.events);
+
+    std::size_t limit = 3 + round % 7;
+    auto legacy_stopped = run(false, limit);
+    auto stack_stopped = run(true, limit);
+    ASSERT_EQ(legacy_stopped.result, stack_stopped.result);
+    ASSERT_TRUE(legacy_stopped.events == stack_stopped.events);
+  }
+}
+
+TEST(VM, augmented_dictionary_stack_scan_diff_matches_legacy_checked_scan) {
+  ToggleTraversalAugmentation augmentation;
+  vm::AugmentedDictionary old_dictionary{8, augmentation};
+  vm::AugmentedDictionary new_dictionary{8, augmentation};
+  constexpr std::array<unsigned, 5> old_keys{0x00, 0x20, 0x55, 0x80, 0xf0};
+  constexpr std::array<unsigned, 5> new_keys{0x00, 0x10, 0x55, 0x80, 0xff};
+  for (unsigned key_value : old_keys) {
+    td::BitArray<8> key{key_value};
+    auto value = vm::CellBuilder{}.store_long(0x200 + key_value, 16).finalize_novm();
+    ASSERT_TRUE(old_dictionary.set_ref(key, std::move(value), vm::Dictionary::SetMode::Add));
+  }
+  for (unsigned key_value : new_keys) {
+    td::BitArray<8> key{key_value};
+    unsigned payload = key_value == 0x55 ? 0x755 : 0x200 + key_value;
+    auto value = vm::CellBuilder{}.store_long(payload, 16).finalize_novm();
+    ASSERT_TRUE(new_dictionary.set_ref(key, std::move(value), vm::Dictionary::SetMode::Add));
+  }
+
+  auto run = [&](bool stack) {
+    vm::AugmentedDictionary old_run{old_dictionary.get_root_cell(), 8, augmentation};
+    vm::AugmentedDictionary new_run{new_dictionary.get_root_cell(), 8, augmentation};
+    TraversalRun observation;
+    auto callback = [&](td::ConstBitPtr key, int key_len, td::Ref<vm::CellSlice> old_value,
+                        td::Ref<vm::CellSlice> new_value) {
+      observation.events.push_back({traversal_key(key, key_len), fingerprint_traversal_slice(old_value),
+                                    fingerprint_traversal_slice(new_value)});
+      return true;
+    };
+    observation.result =
+        stack ? old_run.scan_diff_stack(new_run, callback, 3) : old_run.scan_diff(new_run, callback, 3);
+    return observation;
+  };
+
+  auto legacy = run(false);
+  auto stack = run(true);
+  ASSERT_TRUE(legacy.result && stack.result);
+  ASSERT_TRUE(!legacy.events.empty());
+  ASSERT_TRUE(legacy.events == stack.events);
+}
+
+TEST(VM, dictionary_stack_traversals_preserve_malformed_load_and_error_order) {
+  struct Observation {
+    LookupErrorObservation error;
+    std::vector<unsigned> callbacks;
+    std::vector<vm::CellHash> loads;
+  };
+
+  auto run_for_each = [&](bool stack, bool stop_after_first) {
+    Observation observation;
+    auto trace = std::make_shared<std::vector<vm::CellHash>>();
+    vm::Dictionary dictionary{make_malformed_right_branch(trace), 8};
+    try {
+      auto callback = [&](td::Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
+        observation.callbacks.push_back(traversal_key(key, key_len));
+        return !stop_after_first;
+      };
+      static_cast<void>(stack ? dictionary.check_for_each_stack(callback) : dictionary.check_for_each(callback));
+    } catch (const vm::VmError& error) {
+      observation.error = {true, error.get_errno(), error.get_msg()};
+    }
+    observation.loads = *trace;
+    return observation;
+  };
+
+  auto legacy_for_each = run_for_each(false, false);
+  auto stack_for_each = run_for_each(true, false);
+  assert_same_lookup_error(legacy_for_each.error, stack_for_each.error);
+  ASSERT_TRUE(legacy_for_each.error.threw);
+  ASSERT_TRUE(legacy_for_each.callbacks == stack_for_each.callbacks);
+  ASSERT_TRUE(legacy_for_each.loads == stack_for_each.loads);
+
+  auto legacy_stopped = run_for_each(false, true);
+  auto stack_stopped = run_for_each(true, true);
+  ASSERT_TRUE(!legacy_stopped.error.threw && !stack_stopped.error.threw);
+  ASSERT_TRUE(legacy_stopped.callbacks == stack_stopped.callbacks);
+  ASSERT_EQ(legacy_stopped.callbacks.size(), 1u);
+  ASSERT_TRUE(legacy_stopped.loads == stack_stopped.loads);
+
+  auto run_scan = [&](bool stack) {
+    Observation observation;
+    auto trace = std::make_shared<std::vector<vm::CellHash>>();
+    vm::Dictionary empty{8};
+    vm::Dictionary malformed{make_malformed_right_branch(trace), 8};
+    try {
+      auto callback = [&](td::ConstBitPtr key, int key_len, td::Ref<vm::CellSlice>, td::Ref<vm::CellSlice>) {
+        observation.callbacks.push_back(traversal_key(key, key_len));
+        return true;
+      };
+      static_cast<void>(stack ? empty.scan_diff_stack(malformed, callback) : empty.scan_diff(malformed, callback));
+    } catch (const vm::VmError& error) {
+      observation.error = {true, error.get_errno(), error.get_msg()};
+    }
+    observation.loads = *trace;
+    return observation;
+  };
+
+  auto legacy_scan = run_scan(false);
+  auto stack_scan = run_scan(true);
+  assert_same_lookup_error(legacy_scan.error, stack_scan.error);
+  ASSERT_TRUE(legacy_scan.error.threw);
+  ASSERT_TRUE(legacy_scan.callbacks == stack_scan.callbacks);
+  ASSERT_TRUE(legacy_scan.loads == stack_scan.loads);
+}
+
+TEST(VM, dictionary_stack_scan_diff_preserves_lazy_and_usage_context) {
+  td::BitArray<8> key{0x5aLL};
+  vm::Dictionary old_dictionary{8};
+  vm::Dictionary new_dictionary{8};
+  ASSERT_TRUE(old_dictionary.set_builder(key, vm::CellBuilder{}.store_long(0x111, 12), vm::Dictionary::SetMode::Add));
+  ASSERT_TRUE(new_dictionary.set_builder(key, vm::CellBuilder{}.store_long(0x222, 12), vm::Dictionary::SetMode::Add));
+
+  struct Observation {
+    TraversalRun traversal;
+    LookupLazyCell::Trace lazy_loads;
+    std::vector<vm::CellHash> usage_loads;
+    bool callback_has_tree{false};
+  };
+  auto run = [&](bool stack) {
+    Observation observation;
+    observation.lazy_loads = std::make_shared<std::vector<vm::CellHash>>();
+    auto lazy_root = make_lazy_lookup_tree(old_dictionary.get_root_cell(), observation.lazy_loads);
+    auto usage_tree = std::make_shared<vm::CellUsageTree>();
+    usage_tree->set_cell_load_callback(
+        [&](const vm::LoadedCell& loaded) { observation.usage_loads.push_back(loaded.data_cell->get_hash()); });
+    auto usage_root = vm::UsageCell::create(std::move(lazy_root), usage_tree->root_ptr());
+    vm::Dictionary old_run{std::move(usage_root), 8};
+    vm::Dictionary new_run{new_dictionary.get_root_cell(), 8};
+    auto callback = [&](td::ConstBitPtr callback_key, int key_len, td::Ref<vm::CellSlice> old_value,
+                        td::Ref<vm::CellSlice> new_value) {
+      observation.traversal.events.push_back({traversal_key(callback_key, key_len),
+                                              fingerprint_traversal_slice(old_value),
+                                              fingerprint_traversal_slice(new_value)});
+      vm::CellSlice copy{*old_value};
+      observation.callback_has_tree = copy.move_as_loaded_cell().tree_node.is_from_tree(usage_tree.get());
+      return true;
+    };
+    observation.traversal.result =
+        stack ? old_run.scan_diff_stack(new_run, callback) : old_run.scan_diff(new_run, callback);
+    return observation;
+  };
+
+  auto legacy = run(false);
+  auto stack = run(true);
+  ASSERT_TRUE(legacy.traversal.result && stack.traversal.result);
+  ASSERT_TRUE(legacy.traversal.events == stack.traversal.events);
+  ASSERT_EQ(legacy.traversal.events.size(), 1u);
+  ASSERT_TRUE(*legacy.lazy_loads == *stack.lazy_loads);
+  ASSERT_TRUE(legacy.usage_loads == stack.usage_loads);
+  ASSERT_TRUE(legacy.callback_has_tree && stack.callback_has_tree);
+}
+
+TEST(VM, dictionary_stack_for_each_preserves_lazy_virtual_and_usage_context) {
+  vm::Dictionary dictionary{8};
+  constexpr std::array<unsigned, 5> keys{0x00, 0x20, 0x55, 0x80, 0xff};
+  for (unsigned key_value : keys) {
+    td::BitArray<8> key{key_value};
+    ASSERT_TRUE(
+        dictionary.set_builder(key, vm::CellBuilder{}.store_long(key_value + 1, 12), vm::Dictionary::SetMode::Add));
+  }
+
+  auto proof_usage_tree = std::make_shared<vm::CellUsageTree>();
+  auto proof_usage_root = vm::UsageCell::create(dictionary.get_root_cell(), proof_usage_tree->root_ptr());
+  vm::Dictionary proof_dictionary{std::move(proof_usage_root), 8};
+  td::BitArray<8> first_key{0LL};
+  ASSERT_TRUE(proof_dictionary.lookup(first_key).not_null());
+  auto proof = vm::MerkleProof::generate(dictionary.get_root_cell(), proof_usage_tree.get()).move_as_ok();
+  auto virtual_root = vm::MerkleProof::virtualize(std::move(proof)).move_as_ok();
+  ASSERT_TRUE(virtual_root->is_virtualized());
+
+  auto collect_virtual = [&](bool stack) {
+    vm::Dictionary virtual_dictionary{virtual_root, 8};
+    TraversalRun observation;
+    auto callback = [&](td::Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
+      observation.events.push_back({traversal_key(key, key_len), fingerprint_traversal_slice(value), {}});
+      return false;
+    };
+    observation.result =
+        stack ? virtual_dictionary.check_for_each_stack(callback) : virtual_dictionary.check_for_each(callback);
+    return observation;
+  };
+  auto legacy_virtual = collect_virtual(false);
+  auto stack_virtual = collect_virtual(true);
+  ASSERT_TRUE(!legacy_virtual.result && !stack_virtual.result);
+  ASSERT_TRUE(legacy_virtual.events == stack_virtual.events);
+  ASSERT_EQ(legacy_virtual.events.size(), 1u);
+  ASSERT_EQ(legacy_virtual.events.front().key, 0u);
+
+  struct ContextObservation {
+    TraversalRun traversal;
+    LookupLazyCell::Trace lazy_loads;
+    std::vector<vm::CellHash> usage_loads;
+    std::vector<bool> callback_has_tree;
+  };
+  auto collect_context = [&](bool stack) {
+    ContextObservation observation;
+    observation.lazy_loads = std::make_shared<std::vector<vm::CellHash>>();
+    auto lazy_root = make_lazy_lookup_tree(dictionary.get_root_cell(), observation.lazy_loads);
+    auto usage_tree = std::make_shared<vm::CellUsageTree>();
+    usage_tree->set_cell_load_callback(
+        [&](const vm::LoadedCell& loaded) { observation.usage_loads.push_back(loaded.data_cell->get_hash()); });
+    auto usage_root = vm::UsageCell::create(std::move(lazy_root), usage_tree->root_ptr());
+    vm::Dictionary usage_dictionary{std::move(usage_root), 8};
+    auto callback = [&](td::Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
+      observation.traversal.events.push_back({traversal_key(key, key_len), fingerprint_traversal_slice(value), {}});
+      vm::CellSlice copy{*value};
+      auto loaded = copy.move_as_loaded_cell();
+      observation.callback_has_tree.push_back(loaded.tree_node.is_from_tree(usage_tree.get()));
+      return true;
+    };
+    observation.traversal.result =
+        stack ? usage_dictionary.check_for_each_stack(callback) : usage_dictionary.check_for_each(callback);
+    return observation;
+  };
+
+  auto legacy_context = collect_context(false);
+  auto stack_context = collect_context(true);
+  ASSERT_TRUE(legacy_context.traversal.result && stack_context.traversal.result);
+  ASSERT_TRUE(legacy_context.traversal.events == stack_context.traversal.events);
+  ASSERT_TRUE(*legacy_context.lazy_loads == *stack_context.lazy_loads);
+  ASSERT_TRUE(legacy_context.usage_loads == stack_context.usage_loads);
+  ASSERT_TRUE(legacy_context.callback_has_tree == stack_context.callback_has_tree);
+  ASSERT_EQ(legacy_context.callback_has_tree.size(), keys.size());
+  for (bool has_tree : stack_context.callback_has_tree) {
+    ASSERT_TRUE(has_tree);
+  }
+}

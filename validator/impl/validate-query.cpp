@@ -3123,7 +3123,7 @@ bool ValidateQuery::precheck_account_updates() {
   try {
     REJECT_UNLESS(ps_.account_dict_);
     REJECT_UNLESS(ns_.account_dict_);
-    if (!ps_.account_dict_->scan_diff(
+    if (!ps_.account_dict_->scan_diff_stack(
             *ns_.account_dict_,
             [this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra,
                    Ref<vm::CellSlice> new_val_extra) {
@@ -5388,7 +5388,7 @@ bool ValidateQuery::check_neighbor_outbound_message(Ref<vm::CellSlice> enq_msg, 
  */
 bool ValidateQuery::check_in_queue() {
   int imported_messages_count = 0;
-  in_msg_dict_->check_for_each_extra([&](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr, int) {
+  in_msg_dict_->check_for_each_value_stack([&](Ref<vm::CellSlice> value, td::ConstBitPtr, int) {
     int tag = block::gen::t_InMsg.get_tag(*value);
     if (tag == block::gen::InMsg::msg_import_fin || tag == block::gen::InMsg::msg_import_tr) {
       ++imported_messages_count;
@@ -6218,12 +6218,10 @@ bool ValidateQuery::CheckAccountTxs::try_check() {
     REJECT_UNLESS(trans_dict.get_minmax_key(min_trans).not_null());
     REJECT_UNLESS(trans_dict.get_minmax_key(max_trans, true).not_null());
     ton::LogicalTime min_trans_lt = min_trans.to_ulong(), max_trans_lt = max_trans.to_ulong();
-    if (!trans_dict.check_for_each_extra(
-            [this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra,
-                                                         td::ConstBitPtr key, int key_len) {
+    if (!trans_dict.check_for_each_value_stack(
+            [this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
               REJECT_UNLESS(key_len == 64);
               ton::LogicalTime lt = key.get_uint(64);
-              extra.clear();
               return check_one_transaction(account, lt, value->prefetch_ref(), lt == min_trans_lt, lt == max_trans_lt);
             })) {
       return reject_query("at least one Transaction of account "s + address_.to_hex() + " is invalid");
@@ -6381,8 +6379,8 @@ bool ValidateQuery::check_account_failures() {
 bool ValidateQuery::check_transactions() {
   LOG(INFO) << "checking all transactions";
   size_t accounts_count = 0;
-  bool result = account_blocks_dict_->check_for_each_extra(
-      [this, &accounts_count](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+  bool result = account_blocks_dict_->check_for_each_value_stack(
+      [this, &accounts_count](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
         REJECT_UNLESS(key_len == 256);
         accounts_count++;
         StdSmcAddress address = key;

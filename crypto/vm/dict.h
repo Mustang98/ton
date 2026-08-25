@@ -225,11 +225,16 @@ class DictionaryFixed : public DictionaryBase {
   bool cut_prefix_subdict(td::ConstBitPtr prefix, int prefix_len, bool remove_prefix = false);
   Ref<vm::Cell> extract_prefix_subdict_root(td::ConstBitPtr prefix, int prefix_len, bool remove_prefix = false);
   bool check_for_each(const foreach_func_t& foreach_func, bool invert_first = false, bool shuffle = false);
+  // Explicit opt-in traversal that keeps intermediate dictionary-edge slices
+  // on the stack. Visit order and callback semantics match check_for_each().
+  bool check_for_each_stack(const foreach_func_t& foreach_func, bool invert_first = false, bool shuffle = false);
   int filter(filter_func_t check);
   bool combine_with(DictionaryFixed& dict2, const combine_func_t& combine_func, int mode = 0);
   bool combine_with(DictionaryFixed& dict2, const simple_combine_func_t& simple_combine_func, int mode = 0);
   bool combine_with(DictionaryFixed& dict2);
   bool scan_diff(DictionaryFixed& dict2, const scan_diff_func_t& diff_func, int check_augm = 0);
+  // Explicit opt-in counterpart of scan_diff() for scan-heavy read-only paths.
+  bool scan_diff_stack(DictionaryFixed& dict2, const scan_diff_func_t& diff_func, int check_augm = 0);
   bool validate_check(const foreach_func_t& foreach_func, bool invert_first = false);
   bool validate_all();
   DictIterator null_iterator();
@@ -266,6 +271,9 @@ class DictionaryFixed : public DictionaryBase {
   }
 
  protected:
+  typedef std::function<bool(CellSlice&&, td::ConstBitPtr, int)> foreach_stack_func_t;
+  bool check_for_each_stack_slice(const foreach_stack_func_t& foreach_func, bool invert_first = false,
+                                  bool shuffle = false);
   virtual int label_mode() const {
     return dict::LabelParser::chk_all;
   }
@@ -294,12 +302,17 @@ class DictionaryFixed : public DictionaryBase {
                                                              bool remove_prefix = false) const;
   bool dict_check_for_each(Ref<Cell> dict, td::BitPtr key_buffer, int n, int total_key_len,
                            const foreach_func_t& foreach_func, bool invert_first = false, bool shuffle = false) const;
+  bool dict_check_for_each_stack(Ref<Cell> dict, td::BitPtr key_buffer, int n, int total_key_len,
+                                 const foreach_stack_func_t& foreach_func, bool invert_first = false,
+                                 bool shuffle = false) const;
   std::pair<Ref<Cell>, int> dict_filter(Ref<Cell> dict, td::BitPtr key, int n, const filter_func_t& check_leaf,
                                         int& skip_rest) const;
   Ref<Cell> dict_combine_with(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPtr key_buffer, int n, int total_key_len,
                               const combine_func_t& combine_func, int mode = 0, int skip1 = 0, int skip2 = 0) const;
   bool dict_scan_diff(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPtr key_buffer, int n, int total_key_len,
                       const scan_diff_func_t& diff_func, int mode = 0, int skip1 = 0, int skip2 = 0) const;
+  bool dict_scan_diff_stack(Ref<Cell> dict1, Ref<Cell> dict2, td::BitPtr key_buffer, int n, int total_key_len,
+                            const scan_diff_func_t& diff_func, int mode = 0, int skip1 = 0, int skip2 = 0) const;
   bool dict_validate_check(Ref<Cell> dict, td::BitPtr key_buffer, int n, int total_key_len,
                            const foreach_func_t& foreach_func, bool invert_first = false) const;
 };
@@ -593,6 +606,9 @@ class AugmentedDictionary final : public DictionaryFixed {
   bool set_ref(td::ConstBitPtr key, int key_len, Ref<Cell> val_ref, SetMode mode = SetMode::Set);
   bool set_builder(td::ConstBitPtr key, int key_len, const CellBuilder& value, SetMode mode = SetMode::Set);
   bool check_for_each_extra(const foreach_extra_func_t& foreach_extra_func, bool invert_first = false);
+  // Value-only traversal for callers that deliberately ignore augmentation.
+  // The leaf augmentation is still parsed before the callback.
+  bool check_for_each_value_stack(const foreach_func_t& foreach_func, bool invert_first = false);
   std::pair<Ref<CellSlice>, Ref<CellSlice>> traverse_extra(td::BitPtr key_buffer, int key_len,
                                                            const traverse_func_t& traverse_node);
   bool validate_check_extra(const foreach_extra_func_t& foreach_extra_func, bool invert_first = false);
