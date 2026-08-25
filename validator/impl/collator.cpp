@@ -4661,19 +4661,39 @@ bool Collator::insert_in_msg(Ref<vm::Cell> in_msg) {
     }
     msg = cs2.prefetch_ref();  // use hash of (Message Any)
   }
-  bool ok;
+  Ref<vm::CellBuilder> value{true};
+  if (!value.write().append_cellslice_bool(cs)) {
+    return fatal_error("cannot add an InMsg into InMsgDescr dictionary");
+  }
+  pending_in_msg_descriptors_.push_back({td::Bits256{msg->get_hash().bits()}, std::move(value)});
+  ++in_descr_cnt_;
+  if (!(in_descr_cnt_ & 63) && !flush_in_msg_descriptors()) {
+    return false;
+  }
+  return block_limit_status_->add_cell(std::move(in_msg)) &&
+         ((in_descr_cnt_ & 63) || block_limit_status_->add_cell(in_msg_dict->get_root_cell()));
+}
+
+bool Collator::flush_in_msg_descriptors() {
+  if (pending_in_msg_descriptors_.empty()) {
+    return true;
+  }
+  std::vector<vm::AugmentedDictionary::BatchSetEntry> updates;
+  updates.reserve(pending_in_msg_descriptors_.size());
+  for (auto& descriptor : pending_in_msg_descriptors_) {
+    updates.push_back({descriptor.key.bits(), std::move(descriptor.value), vm::Dictionary::SetMode::Add});
+  }
+  bool ok = false;
   try {
-    ok = in_msg_dict->set(msg->get_hash().bits(), 256, cs, vm::Dictionary::SetMode::Add);
+    ok = in_msg_dict->multiset(updates);
   } catch (vm::VmError&) {
     LOG(ERROR) << "cannot add an InMsg into InMsgDescr dictionary!";
-    ok = false;
   }
+  pending_in_msg_descriptors_.clear();
   if (!ok) {
     return fatal_error("cannot add an InMsg into InMsgDescr dictionary");
   }
-  ++in_descr_cnt_;
-  return block_limit_status_->add_cell(std::move(in_msg)) &&
-         ((in_descr_cnt_ & 63) || block_limit_status_->add_cell(in_msg_dict->get_root_cell()));
+  return true;
 }
 
 /**
@@ -5923,6 +5943,9 @@ bool Collator::compute_out_msg_queue_info(Ref<vm::Cell>& out_msg_queue_info) {
  * @returns True if the total balance computation is successful, false otherwise.
  */
 bool Collator::compute_total_balance() {
+  if (!flush_in_msg_descriptors()) {
+    return false;
+  }
   // 1. compute total_balance_ from the augmentation value of ShardAccounts
   auto accounts_extra = account_dict->get_root_extra();
   if (!(accounts_extra.write().advance(5) && total_balance_.validate_unpack(accounts_extra))) {

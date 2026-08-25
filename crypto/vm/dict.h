@@ -575,6 +575,12 @@ class AugmentedDictionary final : public DictionaryFixed {
   const AugmentationData& aug;
 
  public:
+  struct BatchSetEntry {
+    td::ConstBitPtr key;
+    Ref<CellBuilder> value;
+    SetMode mode{SetMode::Set};
+  };
+
   typedef std::function<bool(Ref<CellSlice>, Ref<CellSlice>, td::ConstBitPtr, int)> foreach_extra_func_t;
   // return value of traverse_func: < 0 = error, 0 = skip, 1 = visit only left, 2 = visit only right, 5 = visit right, then left, 6 = visit left, then right
   // for leaf nodes, all >0 values mean accept and return node as the final result, 0 = skip (continue scanning)
@@ -648,6 +654,15 @@ class AugmentedDictionary final : public DictionaryFixed {
   auto range(bool rev = false, bool sgnd = false) {
     return dict_range(*this, rev, sgnd);
   }
+  // Applies unique updates in one Patricia-tree traversal. A null builder
+  // deletes the key. The input is sorted in place, including on a false
+  // return. Duplicate keys or a missing delete leave the dictionary unchanged.
+  bool multiset(td::MutableSpan<std::pair<td::ConstBitPtr, Ref<CellBuilder>>> new_values);
+  // The mode of each non-null value is checked against the original tree
+  // during the same batched traversal. A null value deletes an existing key.
+  // Any duplicate key or failed Add/Replace/Delete precondition leaves the
+  // dictionary unchanged; the same in-place sorting contract applies.
+  bool multiset(td::MutableSpan<BatchSetEntry> updates);
 
   Ref<CellSlice> extract_value(Ref<CellSlice> value_extra) const;
   Ref<Cell> extract_value_ref(Ref<CellSlice> value_extra) const;
@@ -655,6 +670,7 @@ class AugmentedDictionary final : public DictionaryFixed {
   std::pair<Ref<Cell>, Ref<CellSlice>> decompose_value_ref_extra(Ref<CellSlice> value_extra) const;
 
  private:
+  class BatchSetView;
   bool compute_root() const;
   Ref<CellSlice> get_node_extra(Ref<Cell> cell_ref, int n) const;
   Ref<CellSlice> extract_leaf_value(Ref<CellSlice> leaf) const override;
@@ -664,6 +680,9 @@ class AugmentedDictionary final : public DictionaryFixed {
   Ref<Cell> finish_create_fork(CellBuilder& cb, Ref<Cell> c1, Ref<Cell> c2, int n) const override;
   std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n, const CellSlice& value,
                                       SetMode mode = SetMode::Set) const;
+  Ref<Cell> dict_multiset(Ref<Cell> dict, BatchSetView updates, td::BitPtr key_buffer, int n, int total_key_len,
+                          int skip) const;
+  Ref<Cell> dict_build(BatchSetView updates, int total_key_len, int prefix_len) const;
   int label_mode() const override {
     return dict::LabelParser::chk_size;
   }
