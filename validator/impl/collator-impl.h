@@ -212,11 +212,6 @@ class Collator final : public td::actor::Actor {
   block::tlb::Aug_OutMsgDescr aug_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict, out_msg_dict, old_out_msg_queue_, out_msg_queue_,
       sibling_out_msg_queue_;
-  struct PendingOutMsgQueueUpdate {
-    td::BitArray<352> key;
-    Ref<vm::CellBuilder> value;
-  };
-  std::vector<PendingOutMsgQueueUpdate> pending_out_msg_queue_updates_;
   std::map<StdSmcAddress, size_t> unprocessed_deferred_messages_;  // number of messages from dispatch queue in new_msgs
   td::uint64 out_msg_queue_size_ = 0;
   td::uint64 old_out_msg_queue_size_ = 0;
@@ -374,8 +369,6 @@ class Collator final : public td::actor::Actor {
                                ton::AccountIdPrefixFull cur_prefix, ton::AccountIdPrefixFull dest_prefix,
                                td::RefInt256 fwd_fee_remaining, td::optional<block::MsgMetadata> msg_metadata,
                                td::optional<LogicalTime> emitted_lt, bool from_dispatch_queue);
-  bool insert_out_msg_queue_msg(const td::BitArray<352>& key, const vm::CellBuilder& value);
-  bool flush_out_msg_queue_updates();
   bool delete_out_msg_queue_msg(td::ConstBitPtr key);
   bool insert_in_msg(Ref<vm::Cell> in_msg);
   bool insert_out_msg(Ref<vm::Cell> out_msg);

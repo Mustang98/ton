@@ -2525,9 +2525,6 @@ bool Collator::out_msg_queue_cleanup() {
   SCOPE_EXIT {
     stats_.load_fraction_queue_cleanup = block_limit_status_->load_fraction(block::ParamLimits::cl_normal);
   };
-  if (!flush_out_msg_queue_updates()) {
-    return fatal_error("cannot flush pending OutMsgQueue updates before cleanup");
-  }
   LOG(INFO) << "cleaning outbound queue from messages already imported by neighbors";
   if (verbosity >= 2) {
     FLOG(INFO) {
@@ -2574,9 +2571,6 @@ bool Collator::out_msg_queue_cleanup() {
         }
       }
       if (delivered) {
-        if (!flush_out_msg_queue_updates()) {
-          return false;
-        }
         ++deleted;
         CHECK(out_msg_queue_size_ > 0);
         --out_msg_queue_size_;
@@ -2651,9 +2645,6 @@ bool Collator::out_msg_queue_cleanup() {
           LOG(DEBUG) << "scanning outbound message with (lt,hash)=(" << enq_msg_descr.lt_ << ","
                      << enq_msg_descr.hash_.to_hex() << ") enqueued_lt=" << enq_msg_descr.enqueued_lt_
                      << ": message has been already delivered, dequeueing";
-          if (!flush_out_msg_queue_updates()) {
-            return fatal_error("cannot flush pending OutMsgQueue additions before cleanup deletion");
-          }
           ++deleted;
           CHECK(out_msg_queue_size_ > 0);
           --out_msg_queue_size_;
@@ -2686,9 +2677,6 @@ bool Collator::out_msg_queue_cleanup() {
                  << out_msg_queue_size_;
   }
   if (verbosity >= 2) {
-    if (!flush_out_msg_queue_updates()) {
-      return false;
-    }
     FLOG(INFO) {
       auto rt = out_msg_queue_->get_root();
       sb << "new out_msg_queue is ";
@@ -3849,44 +3837,19 @@ bool Collator::enqueue_transit_message(Ref<vm::Cell> msg, Ref<vm::Cell> old_msg_
   key.bits().store_int(next_hop.workchain, 32);
   (key.bits() + 32).store_int(next_hop.account_id_prefix, 64);
   (key.bits() + 96).copy_from(msg->get_hash().bits(), 256);
-  LOG(DEBUG) << "inserting into outbound queue message with (lt,key)=(" << start_lt << "," << key.to_hex() << ")";
-  if (!insert_out_msg_queue_msg(key, cb)) {
+  bool ok;
+  try {
+    LOG(DEBUG) << "inserting into outbound queue message with (lt,key)=(" << start_lt << "," << key.to_hex() << ")";
+    ok = out_msg_queue_->set_builder(key.bits(), 352, cb, vm::Dictionary::SetMode::Add);
+    ++out_msg_queue_size_;
+  } catch (vm::VmError&) {
+    ok = false;
+  }
+  if (!ok) {
     LOG(ERROR) << "cannot add an OutMsg into OutMsgQueue dictionary!";
     return false;
   }
-  return true;
-}
-
-bool Collator::insert_out_msg_queue_msg(const td::BitArray<352>& key, const vm::CellBuilder& value) {
-  Ref<vm::CellBuilder> pending_value{true};
-  if (!pending_value.write().append_builder_bool(value)) {
-    return false;
-  }
-  pending_out_msg_queue_updates_.push_back({key, std::move(pending_value)});
-  ++out_msg_queue_size_;
   return register_out_msg_queue_op();
-}
-
-bool Collator::flush_out_msg_queue_updates() {
-  if (pending_out_msg_queue_updates_.empty()) {
-    return true;
-  }
-  std::vector<vm::AugmentedDictionary::BatchSetEntry> updates;
-  updates.reserve(pending_out_msg_queue_updates_.size());
-  for (auto& update : pending_out_msg_queue_updates_) {
-    updates.push_back({update.key.bits(), std::move(update.value), vm::Dictionary::SetMode::Add});
-  }
-  bool ok = false;
-  try {
-    ok = out_msg_queue_->multiset(updates);
-  } catch (vm::VmError& err) {
-    LOG(ERROR) << "error applying pending OutMsgQueue additions: " << err.get_msg();
-  }
-  pending_out_msg_queue_updates_.clear();
-  if (!ok) {
-    LOG(ERROR) << "cannot add pending messages into OutMsgQueue dictionary";
-  }
-  return ok;
 }
 
 /**
@@ -3897,9 +3860,6 @@ bool Collator::flush_out_msg_queue_updates() {
  * @returns True if the message was successfully deleted, false otherwise.
  */
 bool Collator::delete_out_msg_queue_msg(td::ConstBitPtr key) {
-  if (!flush_out_msg_queue_updates()) {
-    return fatal_error("cannot flush pending OutMsgQueue additions before deleting a message");
-  }
   Ref<vm::CellSlice> queue_rec;
   try {
     LOG(DEBUG) << "deleting from outbound queue message with key=" << key.to_hex(352);
@@ -4860,12 +4820,20 @@ bool Collator::enqueue_message(block::NewOutMsg msg, td::RefInt256 fwd_fees_rema
   key.bits().store_int(next_hop.workchain, 32);
   (key.bits() + 32).store_int(next_hop.account_id_prefix, 64);
   (key.bits() + 96).copy_from(msg.msg->get_hash().bits(), 256);
-  LOG(DEBUG) << "inserting into outbound queue a new message with (lt,key)=(" << start_lt << "," << key.to_hex() << ")";
-  if (!insert_out_msg_queue_msg(key, cb)) {
+  bool ok;
+  try {
+    LOG(DEBUG) << "inserting into outbound queue a new message with (lt,key)=(" << start_lt << "," << key.to_hex()
+               << ")";
+    ok = out_msg_queue_->set_builder(key.bits(), 352, cb, vm::Dictionary::SetMode::Add);
+    ++out_msg_queue_size_;
+  } catch (vm::VmError&) {
+    ok = false;
+  }
+  if (!ok) {
     LOG(ERROR) << "cannot add an OutMsg into OutMsgQueue dictionary!";
     return false;
   }
-  return true;
+  return register_out_msg_queue_op();
 }
 
 /**
@@ -5739,9 +5707,6 @@ bool Collator::update_min_mc_seqno(ton::BlockSeqno some_mc_seqno) {
 bool Collator::register_out_msg_queue_op(bool force) {
   ++out_msg_queue_ops_;
   if (force || !(out_msg_queue_ops_ & 63)) {
-    if (!flush_out_msg_queue_updates()) {
-      return false;
-    }
     return block_limit_status_->add_proof(out_msg_queue_->get_root_cell());
   } else {
     return true;
@@ -5918,9 +5883,6 @@ bool Collator::update_processed_upto() {
  * @returns True if the computation is successful, False otherwise.
  */
 bool Collator::compute_out_msg_queue_info(Ref<vm::Cell>& out_msg_queue_info) {
-  if (!flush_out_msg_queue_updates()) {
-    return false;
-  }
   if (verbosity >= 2) {
     FLOG(INFO) {
       auto rt = out_msg_queue_->get_root();
