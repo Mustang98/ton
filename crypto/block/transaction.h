@@ -412,7 +412,6 @@ struct Transaction {
   td::optional<AccountStorageStat> new_account_storage_stat;
   td::optional<td::Bits256> new_storage_dict_hash;
   bool gas_limit_overridden{false};
-  bool retain_storage_stat_updates{true};
   std::vector<Ref<vm::Cell>> storage_stat_updates;
   td::RealCpuTimer::Time time_tvm, time_storage_stat;
   Transaction(const Account& _account, int ttype, ton::LogicalTime req_start_lt, ton::UnixTime _now,
