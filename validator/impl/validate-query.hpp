@@ -169,6 +169,7 @@ class ValidateQuery : public td::actor::Actor {
   Ref<vm::Cell> prev_state_root_;
   Ref<vm::Cell> state_root_;
   Ref<vm::Cell> state_update_;
+  std::optional<block::gen::ShardStateUnsplit::Record> state_info_;
   ton::Bits256 prev_state_hash_, state_hash_;
 
   ErrorCtx error_ctx_;

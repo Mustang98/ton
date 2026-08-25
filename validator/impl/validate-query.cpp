@@ -1428,6 +1428,7 @@ bool ValidateQuery::compute_prev_state() {
  */
 bool ValidateQuery::compute_next_state() {
   LOG(DEBUG) << "computing next state";
+  state_info_.reset();
   auto res = vm::MerkleUpdate::validate(state_update_);
   if (res.is_error()) {
     return reject_query("state update is invalid: "s + res.move_as_error().to_string());
@@ -1505,6 +1506,7 @@ bool ValidateQuery::compute_next_state() {
     new_config_ = r_config_info.move_as_ok();
     REJECT_UNLESS(new_config_);
   }
+  state_info_.emplace(std::move(info));
   return true;
 }
 
@@ -6746,10 +6748,11 @@ bool ValidateQuery::check_shard_libraries() {
  */
 bool ValidateQuery::check_new_state() {
   LOG(INFO) << "checking header of the new shardchain state";
-  block::gen::ShardStateUnsplit::Record info;
-  if (!tlb::unpack_cell(state_root_, info)) {
+  if (!state_info_) {
     return reject_query("the header of the new shardchain state cannot be unpacked");
   }
+  auto info = std::move(*state_info_);
+  state_info_.reset();
   // shard_state#9023afe2 global_id:int32 -> checked in unpack_next_state()
   // shard_id:ShardIdent -> checked in unpack_next_state()
   // seq_no:uint32 vert_seq_no:# -> checked in unpack_next_state()
