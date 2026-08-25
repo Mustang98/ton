@@ -3022,43 +3022,6 @@ bool Collator::process_account_storage_dict(block::Account& account) {
  */
 bool Collator::combine_account_transactions() {
   vm::AugmentedDictionary dict{256, block::tlb::aug_ShardAccountBlocks};
-  // The estimator is updated synchronously after every committed transaction.
-  // It is therefore an exact final ShardAccounts dictionary only when it has
-  // seen every transaction, each account has exactly one transaction, and its
-  // changed-account keys exactly match replace-only final updates below.
-  bool account_dict_estimator_reusable = account_dict_estimator_ != nullptr && account_dict_ops_ == stats_.transactions;
-  std::size_t account_transaction_count = 0;
-  auto estimated_account = account_dict_estimator_added_accounts_.begin();
-  if (account_dict_estimator_reusable) {
-    for (const auto& z : accounts) {
-      const block::Account& acc = *z.second;
-      CHECK(acc.addr == z.first);
-      account_transaction_count += acc.transactions.size();
-      if (acc.transactions.size() > 1) {
-        account_dict_estimator_reusable = false;
-        break;
-      }
-      const bool account_changed = acc.total_state->get_hash() != acc.orig_total_state->get_hash();
-      if (acc.transactions.empty()) {
-        if (account_changed) {
-          account_dict_estimator_reusable = false;
-          break;
-        }
-        continue;
-      }
-      if (!account_changed) {
-        continue;
-      }
-      if (acc.orig_status == block::Account::acc_nonexist || acc.status == block::Account::acc_nonexist ||
-          estimated_account == account_dict_estimator_added_accounts_.end() || *estimated_account != acc.addr) {
-        account_dict_estimator_reusable = false;
-        break;
-      }
-      ++estimated_account;
-    }
-    account_dict_estimator_reusable &= account_transaction_count == account_dict_ops_ &&
-                                       estimated_account == account_dict_estimator_added_accounts_.end();
-  }
   for (auto& z : accounts) {
     block::Account& acc = *(z.second);
     CHECK(acc.addr == z.first);
@@ -3114,8 +3077,7 @@ bool Collator::combine_account_transactions() {
               block::gen::t_Account.print_ref(sb, acc.total_state);
             };
           }
-          if (!account_dict_estimator_reusable &&
-              !(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
+          if (!(cb.store_ref_bool(acc.total_state)             // account_descr$_ account:^Account
                 && cb.store_bits_bool(acc.last_trans_hash_)    // last_trans_hash:bits256
                 && cb.store_long_bool(acc.last_trans_lt_, 64)  // last_trans_lt:uint64
                 && account_dict->set_builder(acc.addr, cb, vm::Dictionary::SetMode::Replace))) {
@@ -3133,9 +3095,6 @@ bool Collator::combine_account_transactions() {
                            " miraculously changed without transactions");
       }
     }
-  }
-  if (account_dict_estimator_reusable) {
-    account_dict = std::move(account_dict_estimator_);
   }
   vm::CellBuilder cb;
   if (!(cb.append_cellslice_bool(std::move(dict).extract_root()) && cb.finalize_to(shard_account_blocks_))) {
