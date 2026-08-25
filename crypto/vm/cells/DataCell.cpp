@@ -395,7 +395,7 @@ td::Result<Ref<DataCell>> DataCell::create(td::Slice data, int bit_length, td::S
   }
 
   for (int i = 0; i < cell.refs_cnt_; ++i) {
-    cell.refs_[i] = refs[i];
+    new (cell.ref_storage_at(i)) Ref<Cell>(refs[i]);
   }
 
   return Ref{allocated_cell, Ref<DataCell>::acquire_t{}};
@@ -405,7 +405,12 @@ DataCell::~DataCell() {
   for (size_t i = 0; i < level_ + 1; ++i) {
     level_info()[i].~LevelInfo();
   }
+  // Preserve the std::array version's destruction order: the parent leaves the live-cell counter
+  // before it releases child references, and array elements are destroyed in reverse order.
   get_thread_safe_counter().add(-1);
+  for (unsigned i = refs_cnt_; i != 0; --i) {
+    ref_at(i - 1).~Ref<Cell>();
+  }
 }
 
 int DataCell::serialize(unsigned char* buff, int buff_size, bool with_hashes) const {

@@ -18,6 +18,8 @@
 */
 #pragma once
 
+#include <new>
+
 #include "td/utils/Span.h"
 #include "td/utils/ThreadSafeCounter.h"
 #include "vm/cells/Cell.h"
@@ -118,18 +120,18 @@ class DataCell final : public Cell {
     if (idx >= refs_cnt_) {
       return {};
     }
-    return refs_[idx];
+    return ref_at(idx);
   }
 
   Cell* get_ref_raw_ptr(unsigned idx) const {
     DCHECK(idx < refs_cnt_);
-    return const_cast<Cell*>(refs_[idx].get());
+    return const_cast<Cell*>(ref_at(idx).get());
   }
 
   Ref<Cell> reset_ref_unsafe(unsigned idx, Ref<Cell> ref, bool check_hash = true) {
     CHECK(idx < get_refs_cnt());
-    CHECK(!check_hash || refs_[idx]->get_hash() == ref->get_hash());
-    return std::exchange(refs_[idx], std::move(ref));
+    CHECK(!check_hash || ref_at(idx)->get_hash() == ref->get_hash());
+    return std::exchange(ref_at(idx), std::move(ref));
   }
 
   bool is_special() const {
@@ -203,7 +205,21 @@ class DataCell final : public Cell {
   unsigned allocated_in_arena_ : 1;
   unsigned virtualized_ : 1;
 
-  std::array<Ref<Cell>, max_refs> refs_{};
+  Ref<Cell>& ref_at(unsigned idx) {
+    return *std::launder(reinterpret_cast<Ref<Cell>*>(refs_storage_ + idx * sizeof(Ref<Cell>)));
+  }
+
+  const Ref<Cell>& ref_at(unsigned idx) const {
+    return *std::launder(reinterpret_cast<const Ref<Cell>*>(refs_storage_ + idx * sizeof(Ref<Cell>)));
+  }
+
+  void* ref_storage_at(unsigned idx) {
+    return refs_storage_ + idx * sizeof(Ref<Cell>);
+  }
+
+  // Only refs_cnt_ objects exist in this aligned storage. This avoids constructing and destroying
+  // 4-refs_cnt_ null intrusive references for every cell.
+  alignas(Ref<Cell>) unsigned char refs_storage_[sizeof(Ref<Cell>) * max_refs];
 
   alignas(detail::LevelInfo) char trailer_[];
 };

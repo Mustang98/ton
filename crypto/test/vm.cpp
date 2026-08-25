@@ -47,6 +47,67 @@ static_assert(std::is_copy_assignable<vm::CellSlice>::value);
 static_assert(std::is_nothrow_move_constructible<vm::CellSlice>::value);
 static_assert(std::is_nothrow_move_assignable<vm::CellSlice>::value);
 
+TEST(VM, DataCellLiveRefSlots) {
+  const auto cells_before = vm::DataCell::get_total_data_cells();
+  {
+    std::array<td::Ref<vm::Cell>, vm::CellTraits::max_refs> children;
+    for (unsigned i = 0; i < children.size(); ++i) {
+      children[i] = vm::CellBuilder().store_long(i, 8).finalize();
+    }
+    ASSERT_EQ(vm::DataCell::get_total_data_cells(), cells_before + static_cast<td::int64>(children.size()));
+
+    std::array<int, vm::CellTraits::max_refs> child_refcounts;
+    for (unsigned i = 0; i < children.size(); ++i) {
+      child_refcounts[i] = children[i]->get_refcnt();
+    }
+
+    for (unsigned count = 0; count <= children.size(); ++count) {
+      {
+        auto parent = vm::DataCell::create({}, 0, {children.data(), count}, false).move_as_ok();
+        ASSERT_EQ(parent->get_refs_cnt(), count);
+        for (unsigned i = 0; i < children.size(); ++i) {
+          ASSERT_EQ(children[i]->get_refcnt(), child_refcounts[i] + static_cast<int>(i < count));
+          if (i < count) {
+            ASSERT_TRUE(parent->get_ref_raw_ptr(i) == children[i].get());
+          }
+        }
+      }
+      for (unsigned i = 0; i < children.size(); ++i) {
+        ASSERT_EQ(children[i]->get_refcnt(), child_refcounts[i]);
+      }
+    }
+
+    auto replacement = vm::CellBuilder().store_long(0x55, 8).finalize();
+    const auto replacement_refcount = replacement->get_refcnt();
+    {
+      auto one_ref = vm::DataCell::create({}, 0, {children.data(), 1}, false).move_as_ok();
+      auto old_ref = one_ref.unique_write().reset_ref_unsafe(0, replacement, false);
+      ASSERT_TRUE(old_ref.get() == children.front().get());
+      ASSERT_TRUE(one_ref->get_ref_raw_ptr(0) == replacement.get());
+      ASSERT_EQ(replacement->get_refcnt(), replacement_refcount + 1);
+    }
+    ASSERT_EQ(replacement->get_refcnt(), replacement_refcount);
+    for (unsigned i = 0; i < children.size(); ++i) {
+      ASSERT_EQ(children[i]->get_refcnt(), child_refcounts[i]);
+    }
+
+    const bool old_arena = vm::DataCell::use_arena;
+    SCOPE_EXIT {
+      vm::DataCell::use_arena = old_arena;
+    };
+    vm::DataCell::use_arena = true;
+    {
+      auto arena_parent = vm::DataCell::create({}, 0, {children.data(), 2}, false).move_as_ok();
+      ASSERT_TRUE(arena_parent->get_ref_raw_ptr(0) == children[0].get());
+      ASSERT_TRUE(arena_parent->get_ref_raw_ptr(1) == children[1].get());
+    }
+    for (unsigned i = 0; i < children.size(); ++i) {
+      ASSERT_EQ(children[i]->get_refcnt(), child_refcounts[i]);
+    }
+  }
+  ASSERT_EQ(vm::DataCell::get_total_data_cells(), cells_before);
+}
+
 std::string run_vm(td::Ref<vm::Cell> cell) {
   vm::init_vm().ensure();
   vm::DictionaryBase::get_empty_dictionary();
