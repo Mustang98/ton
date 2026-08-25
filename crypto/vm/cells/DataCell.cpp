@@ -265,7 +265,10 @@ class CellChecker {
       return;
     }
 
-    static_assert(2 + CellTraits::max_bytes + CellTraits::max_refs * (hash_bytes + depth_bytes) <= 512);
+    constexpr size_t max_hash_input = 2 + CellTraits::max_bytes + CellTraits::max_refs * (hash_bytes + depth_bytes);
+    constexpr size_t max_padded_hash_input =
+        (max_hash_input + 1 + 8 + SHA256_CBLOCK - 1) / SHA256_CBLOCK * SHA256_CBLOCK;
+    static_assert(max_hash_input == 266 && max_padded_hash_input == 320 && max_padded_hash_input <= 512);
     char data_to_hash[512];
     int pointer = 0;
 
@@ -308,9 +311,15 @@ class CellChecker {
       add_slice_to_hash(refs_[i]->get_hash(child_level).as_slice());
     }
 
-    digest::SHA256 hasher;
-    hasher.feed(data_to_hash, pointer);
-    hasher.extract(hash_[level].as_slice());
+    const size_t message_size = pointer;
+    const td::uint64 message_bit_size = static_cast<td::uint64>(message_size) * 8;
+    add_byte_to_hash(static_cast<char>(0x80));
+    const size_t padded_size = (static_cast<size_t>(pointer) + 8 + SHA256_CBLOCK - 1) / SHA256_CBLOCK * SHA256_CBLOCK;
+    std::memset(data_to_hash + pointer, 0, padded_size - pointer);
+    for (unsigned i = 0; i != 8; ++i) {
+      data_to_hash[padded_size - 1 - i] = static_cast<char>(message_bit_size >> (i * 8));
+    }
+    digest::sha256_digest_padded_blocks(hash_[level].as_slice().ubegin(), data_to_hash, padded_size, message_size);
   }
 
   bool is_special_;

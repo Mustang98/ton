@@ -16,6 +16,7 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <array>
 #include <barrier>
 #include <latch>
 #include <map>
@@ -166,6 +167,49 @@ class BenchSha : public td::Benchmark {
  protected:
   std::string str_;
 };
+
+void check_sha256_padded_blocks(td::Slice input) {
+  std::array<unsigned char, 320> padded{};
+  if (!input.empty()) {
+    std::memcpy(padded.data(), input.data(), input.size());
+  }
+  const size_t message_size = input.size();
+  size_t padded_size = message_size;
+  const td::uint64 message_bit_size = static_cast<td::uint64>(message_size) * 8;
+  padded[padded_size++] = 0x80;
+  padded_size = (padded_size + 8 + SHA256_CBLOCK - 1) / SHA256_CBLOCK * SHA256_CBLOCK;
+  ASSERT_TRUE(padded_size <= padded.size());
+  for (unsigned i = 0; i != 8; ++i) {
+    padded[padded_size - 1 - i] = static_cast<unsigned char>(message_bit_size >> (i * 8));
+  }
+
+  unsigned char expected[SHA256_DIGEST_LENGTH];
+  digest::SHA256 scalar(input.data(), input.size());
+  scalar.extract(expected);
+  unsigned char actual[SHA256_DIGEST_LENGTH];
+  digest::sha256_digest_padded_blocks(actual, padded.data(), padded_size, message_size);
+  ASSERT_TRUE(td::Slice(expected, sizeof(expected)) == td::Slice(actual, sizeof(actual)));
+}
+
+TEST(Crypto, SHA256PaddedBlocksMatchScalar) {
+  std::array<char, 266> bytes;
+  for (size_t i = 0; i != bytes.size(); ++i) {
+    bytes[i] = static_cast<char>((i * 131 + i * i * 17 + 0x5a) & 0xff);
+  }
+  // Covers every CellChecker preimage length and all SHA-256 padding
+  // transitions in that range (55/56, 63/64, ... 247/248, 255/256).
+  for (size_t size = 0; size <= bytes.size(); ++size) {
+    check_sha256_padded_blocks(td::Slice(bytes.data(), size));
+  }
+
+  for (size_t size : {size_t{0},   size_t{1},   size_t{55},  size_t{56},  size_t{63},  size_t{64},  size_t{65},
+                      size_t{119}, size_t{120}, size_t{127}, size_t{128}, size_t{183}, size_t{184}, size_t{191},
+                      size_t{192}, size_t{247}, size_t{248}, size_t{255}, size_t{256}, size_t{266}}) {
+    check_sha256_padded_blocks(std::string(size, '\0'));
+    check_sha256_padded_blocks(std::string(size, static_cast<char>(0xff)));
+  }
+}
+
 class BenchSha256 : public BenchSha {
  public:
   using BenchSha::BenchSha;

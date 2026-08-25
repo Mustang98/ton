@@ -21,6 +21,8 @@
 #include <openssl/evp.h>
 #include <openssl/opensslv.h>
 #include <openssl/sha.h>
+#include <type_traits>
+#include <utility>
 
 #include "td/utils/Slice.h"
 
@@ -178,6 +180,65 @@ struct HashCtx<SHA256Tag> {
  private:
   SHA256_CTX ctx_;
 };
+
+namespace detail {
+
+// SHA256_CTX is a public structure in the OpenSSL, LibreSSL and BoringSSL
+// versions supported by this tree, but its fields are not a stable API. Keep
+// the optimization conditional so an implementation with a different layout
+// retains the regular SHA256_{Init,Update,Final} path.
+template <class Context, class = void>
+struct HasSha256StateWords : std::false_type {};
+
+template <class Context>
+struct HasSha256StateWords<Context,
+                           std::void_t<decltype(std::declval<Context &>().h), decltype(std::declval<Context &>().h[0])>>
+    : std::integral_constant<
+          bool, std::is_array_v<std::remove_reference_t<decltype(std::declval<Context &>().h)>> &&
+                    std::extent_v<std::remove_reference_t<decltype(std::declval<Context &>().h)>> == 8 &&
+                    sizeof(std::declval<Context &>().h[0]) == 4 &&
+                    std::is_unsigned_v<std::remove_reference_t<decltype(std::declval<Context &>().h[0])>>> {};
+
+template <class Context, std::enable_if_t<HasSha256StateWords<Context>::value, int> = 0>
+void sha256_digest_padded_blocks_impl(unsigned char output[SHA256_DIGEST_LENGTH], const void *data,
+                                      std::size_t padded_size, std::size_t) {
+  Context ctx;
+  SHA256_Init(&ctx);
+  SHA256_Update(&ctx, data, padded_size);
+  static_assert(SHA256_DIGEST_LENGTH == 8 * 4);
+  for (std::size_t i = 0; i != SHA256_DIGEST_LENGTH / 4; ++i) {
+    // SHA-256 serializes its numeric state words most-significant byte first;
+    // shifts make this independent of the host's byte order.
+    auto word = ctx.h[i];
+    output[i * 4] = static_cast<unsigned char>(word >> 24);
+    output[i * 4 + 1] = static_cast<unsigned char>(word >> 16);
+    output[i * 4 + 2] = static_cast<unsigned char>(word >> 8);
+    output[i * 4 + 3] = static_cast<unsigned char>(word);
+  }
+}
+
+template <class Context, std::enable_if_t<!HasSha256StateWords<Context>::value, int> = 0>
+void sha256_digest_padded_blocks_impl(unsigned char output[SHA256_DIGEST_LENGTH], const void *data, std::size_t,
+                                      std::size_t message_size) {
+  Context ctx;
+  SHA256_Init(&ctx);
+  SHA256_Update(&ctx, data, message_size);
+  SHA256_Final(output, &ctx);
+}
+
+}  // namespace detail
+
+// Hash an input for which the caller already appended canonical SHA-256
+// padding. On known SHA256_CTX layouts this avoids SHA256_Final's second
+// padding pass and directly serializes the state after the whole blocks were
+// consumed. Other layouts transparently use the regular finalization path.
+inline void sha256_digest_padded_blocks(unsigned char output[SHA256_DIGEST_LENGTH], const void *data,
+                                        std::size_t padded_size, std::size_t message_size) {
+  assert(padded_size != 0 && padded_size % SHA256_CBLOCK == 0);
+  assert(message_size + 1 + 8 <= padded_size);
+  assert((message_size + 1 + 8 + SHA256_CBLOCK - 1) / SHA256_CBLOCK * SHA256_CBLOCK == padded_size);
+  detail::sha256_digest_padded_blocks_impl<SHA256_CTX>(output, data, padded_size, message_size);
+}
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
