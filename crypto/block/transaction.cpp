@@ -1061,7 +1061,8 @@ bool Transaction::prepare_storage_phase(const StoragePhaseConfig& cfg, bool forc
   if (to_pay.not_null() && sgn(to_pay) < 0) {
     return false;
   }
-  auto res = std::make_unique<StoragePhase>();
+  storage_phase.emplace();
+  auto* res = &*storage_phase;
   res->is_special = account.is_special;
   last_paid = res->last_paid_updated = (res->is_special ? 0 : now);
   if (to_pay.is_null() || sgn(to_pay) == 0) {
@@ -1118,7 +1119,6 @@ bool Transaction::prepare_storage_phase(const StoragePhaseConfig& cfg, bool forc
     msg_balance_remaining.grams = balance.grams;
   }
   total_fees += res->fees_collected;
-  storage_phase = std::move(res);
   return true;
 }
 
@@ -1132,7 +1132,7 @@ bool Transaction::prepare_storage_phase(const StoragePhaseConfig& cfg, bool forc
  * @returns True if the credit phase is prepared successfully, false otherwise.
  */
 bool Transaction::prepare_credit_phase() {
-  credit_phase = std::make_unique<CreditPhase>();
+  credit_phase.emplace();
   // Due payment is only collected in storage phase.
   // For messages with bounce flag, contract always receives the amount specified in message
   // auto collected = std::min(msg_balance_remaining.grams, due_payment);
@@ -1839,8 +1839,8 @@ bool Transaction::run_precompiled_contract(const ComputePhaseConfig& cfg, precom
 bool Transaction::prepare_compute_phase(const ComputePhaseConfig& cfg) {
   // TODO: add more skip verifications + sometimes use state from in_msg to re-activate
   // ...
-  compute_phase = std::make_unique<ComputePhase>();
-  ComputePhase& cp = *(compute_phase.get());
+  compute_phase.emplace();
+  ComputePhase& cp = *compute_phase;
   if (cfg.global_version >= 9) {
     original_balance = balance;
     if (msg_balance_remaining.is_valid()) {
@@ -2088,8 +2088,8 @@ bool Transaction::prepare_action_phase(const ActionPhaseConfig& cfg) {
   if (!compute_phase || !compute_phase->success) {
     return false;
   }
-  action_phase = std::make_unique<ActionPhase>();
-  ActionPhase& ap = *(action_phase.get());
+  action_phase.emplace();
+  ActionPhase& ap = *action_phase;
   ap.result_code = -1;
   ap.result_arg = 0;
   ap.tot_actions = ap.spec_actions = ap.skipped_actions = ap.msgs_created = 0;

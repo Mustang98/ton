@@ -17,6 +17,7 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #pragma once
+#include <optional>
 #include <ostream>
 
 #include "block/block-auto.h"
@@ -402,10 +403,10 @@ struct Transaction {
   td::BitArray<256> frozen_hash;
   td::BitArray<32> orig_addr_rewrite;
   std::vector<Ref<vm::Cell>> out_msgs;
-  std::unique_ptr<StoragePhase> storage_phase;
-  std::unique_ptr<CreditPhase> credit_phase;
-  std::unique_ptr<ComputePhase> compute_phase;
-  std::unique_ptr<ActionPhase> action_phase;
+  std::optional<StoragePhase> storage_phase;
+  std::optional<CreditPhase> credit_phase;
+  std::optional<ComputePhase> compute_phase;
+  std::optional<ActionPhase> action_phase;
   std::unique_ptr<BouncePhase> bounce_phase;
   StorageUsed new_storage_used;
   td::optional<AccountStorageStat> new_account_storage_stat;
