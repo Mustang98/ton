@@ -1713,7 +1713,6 @@ bool Transaction::unpack_msg_state(const ComputePhaseConfig& cfg, bool lib_only)
  */
 std::vector<Ref<vm::Cell>> Transaction::compute_vm_libraries(const ComputePhaseConfig& cfg) {
   std::vector<Ref<vm::Cell>> lib_set;
-  lib_set.reserve(3);
   if (cfg.global_version < 15) {
     if (in_msg_library.not_null()) {
       lib_set.push_back(in_msg_library);
