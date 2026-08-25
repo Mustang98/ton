@@ -680,6 +680,8 @@ class AugmentedDictionary final : public DictionaryFixed {
   Ref<Cell> finish_create_fork(CellBuilder& cb, Ref<Cell> c1, Ref<Cell> c2, int n) const override;
   std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n, const CellSlice& value,
                                       SetMode mode = SetMode::Set) const;
+  std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n, const CellSlice& value, SetMode mode,
+                                      CellSlice& remainder) const;
   Ref<Cell> dict_multiset(Ref<Cell> dict, BatchSetView updates, td::BitPtr key_buffer, int n, int total_key_len,
                           int skip) const;
   Ref<Cell> dict_build(BatchSetView updates, int total_key_len, int prefix_len) const;

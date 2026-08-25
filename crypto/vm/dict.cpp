@@ -748,8 +748,9 @@ void append_dict_label(CellBuilder& cb, td::ConstBitPtr label, int len, int max_
   cb.store_bits(label, len);
 }
 
-std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
-                                    const Dictionary::store_value_func_t& store_val, Dictionary::SetMode mode) {
+std::pair<Ref<Cell>, bool> dict_set_stack(Ref<Cell> dict, td::ConstBitPtr key, int n,
+                                          const Dictionary::store_value_func_t& store_val, Dictionary::SetMode mode,
+                                          CellSlice& remainder) {
   //std::cerr << "dictionary modification for " << n << "-bit key = " << key.to_hex(n) << std::endl;
   if (dict.is_null()) {
     // the dictionary is very empty
@@ -764,11 +765,12 @@ std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
     }
     return std::make_pair(cb.finalize(), true);
   }
-  LabelParser label{std::move(dict), n};
-  label.validate();
-  int pfx_len = label.common_prefix_len(key, n);
-  assert(pfx_len >= 0 && pfx_len <= label.l_bits && label.l_bits <= n);
-  if (pfx_len < label.l_bits) {
+  remainder.load(std::move(dict));
+  auto label = parse_stack_dict_label_checked(remainder, n, LabelParser::chk_all);
+  int pfx_len = label.same ? static_cast<int>(td::bitstring::bits_memscan(key, std::min(label.bits, n), label.same & 1))
+                           : remainder.common_prefix_len(key, std::min(label.bits, n));
+  assert(pfx_len >= 0 && pfx_len <= label.bits && label.bits <= n);
+  if (pfx_len < label.bits) {
     // have to insert a new node (fork) inside the current edge
     if (mode == Dictionary::SetMode::Replace) {
       // key not found, return unchanged dictionary
@@ -784,17 +786,16 @@ std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
     Ref<Cell> c1 = cb.finalize();  // new leaf cell corresponding to `key`
     //cb.reset();
     // create the lower portion of the old edge
-    int t = label.l_bits - pfx_len - 1;
-    auto cs = std::move(label.remainder);
-    if (label.l_same) {
-      append_dict_label_same(cb, label.l_same & 1, t, m);
+    int t = label.bits - pfx_len - 1;
+    if (label.same) {
+      append_dict_label_same(cb, label.same & 1, t, m);
     } else {
-      cs.write().advance(pfx_len + 1);
-      append_dict_label(cb, cs->data_bits(), t, m);
-      cs.unique_write().advance(t);
+      remainder.advance(pfx_len + 1);
+      append_dict_label(cb, remainder.data_bits(), t, m);
+      remainder.advance(t);
     }
-    // now cs is the old payload of the edge, either a value or two subdictionary references
-    if (!cell_builder_add_slice_bool(cb, *cs)) {
+    // remainder is now the old payload of the edge, either a value or two subdictionary references
+    if (!cell_builder_add_slice_bool(cb, remainder)) {
       throw VmError{Excno::cell_ov, "cannot change label of an old dictionary cell (?)"};
     }
     Ref<Cell> c2 = cb.finalize();  // the other child of the new fork
@@ -807,7 +808,7 @@ std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
     cb.store_ref(std::move(c1)).store_ref(std::move(c2));
     return std::make_pair(cb.finalize(), true);
   }
-  if (label.l_bits == n) {
+  if (label.bits == n) {
     // the edge leads to a leaf node
     // this leaf node already contains a value for the key wanted
     if (mode == Dictionary::SetMode::Add) {
@@ -823,12 +824,11 @@ std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
     return std::make_pair(cb.finalize(), true);
   }
   // main case: the edge leads to a fork, have to insert new value either in the right or in the left subtree
-  auto c1 = label.remainder->prefetch_ref(0);
-  auto c2 = label.remainder->prefetch_ref(1);
-  label.remainder.clear();
-  if (key[label.l_bits]) {
+  auto c1 = remainder.prefetch_ref(0);
+  auto c2 = remainder.prefetch_ref(1);
+  if (key[label.bits]) {
     // insert key into the right child (c2)
-    auto res = dict_set(std::move(c2), key + (label.l_bits + 1), n - label.l_bits - 1, store_val, mode);
+    auto res = dict_set_stack(std::move(c2), key + (label.bits + 1), n - label.bits - 1, store_val, mode, remainder);
     if (!res.second) {
       // return unchanged dictionary
       return std::make_pair(Ref<Cell>{}, false);
@@ -836,7 +836,7 @@ std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
     c2 = std::move(res.first);
   } else {
     // insert key into the left child (c1)
-    auto res = dict_set(std::move(c1), key + (label.l_bits + 1), n - label.l_bits - 1, store_val, mode);
+    auto res = dict_set_stack(std::move(c1), key + (label.bits + 1), n - label.bits - 1, store_val, mode, remainder);
     if (!res.second) {
       // return unchanged dictionary
       return std::make_pair(Ref<Cell>{}, false);
@@ -845,9 +845,15 @@ std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
   }
   // create a new label with the same content
   CellBuilder cb;
-  append_dict_label(cb, key, label.l_bits, n);
+  append_dict_label(cb, key, label.bits, n);
   cb.store_ref(std::move(c1)).store_ref(std::move(c2));
   return std::make_pair(cb.finalize(), true);
+}
+
+std::pair<Ref<Cell>, bool> dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
+                                    const Dictionary::store_value_func_t& store_val, Dictionary::SetMode mode) {
+  CellSlice remainder;
+  return dict_set_stack(std::move(dict), key, n, store_val, mode, remainder);
 }
 
 std::tuple<Ref<CellSlice>, Ref<Cell>, bool> dict_lookup_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
@@ -3432,6 +3438,13 @@ Ref<Cell> AugmentedDictionary::finish_create_fork(CellBuilder& cb, Ref<Cell> c1,
 
 std::pair<Ref<Cell>, bool> AugmentedDictionary::dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
                                                          const CellSlice& value, Dictionary::SetMode mode) const {
+  CellSlice remainder;
+  return dict_set(std::move(dict), key, n, value, mode, remainder);
+}
+
+std::pair<Ref<Cell>, bool> AugmentedDictionary::dict_set(Ref<Cell> dict, td::ConstBitPtr key, int n,
+                                                         const CellSlice& value, Dictionary::SetMode mode,
+                                                         CellSlice& remainder) const {
   //std::cerr << "augmented dictionary modification for " << n << "-bit key = " << key.to_hex(n) << std::endl;
   if (dict.is_null()) {
     // the dictionary is very empty
@@ -3443,11 +3456,12 @@ std::pair<Ref<Cell>, bool> AugmentedDictionary::dict_set(Ref<Cell> dict, td::Con
     append_dict_label(cb, key, n, n);
     return std::make_pair(finish_create_leaf(cb, value), true);
   }
-  LabelParser label{std::move(dict), n, 2};
-  label.validate();
-  int pfx_len = label.common_prefix_len(key, n);
-  assert(pfx_len >= 0 && pfx_len <= label.l_bits && label.l_bits <= n);
-  if (pfx_len < label.l_bits) {
+  remainder.load(std::move(dict));
+  auto label = parse_stack_dict_label_checked(remainder, n, LabelParser::chk_size);
+  int pfx_len = label.same ? static_cast<int>(td::bitstring::bits_memscan(key, std::min(label.bits, n), label.same & 1))
+                           : remainder.common_prefix_len(key, std::min(label.bits, n));
+  assert(pfx_len >= 0 && pfx_len <= label.bits && label.bits <= n);
+  if (pfx_len < label.bits) {
     // have to insert a new node (fork) inside the current edge
     if (mode == Dictionary::SetMode::Replace) {
       // key not found, return unchanged dictionary
@@ -3460,17 +3474,16 @@ std::pair<Ref<Cell>, bool> AugmentedDictionary::dict_set(Ref<Cell> dict, td::Con
     Ref<Cell> c1 = finish_create_leaf(cb, value);  // new leaf cell corresponding to `key`
     //cb.reset();
     // create the lower portion of the old edge
-    int t = label.l_bits - pfx_len - 1;
-    auto cs = std::move(label.remainder);
-    if (label.l_same) {
-      append_dict_label_same(cb, label.l_same & 1, t, m);
+    int t = label.bits - pfx_len - 1;
+    if (label.same) {
+      append_dict_label_same(cb, label.same & 1, t, m);
     } else {
-      cs.write().advance(pfx_len + 1);
-      append_dict_label(cb, cs->data_bits(), t, m);
-      cs.unique_write().advance(t);
+      remainder.advance(pfx_len + 1);
+      append_dict_label(cb, remainder.data_bits(), t, m);
+      remainder.advance(t);
     }
-    // now cs is the old payload of the edge, either a value or two subdictionary references
-    if (!cell_builder_add_slice_bool(cb, *cs)) {
+    // remainder is now the old payload of the edge, either a value or two subdictionary references
+    if (!cell_builder_add_slice_bool(cb, remainder)) {
       throw VmError{Excno::cell_ov, "cannot change label of an old augmented dictionary cell (?)"};
     }
     Ref<Cell> c2 = cb.finalize();  // the other child of the new fork
@@ -3482,7 +3495,7 @@ std::pair<Ref<Cell>, bool> AugmentedDictionary::dict_set(Ref<Cell> dict, td::Con
     }
     return std::make_pair(finish_create_fork(cb, std::move(c1), std::move(c2), n - pfx_len), true);
   }
-  if (label.l_bits == n) {
+  if (label.bits == n) {
     // the edge leads to a leaf node
     // this leaf node already contains a value for the key wanted
     if (mode == Dictionary::SetMode::Add) {
@@ -3495,12 +3508,11 @@ std::pair<Ref<Cell>, bool> AugmentedDictionary::dict_set(Ref<Cell> dict, td::Con
     return std::make_pair(finish_create_leaf(cb, value), true);
   }
   // main case: the edge leads to a fork, have to insert new value either in the right or in the left subtree
-  auto c1 = label.remainder->prefetch_ref(0);
-  auto c2 = label.remainder->prefetch_ref(1);
-  label.remainder.clear();
-  if (key[label.l_bits]) {
+  auto c1 = remainder.prefetch_ref(0);
+  auto c2 = remainder.prefetch_ref(1);
+  if (key[label.bits]) {
     // insert key into the right child (c2)
-    auto res = dict_set(std::move(c2), key + (label.l_bits + 1), n - label.l_bits - 1, value, mode);
+    auto res = dict_set(std::move(c2), key + (label.bits + 1), n - label.bits - 1, value, mode, remainder);
     if (!res.second) {
       // return unchanged dictionary
       return std::make_pair(Ref<Cell>{}, false);
@@ -3508,7 +3520,7 @@ std::pair<Ref<Cell>, bool> AugmentedDictionary::dict_set(Ref<Cell> dict, td::Con
     c2 = std::move(res.first);
   } else {
     // insert key into the left child (c1)
-    auto res = dict_set(std::move(c1), key + (label.l_bits + 1), n - label.l_bits - 1, value, mode);
+    auto res = dict_set(std::move(c1), key + (label.bits + 1), n - label.bits - 1, value, mode, remainder);
     if (!res.second) {
       // return unchanged dictionary
       return std::make_pair(Ref<Cell>{}, false);
@@ -3517,8 +3529,8 @@ std::pair<Ref<Cell>, bool> AugmentedDictionary::dict_set(Ref<Cell> dict, td::Con
   }
   // create a new label with the same content
   CellBuilder cb;
-  append_dict_label(cb, key, label.l_bits, n);
-  return std::make_pair(finish_create_fork(cb, std::move(c1), std::move(c2), n - label.l_bits), true);
+  append_dict_label(cb, key, label.bits, n);
+  return std::make_pair(finish_create_fork(cb, std::move(c1), std::move(c2), n - label.bits), true);
 }
 
 bool AugmentedDictionary::set(td::ConstBitPtr key, int key_len, Ref<CellSlice> value, SetMode mode) {
