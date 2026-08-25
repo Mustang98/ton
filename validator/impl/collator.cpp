@@ -2442,7 +2442,7 @@ td::actor::Task<> Collator::do_collate_inner() {
   {
     // A. serialize ShardAccountBlocks and new ShardAccounts
     LOG(DEBUG) << "serialize account states and blocks";
-    td::ScopedRealCpuTimer timer{stats_.work_time.combine_account_transactions};
+    td::ScopedWallTimer timer{stats_.work_time.combine_account_transactions};
     if (!combine_account_transactions()) {
       co_return td::Status::Error("cannot combine separate Account transactions into a new ShardAccountBlocks");
     }
@@ -2730,7 +2730,7 @@ bool Collator::init_account_storage_dict(block::Account& account) {
   if (storage_dict_hash.is_zero()) {
     return true;
   }
-  td::ScopedRealCpuTimer timer{stats_.work_time.prelim_storage_stat};
+  td::ScopedWallTimer timer{stats_.work_time.prelim_storage_stat};
   td::Ref<vm::Cell> cached_dict_root =
       storage_stat_cache_ ? storage_stat_cache_(storage_dict_hash) : td::Ref<vm::Cell>{};
   if (cached_dict_root.not_null()) {
@@ -2906,8 +2906,8 @@ static td::Ref<vm::Cell> clean_usage_cells(td::Ref<vm::Cell> old_root, td::Ref<v
  * @returns True if the operation is successful, false otherwise.
  */
 bool Collator::process_account_storage_dict(block::Account& account) {
-  td::ScopedRealCpuTimer timer{stats_.work_time.final_storage_stat};
-  td::ScopedRealCpuTimer timer2{stats_.work_time.combine_account_transactions, -1.0};
+  td::ScopedWallTimer timer{stats_.work_time.final_storage_stat};
+  td::ScopedWallTimer timer2{stats_.work_time.combine_account_transactions, -1.0};
   bool store_dict_to_cache = account.storage_dict_hash && account.account_storage_stat &&
                              account.account_storage_stat.value().is_dict_ready() &&
                              account.storage_used.cells >= StorageStatCache::MIN_ACCOUNT_CELLS;
@@ -3216,11 +3216,12 @@ bool Collator::create_ticktock_transaction(const ton::StdSmcAddress& smc_addr, t
   std::unique_ptr<block::transaction::Transaction> trans = std::make_unique<block::transaction::Transaction>(
       *acc, mask == 2 ? block::transaction::Transaction::tr_tick : block::transaction::Transaction::tr_tock,
       req_start_lt, now_);
-  td::RealCpuTimer timer;
+  td::Timer timer;
   SCOPE_EXIT {
+    auto elapsed = td::RealCpuTimer::Time::real_only(timer.elapsed());
     stats_.work_time.trx_tvm += trans->time_tvm;
     stats_.work_time.trx_storage_stat += trans->time_storage_stat;
-    stats_.work_time.trx_other += timer.elapsed_both() - trans->time_tvm - trans->time_storage_stat;
+    stats_.work_time.trx_other += elapsed - trans->time_tvm - trans->time_storage_stat;
   };
   if (!trans->prepare_storage_phase(storage_phase_cfg_, true)) {
     return fatal_error(td::Status::Error(
@@ -3405,12 +3406,13 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
   std::unique_ptr<block::transaction::Transaction> trans = std::make_unique<block::transaction::Transaction>(
       *acc, block::transaction::Transaction::tr_ord, trans_min_lt + 1, utime, msg_root);
   {
-    td::RealCpuTimer timer;
+    td::Timer timer;
     SCOPE_EXIT {
       if (stats) {
+        auto elapsed = td::RealCpuTimer::Time::real_only(timer.elapsed());
         stats->work_time.trx_tvm += trans->time_tvm;
         stats->work_time.trx_storage_stat += trans->time_storage_stat;
-        stats->work_time.trx_other += timer.elapsed_both() - trans->time_tvm - trans->time_storage_stat;
+        stats->work_time.trx_other += elapsed - trans->time_tvm - trans->time_storage_stat;
       }
     };
     bool ihr_delivered = false;  // FIXME

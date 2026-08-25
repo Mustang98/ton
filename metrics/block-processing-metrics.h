@@ -207,7 +207,9 @@ class BlockProcessingMetrics {
 
     void add(const td::RealCpuTimer::Time &time) {
       real.add(time.real);
-      cpu.add(time.cpu);
+      if (time.is_cpu_available()) {
+        cpu.add(time.cpu);
+      }
     }
   };
 

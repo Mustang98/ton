@@ -6352,9 +6352,9 @@ bool ValidateQuery::CheckAccountTxs::check_one_transaction(block::Account& accou
   // ....
   std::unique_ptr<block::transaction::Transaction> trs =
       std::make_unique<block::transaction::Transaction>(account, trans_type, lt, vq_.now_, in_msg_root);
-  td::RealCpuTimer timer;
+  td::Timer timer;
   SCOPE_EXIT {
-    auto elapsed = timer.elapsed_both();
+    auto elapsed = td::RealCpuTimer::Time::real_only(timer.elapsed());
     ctx_.work_time.trx_tvm += trs->time_tvm;
     ctx_.work_time.trx_storage_stat += trs->time_storage_stat;
     ctx_.work_time.trx_other += elapsed - trs->time_tvm - trs->time_storage_stat;
@@ -6519,7 +6519,7 @@ ValidateQuery::CheckAccountTxs::CheckAccountTxs(const ValidateQuery& vq, td::act
  * @returns True if the account transactions are valid, false otherwise.
  */
 bool ValidateQuery::CheckAccountTxs::try_check() {
-  td::ScopedRealCpuTimer timer{ctx_.work_time.check_transactions_other};
+  td::ScopedWallTimer timer{ctx_.work_time.check_transactions_other};
   try {
     block::gen::AccountBlock::Record acc_blk;
     REJECT_UNLESS(tlb::csr_unpack(std::move(acc_tr_), acc_blk));
