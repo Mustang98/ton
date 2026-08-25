@@ -3325,8 +3325,9 @@ Ref<vm::Cell> Collator::create_ordinary_transaction(Ref<vm::Cell> msg_root,
     after_lt = std::max(after_lt, it->second);
   }
   set_current_tx_storage_dict(*acc);
+  std::optional<block::transaction::Transaction> trans;
   auto res = impl_create_ordinary_transaction(msg_root, acc, now_, start_lt, &storage_phase_cfg_, &compute_phase_cfg_,
-                                              &action_phase_cfg_, &serialize_cfg_, external, after_lt, &stats_);
+                                              &action_phase_cfg_, &serialize_cfg_, external, after_lt, trans, &stats_);
   if (res.is_error()) {
     auto error = res.move_as_error();
     if (error.code() == -701) {
@@ -3337,7 +3338,7 @@ Ref<vm::Cell> Collator::create_ordinary_transaction(Ref<vm::Cell> msg_root,
     fatal_error(std::move(error));
     return {};
   }
-  std::unique_ptr<block::transaction::Transaction> trans = res.move_as_ok();
+  CHECK(trans);
 
   if (!trans->update_limits(*block_limit_status_,
                             /* with_gas = */ !(is_special_tx && compute_phase_cfg_.special_gas_full))) {
@@ -3382,17 +3383,19 @@ Ref<vm::Cell> Collator::create_ordinary_transaction(Ref<vm::Cell> msg_root,
  * @param serialize_cfg The configuration for the serialization of the transaction.
  * @param external Flag indicating if the message is external.
  * @param after_lt The logical time after which the transaction should occur. Used only for external messages.
+ * @param transaction Caller-owned storage for the created transaction. It is disengaged on error.
  * @param stats Stats to write real/cpu time to (optional)
  *
- * @returns A Result object containing the created transaction.
+ * @returns OK after constructing the transaction in `transaction`.
  *          Returns error_code == 669 if the error is fatal and the block can not be produced.
  *          Returns error_code == 701 if the transaction can not be included into block, but it's ok (external or too early internal).
  */
-td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_create_ordinary_transaction(
+td::Status Collator::impl_create_ordinary_transaction(
     Ref<vm::Cell> msg_root, block::Account* acc, UnixTime utime, LogicalTime lt,
     block::StoragePhaseConfig* storage_phase_cfg, block::ComputePhaseConfig* compute_phase_cfg,
     block::ActionPhaseConfig* action_phase_cfg, block::SerializeConfig* serialize_cfg, bool external,
-    LogicalTime after_lt, CollationStats* stats) {
+    LogicalTime after_lt, std::optional<block::transaction::Transaction>& transaction, CollationStats* stats) {
+  CHECK(!transaction);
   if (acc->last_trans_end_lt_ >= lt && acc->transactions.empty()) {
     return td::Status::Error(-669, PSTRING() << "last transaction time in the state of account " << acc->workchain
                                              << ":" << acc->addr.to_hex() << " is too large");
@@ -3402,8 +3405,14 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
   // if account has deferred message processed in this block, the next transaction should have lt > emitted_lt
   trans_min_lt = std::max(trans_min_lt, after_lt);
 
-  std::unique_ptr<block::transaction::Transaction> trans = std::make_unique<block::transaction::Transaction>(
-      *acc, block::transaction::Transaction::tr_ord, trans_min_lt + 1, utime, msg_root);
+  transaction.emplace(*acc, block::transaction::Transaction::tr_ord, trans_min_lt + 1, utime, msg_root);
+  auto* trans = &*transaction;
+  bool keep_transaction = false;
+  SCOPE_EXIT {
+    if (!keep_transaction) {
+      transaction.reset();
+    }
+  };
   {
     td::RealCpuTimer timer;
     SCOPE_EXIT {
@@ -3472,7 +3481,8 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
       return td::Status::Error(-669, "cannot serialize new transaction for smart contract "s + acc->addr.to_hex());
     }
   }
-  return std::move(trans);
+  keep_transaction = true;
+  return td::Status::OK();
 }
 
 /**

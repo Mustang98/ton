@@ -179,15 +179,16 @@ td::Status ExtMessageQ::run_message_on_account(ton::WorkchainId wc, block::Accou
 
 td::Status ExtMessageQ::run_message_on_account(ton::WorkchainId wc, block::Account* acc, UnixTime utime, LogicalTime lt,
                                                td::Ref<vm::Cell> msg_root, ExecutionConfig& exec_config) {
+  std::optional<block::transaction::Transaction> trans;
   auto res = Collator::impl_create_ordinary_transaction(msg_root, acc, utime, lt, &exec_config.storage_phase_cfg,
                                                         &exec_config.compute_phase_cfg, &exec_config.action_phase_cfg,
-                                                        &exec_config.serialize_config, true, lt);
+                                                        &exec_config.serialize_config, true, lt, trans);
   if (res.is_error()) {
     auto error = res.move_as_error();
     LOG(DEBUG) << "Cannot run message on account: " << error.message();
     return error.move_as_error_prefix("External message was not accepted: cannot run message on account: ");
   }
-  std::unique_ptr<block::transaction::Transaction> trans = res.move_as_ok();
+  CHECK(trans);
 
   auto trans_root = trans->commit(*acc);
   if (trans_root.is_null()) {
