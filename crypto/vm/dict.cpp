@@ -3554,6 +3554,282 @@ bool AugmentedDictionary::set_builder(td::ConstBitPtr key, int key_len, const Ce
   return set(key, key_len, load_cell_slice(value.finalize_copy()), mode);
 }
 
+class AugmentedDictionary::BatchSetView {
+ public:
+  explicit BatchSetView(td::Span<std::pair<td::ConstBitPtr, Ref<CellBuilder>>> values) : values_(values) {
+  }
+
+  explicit BatchSetView(td::Span<BatchSetEntry> updates) : updates_(updates), has_modes_(true) {
+  }
+
+  bool empty() const {
+    return size() == 0;
+  }
+
+  size_t size() const {
+    return has_modes_ ? updates_.size() : values_.size();
+  }
+
+  td::ConstBitPtr key(size_t i) const {
+    return has_modes_ ? updates_[i].key : values_[i].first;
+  }
+
+  const Ref<CellBuilder>& value(size_t i) const {
+    return has_modes_ ? updates_[i].value : values_[i].second;
+  }
+
+  SetMode mode(size_t i) const {
+    return has_modes_ ? updates_[i].mode : SetMode::Set;
+  }
+
+  BatchSetView substr(size_t offset) const {
+    return has_modes_ ? BatchSetView{updates_.substr(offset)} : BatchSetView{values_.substr(offset)};
+  }
+
+  BatchSetView substr(size_t offset, size_t size) const {
+    return has_modes_ ? BatchSetView{updates_.substr(offset, size)} : BatchSetView{values_.substr(offset, size)};
+  }
+
+ private:
+  td::Span<std::pair<td::ConstBitPtr, Ref<CellBuilder>>> values_;
+  td::Span<BatchSetEntry> updates_;
+  bool has_modes_{false};
+};
+
+bool AugmentedDictionary::multiset(td::MutableSpan<std::pair<td::ConstBitPtr, td::Ref<vm::CellBuilder>>> new_values) {
+  force_validate();
+  auto cmp = [&](const std::pair<td::ConstBitPtr, td::Ref<vm::CellBuilder>>& a,
+                 const std::pair<td::ConstBitPtr, td::Ref<vm::CellBuilder>>& b) {
+    return td::bitstring::bits_memcmp(a.first, b.first, key_bits) < 0;
+  };
+  if (!std::is_sorted(new_values.begin(), new_values.end(), cmp)) {
+    std::sort(new_values.begin(), new_values.end(), cmp);
+  }
+  for (size_t i = 0; i + 1 < new_values.size(); ++i) {
+    if (td::bitstring::bits_memcmp(new_values[i].first, new_values[i + 1].first, key_bits) == 0) {
+      return false;
+    }
+  }
+  unsigned char key_buffer[max_key_bytes];
+  try {
+    Ref<Cell> new_root = dict_multiset(get_root_cell(), BatchSetView{new_values}, key_buffer, key_bits, key_bits, 0);
+    set_root_cell(std::move(new_root));
+    return true;
+  } catch (CombineError) {
+    return false;
+  }
+}
+
+bool AugmentedDictionary::multiset(td::MutableSpan<BatchSetEntry> updates) {
+  force_validate();
+  auto cmp = [&](const BatchSetEntry& a, const BatchSetEntry& b) {
+    return td::bitstring::bits_memcmp(a.key, b.key, key_bits) < 0;
+  };
+  if (!std::is_sorted(updates.begin(), updates.end(), cmp)) {
+    std::sort(updates.begin(), updates.end(), cmp);
+  }
+  for (size_t i = 0; i + 1 < updates.size(); ++i) {
+    if (td::bitstring::bits_memcmp(updates[i].key, updates[i + 1].key, key_bits) == 0) {
+      return false;
+    }
+  }
+  unsigned char key_buffer[max_key_bytes];
+  try {
+    Ref<Cell> new_root = dict_multiset(get_root_cell(), BatchSetView{updates}, key_buffer, key_bits, key_bits, 0);
+    set_root_cell(std::move(new_root));
+    return true;
+  } catch (CombineError) {
+    return false;
+  }
+}
+
+Ref<Cell> AugmentedDictionary::dict_build(BatchSetView values, int total_key_len, int prefix_len) const {
+  if (values.empty()) {
+    return {};
+  }
+  if (values.size() == 1) {
+    if (values.value(0).is_null() || values.mode(0) == SetMode::Replace) {
+      throw CombineError{};
+    }
+    CellBuilder cb;
+    append_dict_label(cb, values.key(0) + prefix_len, total_key_len - prefix_len, total_key_len - prefix_len);
+    return finish_create_leaf(cb, load_cell_slice(values.value(0)->finalize_copy()));
+  }
+  size_t common_prefix_len_s;
+  td::bitstring::bits_memcmp(values.key(0) + prefix_len, values.key(values.size() - 1) + prefix_len,
+                             total_key_len - prefix_len, &common_prefix_len_s);
+  int common_prefix_len = static_cast<int>(common_prefix_len_s);
+  CHECK(prefix_len + common_prefix_len < total_key_len);
+  size_t idx = 0;
+  while (!values.key(idx)[prefix_len + common_prefix_len]) {
+    ++idx;
+  }
+  Ref<Cell> left = dict_build(values.substr(0, idx), total_key_len, prefix_len + common_prefix_len + 1);
+  Ref<Cell> right = dict_build(values.substr(idx), total_key_len, prefix_len + common_prefix_len + 1);
+  CellBuilder cb;
+  append_dict_label(cb, values.key(0) + prefix_len, common_prefix_len, total_key_len - prefix_len);
+  return finish_create_fork(cb, std::move(left), std::move(right), total_key_len - prefix_len - common_prefix_len);
+}
+
+// Based on Dictionary::dict_multiset. Existing untouched edges are retained,
+// while every changed augmented fork is evaluated exactly once bottom-up.
+Ref<Cell> AugmentedDictionary::dict_multiset(Ref<Cell> dict1, BatchSetView values2, td::BitPtr key_buffer, int n,
+                                             int total_key_len, int skip1) const {
+  int prefix_len = total_key_len - n;
+  for (size_t i = 0; i < values2.size(); ++i) {
+    CHECK(td::bitstring::bits_memcmp(values2.key(i), key_buffer - prefix_len, prefix_len) == 0);
+  }
+  if (dict1.is_null()) {
+    return dict_build(values2, total_key_len, prefix_len);
+  }
+  if (values2.empty()) {
+    assert(!skip1);
+    return dict1;
+  }
+  size_t common_prefix_len_s;
+  td::bitstring::bits_memcmp(values2.key(0) + prefix_len, values2.key(values2.size() - 1) + prefix_len,
+                             total_key_len - prefix_len, &common_prefix_len_s);
+  int common_prefix_len = static_cast<int>(common_prefix_len_s);
+  assert(prefix_len + common_prefix_len < total_key_len || values2.size() == 1);
+
+  LabelParser label1{dict1, n + skip1, LabelParser::chk_size};
+  int l1 = label1.l_bits - skip1;
+  int l2 = common_prefix_len;
+  assert(l1 >= 0 && l2 >= 0);
+  assert(!skip1 || label1.common_prefix_len(key_buffer - skip1, skip1) == skip1);
+  int c = label1.common_prefix_len(values2.key(0) + prefix_len - skip1, skip1 + l2) - skip1;
+  label1.extract_label_to(key_buffer - skip1);
+  assert(c >= 0 && c <= l1 && c <= l2);
+  if (c < l1 && c < l2) {
+    CellBuilder cb;
+    append_dict_label(cb, key_buffer + c + 1, l1 - c - 1, n - c - 1);
+    if (!cell_builder_add_slice_bool(cb, *label1.remainder)) {
+      throw VmError{Excno::cell_ov, "cannot prune label of an old augmented dictionary cell while merging"};
+    }
+    label1.remainder.clear();
+    dict1 = cb.finalize();
+    Ref<Cell> dict2 = dict_build(values2, total_key_len, prefix_len + c + 1);
+    if (!values2.key(0)[prefix_len + c]) {
+      std::swap(dict1, dict2);
+    }
+    append_dict_label(cb, key_buffer, c, n);
+    return finish_create_fork(cb, std::move(dict1), std::move(dict2), n - c);
+  }
+
+  size_t idx = 0;
+  while (prefix_len + common_prefix_len < total_key_len && idx < values2.size() &&
+         !values2.key(idx)[prefix_len + common_prefix_len]) {
+    ++idx;
+  }
+  auto values2_left = values2.substr(0, idx);
+  auto values2_right = values2.substr(idx);
+
+  if (c == l1 && c == l2) {
+    CellBuilder cb;
+    append_dict_label(cb, key_buffer, c, n);
+    if (c == n) {
+      if (values2.value(0).is_null()) {
+        return {};
+      }
+      if (values2.mode(0) == SetMode::Add) {
+        throw CombineError{};
+      }
+      return finish_create_leaf(cb, load_cell_slice(values2.value(0)->finalize_copy()));
+    }
+    assert(c < n);
+    key_buffer += c + 1;
+    key_buffer[-1] = false;
+    auto left = dict_multiset(label1.remainder->prefetch_ref(0), values2_left, key_buffer, n - c - 1, total_key_len, 0);
+    key_buffer[-1] = true;
+    auto right =
+        dict_multiset(label1.remainder->prefetch_ref(1), values2_right, key_buffer, n - c - 1, total_key_len, 0);
+    label1.remainder.clear();
+    if (left.not_null() && right.not_null()) {
+      return finish_create_fork(cb, std::move(left), std::move(right), n - c);
+    }
+    if (left.is_null() && right.is_null()) {
+      return {};
+    }
+    bool right_only = left.is_null();
+    key_buffer[-1] = right_only;
+    if (right_only) {
+      left = std::move(right);
+    }
+    LabelParser label3{std::move(left), n - c - 1, LabelParser::chk_size};
+    label3.extract_label_to(key_buffer);
+    key_buffer -= c + 1;
+    cb.reset();
+    append_dict_label(cb, key_buffer, c + 1 + label3.l_bits, n);
+    if (!cell_builder_add_slice_bool(cb, *label3.remainder)) {
+      throw VmError{Excno::cell_ov, "cannot merge augmented dictionary edges"};
+    }
+    return cb.finalize();
+  }
+
+  if (c == l1) {
+    assert(c < l2);
+    dict1.clear();
+    auto left = label1.remainder->prefetch_ref(0);
+    auto right = label1.remainder->prefetch_ref(1);
+    label1.remainder.clear();
+    td::bitstring::bits_memcpy(key_buffer, values2.key(0) + prefix_len, l2);
+    bool use_right = key_buffer[c];
+    if (use_right) {
+      right = dict_multiset(std::move(right), values2, key_buffer + c + 1, n - c - 1, total_key_len, 0);
+    } else {
+      left = dict_multiset(std::move(left), values2, key_buffer + c + 1, n - c - 1, total_key_len, 0);
+    }
+    if (left.not_null() && right.not_null()) {
+      CellBuilder cb;
+      append_dict_label(cb, key_buffer, c, n);
+      return finish_create_fork(cb, std::move(left), std::move(right), n - c);
+    }
+    key_buffer[c] = !use_right;
+    if (!use_right) {
+      std::swap(left, right);
+    }
+    assert(left.not_null() && right.is_null());
+    LabelParser label3{std::move(left), n - c - 1, LabelParser::chk_size};
+    label3.extract_label_to(key_buffer + c + 1);
+    CellBuilder cb;
+    append_dict_label(cb, key_buffer, c + 1 + label3.l_bits, n);
+    if (!cell_builder_add_slice_bool(cb, *label3.remainder)) {
+      throw VmError{Excno::cell_ov, "cannot merge augmented dictionary edges"};
+    }
+    return cb.finalize();
+  }
+
+  assert(c == l2 && c < l1);
+  bool use_right = key_buffer[c];
+  Ref<Cell> left;
+  Ref<Cell> right;
+  if (use_right) {
+    right = dict_multiset(std::move(dict1), values2_right, key_buffer + c + 1, n - c - 1, total_key_len, skip1 + c + 1);
+    left = dict_build(values2_left, total_key_len, prefix_len + l2 + 1);
+  } else {
+    left = dict_multiset(std::move(dict1), values2_left, key_buffer + c + 1, n - c - 1, total_key_len, skip1 + c + 1);
+    right = dict_build(values2_right, total_key_len, prefix_len + l2 + 1);
+  }
+  if (left.not_null() && right.not_null()) {
+    CellBuilder cb;
+    append_dict_label(cb, key_buffer, c, n);
+    return finish_create_fork(cb, std::move(left), std::move(right), n - c);
+  }
+  key_buffer[c] = !use_right;
+  if (!use_right) {
+    std::swap(left, right);
+  }
+  assert(left.not_null() && right.is_null());
+  LabelParser label3{std::move(left), n - c - 1, LabelParser::chk_size};
+  label3.extract_label_to(key_buffer + c + 1);
+  CellBuilder cb;
+  append_dict_label(cb, key_buffer, c + 1 + label3.l_bits, n);
+  if (!cell_builder_add_slice_bool(cb, *label3.remainder)) {
+    throw VmError{Excno::cell_ov, "cannot merge augmented dictionary edges"};
+  }
+  return cb.finalize();
+}
+
 bool AugmentedDictionary::check_for_each_extra(const foreach_extra_func_t& foreach_extra_func, bool invert_first) {
   force_validate();
   const auto& augm = aug;
