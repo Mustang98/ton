@@ -25,9 +25,6 @@
 
 namespace vm {
 
-class MerkleUpdate;
-class NewCellStorageStatProofTraversal;
-
 class MerkleProof {
  public:
   using IsPrunnedFunction = std::function<bool(const Ref<Cell> &)>;
@@ -50,11 +47,6 @@ class MerkleProof {
   static Ref<Cell> virtualize_raw(Ref<Cell> cell, td::uint32 effective_level);
   static td::Result<Ref<Cell>> combine_raw(Ref<Cell> a, Ref<Cell> b);
   static td::Result<Ref<Cell>> combine_fast_raw(Ref<Cell> a, Ref<Cell> b);
-
- private:
-  friend class MerkleUpdate;
-  static td::Result<Ref<Cell>> generate_raw(Ref<Cell> cell, IsPrunnedFunction is_prunned,
-                                            NewCellStorageStatProofTraversal *proof_stat);
 };
 
 class MerkleProofBuilder {

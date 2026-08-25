@@ -26,18 +26,10 @@
 #include "vm/db/DynamicBagOfCellsDb.h"
 
 namespace vm {
-class NewCellStorageStat;
-class NewCellStorageStatProofTraversal;
-
 class MerkleUpdate {
  public:
   // from + update == to
   static td::Result<Ref<Cell>> generate(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree);
-  // Generates the same update and accumulates add_proof(to, usage_tree) by sharing the update-to walk.
-  // The storage stat is unchanged on error; rare graphs whose stat walk is not covered by the proof walk
-  // transparently fall back to the standalone traversal after generation succeeds.
-  static td::Result<Ref<Cell>> generate(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree,
-                                        NewCellStorageStat &proof_stat);
   // Returns Error if something go wrong. If validate(from).is_ok() and may_apply(from, to).is_ok(), then it
   // must not fail.
   static td::Result<Ref<Cell>> apply(Ref<Cell> from, Ref<Cell> update, StoreCellHint *hint = nullptr);
@@ -60,12 +52,5 @@ class MerkleUpdate {
                                  td::uint32 to_level);
 
   static td::Result<Ref<Cell>> combine(Ref<Cell> ab, Ref<Cell> bc);
-
- private:
-  static td::Result<Ref<Cell>> generate_raw_to(Ref<Cell> to, CellUsageTree *usage_tree,
-                                               NewCellStorageStatProofTraversal *proof_stat);
-  static td::Result<std::pair<Ref<Cell>, Ref<Cell>>> generate_raw(Ref<Cell> from, Ref<Cell> to,
-                                                                  CellUsageTree *usage_tree,
-                                                                  NewCellStorageStatProofTraversal *proof_stat);
 };
 }  // namespace vm
