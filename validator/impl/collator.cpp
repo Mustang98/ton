@@ -6450,7 +6450,7 @@ bool Collator::create_block_candidate() {
   // 3. create a BlockCandidate
   block_candidate = std::make_unique<BlockCandidate>(params_.creator, new_block_id_ext,
                                                      block::compute_file_hash(cdata_slice.as_slice()),
-                                                     blk_slice.clone(), cdata_slice.clone());
+                                                     std::move(blk_slice), std::move(cdata_slice));
   bool need_out_msg_queue_broadcasts = false;  // Not supported yet
   if (need_out_msg_queue_broadcasts) {
     // we can't generate two proofs at the same time for the same root (it is not currently supported by cells)
