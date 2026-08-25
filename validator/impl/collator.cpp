@@ -3022,6 +3022,10 @@ bool Collator::process_account_storage_dict(block::Account& account) {
  */
 bool Collator::combine_account_transactions() {
   vm::AugmentedDictionary dict{256, block::tlb::aug_ShardAccountBlocks};
+  // A successful Replace walks every old node on the changed path while
+  // preserving the Patricia topology. Additions and deletions set this back
+  // to true because their relabelled untouched edges still need scan_diff().
+  account_dict_proof_scan_required_ = false;
   for (auto& z : accounts) {
     block::Account& acc = *(z.second);
     CHECK(acc.addr == z.first);
@@ -3058,6 +3062,7 @@ bool Collator::combine_account_transactions() {
             return fatal_error(std::string{"cannot add newly-created account "} + acc.addr.to_hex() +
                                " into ShardAccounts");
           }
+          account_dict_proof_scan_required_ = true;
         } else if (acc.status == block::Account::acc_nonexist) {
           // account deleted
           if (verbosity > 2) {
@@ -3069,6 +3074,7 @@ bool Collator::combine_account_transactions() {
           if (account_dict->lookup_delete(acc.addr).is_null()) {
             return fatal_error(std::string{"cannot delete account "} + acc.addr.to_hex() + " from ShardAccounts");
           }
+          account_dict_proof_scan_required_ = true;
         } else {
           // existing account modified
           if (verbosity > 4) {
@@ -6252,12 +6258,14 @@ Ref<vm::Cell> Collator::collate_shard_block_descr_set() {
  * @returns True on success, False if error occurred
  */
 bool Collator::prepare_proofs() {
-  auto res = old_account_dict->scan_diff(
-      *account_dict, [](td::ConstBitPtr, int, Ref<vm::CellSlice>, Ref<vm::CellSlice>) { return true; }, 2);
-  if (!res) {
-    return false;
+  if (account_dict_proof_scan_required_) {
+    auto res = old_account_dict->scan_diff(
+        *account_dict, [](td::ConstBitPtr, int, Ref<vm::CellSlice>, Ref<vm::CellSlice>) { return true; }, 2);
+    if (!res) {
+      return false;
+    }
   }
-  res = old_out_msg_queue_->scan_diff(
+  auto res = old_out_msg_queue_->scan_diff(
       *out_msg_queue_,
       [this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_value, Ref<vm::CellSlice> new_value) {
         old_value = old_out_msg_queue_->extract_value(std::move(old_value));
