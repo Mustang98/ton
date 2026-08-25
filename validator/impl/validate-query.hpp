@@ -32,6 +32,7 @@
 #include "vm/cells.h"
 #include "vm/dict.h"
 
+#include "account-block-snapshot.h"
 #include "block-parse.h"
 #include "fabric.h"
 #include "shard.hpp"
@@ -240,6 +241,10 @@ class ValidateQuery : public td::actor::Actor {
   block::tlb::InMsgDescr t_InMsgDescr{0};
   block::tlb::OutMsgDescr t_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict_, out_msg_dict_, account_blocks_dict_;
+  // AugmentedDictionary retains only the extracted inner root. Keep the exact
+  // HashmapE wrapper as the second occurrence-identity gate for snapshot reuse.
+  Ref<vm::Cell> account_blocks_wrapped_root_;
+  std::shared_ptr<const detail::AccountBlockSnapshot> account_block_snapshot_;
   block::ValueFlow value_flow_;
   block::CurrencyCollection import_created_, transaction_fees_, total_burned_{0}, fees_burned_{0};
   td::RefInt256 import_fees_;
@@ -375,7 +380,11 @@ class ValidateQuery : public td::actor::Actor {
   bool unpack_block_data();
   bool unpack_precheck_value_flow(Ref<vm::Cell> value_flow_root);
   bool compute_minted_amount(block::CurrencyCollection& to_mint);
-  bool precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::CellSlice> old_value, Ref<vm::CellSlice> new_value);
+  void prepare_account_block_snapshot();
+  const detail::AccountBlockSnapshot* select_account_block_snapshot() const;
+  bool precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::CellSlice> old_value, Ref<vm::CellSlice> new_value,
+                                   const detail::AccountBlockSnapshot* account_blocks,
+                                   std::size_t& account_block_position);
   bool precheck_account_updates();
   bool precheck_one_transaction(td::ConstBitPtr acc_id, ton::LogicalTime trans_lt, Ref<vm::CellSlice> trans_csr,
                                 ton::Bits256& prev_trans_hash, ton::LogicalTime& prev_trans_lt,
