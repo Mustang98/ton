@@ -16,6 +16,8 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <array>
+
 #include "block/block-auto.h"
 #include "block/block-parse.h"
 #include "block/block.h"
@@ -2090,6 +2092,26 @@ bool Transaction::prepare_action_phase(const ActionPhaseConfig& cfg) {
   }
   action_phase.emplace();
   ActionPhase& ap = *action_phase;
+  std::array<Ref<vm::Cell>, 4> inline_actions;
+  std::vector<Ref<vm::Cell>> spilled_actions;
+  std::size_t action_count = 0;
+  auto push_action = [&](Ref<vm::Cell> action) {
+    if (action_count < inline_actions.size()) {
+      inline_actions[action_count++] = std::move(action);
+      return;
+    }
+    if (spilled_actions.empty()) {
+      spilled_actions.reserve(inline_actions.size() * 2);
+      for (auto& inline_action : inline_actions) {
+        spilled_actions.push_back(std::move(inline_action));
+      }
+    }
+    spilled_actions.push_back(std::move(action));
+    ++action_count;
+  };
+  auto get_action = [&](std::size_t i) -> Ref<vm::Cell>& {
+    return spilled_actions.empty() ? inline_actions[i] : spilled_actions[i];
+  };
   ap.result_code = -1;
   ap.result_arg = 0;
   ap.tot_actions = ap.spec_actions = ap.skipped_actions = ap.msgs_created = 0;
@@ -2131,7 +2153,7 @@ bool Transaction::prepare_action_phase(const ActionPhaseConfig& cfg) {
 
   int n = 0;
   while (true) {
-    ap.action_list.push_back(list);
+    push_action(list);
     bool special = true;
     auto cs = load_cell_slice_special(std::move(list), special);
     if (special) {
@@ -2166,20 +2188,20 @@ bool Transaction::prepare_action_phase(const ActionPhaseConfig& cfg) {
   ap.spec_actions = ap.skipped_actions = 0;
   for (int i = n - 1; i >= 0; --i) {
     ap.result_arg = n - 1 - i;
-    if (!block::gen::t_OutListNode.validate_ref(ap.action_list[i])) {
+    if (!block::gen::t_OutListNode.validate_ref(get_action(i))) {
       if (cfg.message_skip_enabled) {
         // try to read mode from action_send_msg even if out_msg scheme is violated
         // action should at least contain 40 bits: 32bit tag and 8 bit mode
         // if (mode & 2), that is ignore error mode, skip action even for invalid message
         // if there is no (mode & 2) but (mode & 16) presents - enable bounce if possible
         bool special = true;
-        auto cs = load_cell_slice_special(ap.action_list[i], special);
+        auto cs = load_cell_slice_special(get_action(i), special);
         if (!special) {
           if ((cs.size() >= 40) && ((int)cs.fetch_ulong(32) == 0x0ec3c86d)) {
             int mode = (int)cs.fetch_ulong(8);
             if (mode & 2) {
               ap.skipped_actions++;
-              ap.action_list[i] = {};
+              get_action(i) = {};
               continue;
             } else if ((mode & 16) && cfg.bounce_on_fail_enabled) {
               ap.bounce = true;
@@ -2196,11 +2218,11 @@ bool Transaction::prepare_action_phase(const ActionPhaseConfig& cfg) {
   }
   ap.valid = true;
   for (int i = n - 1; i >= 0; --i) {
-    if (ap.action_list[i].is_null()) {
+    if (get_action(i).is_null()) {
       continue;
     }
     ap.result_arg = n - 1 - i;
-    vm::CellSlice cs = load_cell_slice(ap.action_list[i]);
+    vm::CellSlice cs = load_cell_slice(get_action(i));
     FAIL_UNLESS(cs.fetch_ref().not_null());
     int tag = block::gen::t_OutAction.get_tag(cs);
     FAIL_UNLESS(tag >= 0);
