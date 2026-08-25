@@ -16,15 +16,25 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <sstream>
+#include <type_traits>
+#include <utility>
+
 #include "common/bigint.hpp"
 #include "fift/utils.h"
 #include "td/utils/ScopeGuard.h"
 #include "td/utils/StringBuilder.h"
 #include "td/utils/base64.h"
 #include "td/utils/tests.h"
+#include "vm/cells/UsageCell.h"
 #include "vm/cp0.h"
 #include "vm/dict.h"
 #include "vm/vm.h"
+
+static_assert(std::is_copy_constructible<vm::CellSlice>::value);
+static_assert(std::is_copy_assignable<vm::CellSlice>::value);
+static_assert(std::is_nothrow_move_constructible<vm::CellSlice>::value);
+static_assert(std::is_nothrow_move_assignable<vm::CellSlice>::value);
 
 std::string run_vm(td::Ref<vm::Cell> cell) {
   vm::init_vm().ensure();
@@ -86,6 +96,144 @@ void test_run_vm_raw(td::Slice code64) {
     code.resize(127);
   }
   test_run_vm(vm::CellBuilder().store_bytes(code).finalize());
+}
+
+TEST(VM, cell_slice_move_preserves_state_and_ownership) {
+  auto child = vm::CellBuilder{}.store_long(0x55, 8).finalize_novm();
+  auto cell = vm::CellBuilder{}.store_long(0x0123456789abcdefLL, 64).store_ref(child).finalize_novm();
+
+  vm::CellSlice source{vm::NoVm{}, cell};
+  ASSERT_TRUE(source.fetch_ulong(5) != vm::CellSlice::fetch_ulong_eof);
+  auto expected_pos = source.cur_pos();
+  auto expected_size = source.size();
+  auto expected_refs = source.size_refs();
+  auto expected_bits = source.prefetch_ulong(40);
+  auto cell_refcount = cell->get_refcnt();
+
+  vm::CellSlice moved{std::move(source)};
+  ASSERT_TRUE(!source.is_valid());
+  ASSERT_EQ(cell->get_refcnt(), cell_refcount);
+  ASSERT_TRUE(moved.is_valid());
+  ASSERT_EQ(moved.cur_pos(), expected_pos);
+  ASSERT_EQ(moved.size(), expected_size);
+  ASSERT_EQ(moved.size_refs(), expected_refs);
+  ASSERT_EQ(moved.prefetch_ulong(40), expected_bits);
+
+  {
+    auto refcount_before_copy = cell->get_refcnt();
+    vm::CellSlice copy{moved};
+    ASSERT_EQ(cell->get_refcnt(), refcount_before_copy + 1);
+    ASSERT_TRUE(copy.advance(7));
+    ASSERT_EQ(moved.cur_pos(), expected_pos);
+  }
+  ASSERT_EQ(cell->get_refcnt(), cell_refcount);
+
+  auto old_cell = vm::CellBuilder{}.store_long(0x7f, 7).finalize_novm();
+  vm::CellSlice target{vm::NoVm{}, old_cell};
+  auto old_refcount = old_cell->get_refcnt();
+  auto moved_refcount = cell->get_refcnt();
+  target = std::move(moved);
+  ASSERT_TRUE(!moved.is_valid());
+  ASSERT_EQ(old_cell->get_refcnt(), old_refcount - 1);
+  ASSERT_EQ(cell->get_refcnt(), moved_refcount);
+  ASSERT_EQ(target.cur_pos(), expected_pos);
+  ASSERT_EQ(target.prefetch_ulong(40), expected_bits);
+
+  auto self_move_refcount = cell->get_refcnt();
+  auto *target_alias = &target;
+  target = std::move(*target_alias);
+  ASSERT_TRUE(target.is_valid());
+  ASSERT_EQ(cell->get_refcnt(), self_move_refcount);
+  ASSERT_EQ(target.cur_pos(), expected_pos);
+  ASSERT_EQ(target.size(), expected_size);
+  ASSERT_EQ(target.size_refs(), expected_refs);
+  ASSERT_EQ(target.prefetch_ulong(40), expected_bits);
+
+  moved.clear();
+  ASSERT_TRUE(moved.empty_ext());
+  ASSERT_TRUE(moved.load(vm::NoVm{}, old_cell));
+  ASSERT_TRUE(moved.is_valid());
+}
+
+TEST(VM, cell_slice_move_handles_default_and_zero_bit_slices) {
+  vm::CellSlice default_source;
+  vm::CellSlice default_moved{std::move(default_source)};
+  ASSERT_TRUE(!default_source.is_valid());
+  ASSERT_TRUE(default_source.empty_ext());
+  ASSERT_TRUE(!default_moved.is_valid());
+  ASSERT_TRUE(default_moved.empty_ext());
+  auto default_loaded = default_moved.move_as_loaded_cell();
+  ASSERT_TRUE(default_loaded.data_cell.is_null());
+  ASSERT_EQ(default_loaded.effective_level, 0u);
+
+  auto empty_cell = vm::CellBuilder{}.finalize_novm();
+  vm::CellSlice empty_source{vm::NoVm{}, empty_cell};
+  vm::CellSlice empty_moved{std::move(empty_source)};
+  ASSERT_TRUE(!empty_source.is_valid());
+  ASSERT_TRUE(empty_moved.is_valid());
+  ASSERT_TRUE(empty_moved.empty_ext());
+  ASSERT_EQ(empty_moved.get_base_cell()->get_hash(), empty_cell->get_hash());
+  std::ostringstream dump;
+  empty_moved.dump(dump, 3, false);
+  ASSERT_TRUE(!dump.str().empty());
+
+  vm::CellSlice assigned{vm::NoVm{}, empty_cell};
+  auto empty_refcount = empty_cell->get_refcnt();
+  assigned = vm::CellSlice{};
+  ASSERT_TRUE(!assigned.is_valid());
+  ASSERT_TRUE(assigned.empty_ext());
+  ASSERT_EQ(empty_cell->get_refcnt(), empty_refcount - 1);
+  auto assigned_loaded = assigned.move_as_loaded_cell();
+  ASSERT_TRUE(assigned_loaded.data_cell.is_null());
+  ASSERT_EQ(assigned_loaded.effective_level, 0u);
+}
+
+TEST(VM, cell_slice_move_preserves_usage_tree_context) {
+  auto old_child = vm::CellBuilder{}.store_long(0x11, 8).finalize_novm();
+  auto old_root = vm::CellBuilder{}.store_ref(old_child).finalize_novm();
+  auto source_child = vm::CellBuilder{}.store_long(0x22, 8).finalize_novm();
+  auto source_root = vm::CellBuilder{}.store_ref(source_child).finalize_novm();
+
+  auto old_tree = std::make_shared<vm::CellUsageTree>();
+  auto source_tree = std::make_shared<vm::CellUsageTree>();
+  std::size_t old_loads = 0;
+  std::size_t source_loads = 0;
+  old_tree->set_cell_load_callback([&](const auto &) { ++old_loads; });
+  source_tree->set_cell_load_callback([&](const auto &) { ++source_loads; });
+  auto old_usage_root = vm::UsageCell::create(old_root, old_tree->root_ptr());
+  auto source_usage_root = vm::UsageCell::create(source_root, source_tree->root_ptr());
+
+  vm::CellSlice target{vm::NoVm{}, old_usage_root};
+  vm::CellSlice source{vm::NoVm{}, source_usage_root};
+  ASSERT_EQ(old_loads, 1u);
+  ASSERT_EQ(source_loads, 1u);
+  ASSERT_TRUE(target.empty());
+  ASSERT_EQ(target.size_refs(), 1u);
+  ASSERT_TRUE(source.empty());
+  ASSERT_EQ(source.size_refs(), 1u);
+
+  target = std::move(source);
+  ASSERT_TRUE(!source.is_valid());
+  ASSERT_EQ(old_loads, 1u);
+  ASSERT_EQ(source_loads, 1u);
+
+  auto child_with_usage = target.fetch_ref();
+  ASSERT_TRUE(child_with_usage.not_null());
+  ASSERT_EQ(old_loads, 1u);
+  ASSERT_EQ(source_loads, 1u);
+  vm::CellSlice child_slice{vm::NoVm{}, std::move(child_with_usage)};
+  ASSERT_EQ(child_slice.get_base_cell()->get_hash(), source_child->get_hash());
+  ASSERT_EQ(old_loads, 1u);
+  ASSERT_EQ(source_loads, 2u);
+
+  auto old_child_id = old_tree->get_child(old_tree->root_id(), 0);
+  auto source_child_id = source_tree->get_child(source_tree->root_id(), 0);
+  ASSERT_EQ(old_child_id, 0u);
+  ASSERT_TRUE(source_child_id != 0);
+  ASSERT_TRUE(source_tree->is_loaded(source_child_id));
+
+  ASSERT_TRUE(source.load(vm::NoVm{}, old_root));
+  ASSERT_TRUE(source.is_valid());
 }
 
 TEST(VM, simple) {

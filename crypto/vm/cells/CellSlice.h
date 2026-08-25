@@ -32,13 +32,13 @@ struct NoVmOrd {};
 struct NoVmSpec {};
 
 class CellSlice : public td::CntObject {
-  td::uint32 effective_level;
+  td::uint32 effective_level{};
   Ref<DataCell> cell;
   CellUsageTree::NodePtr tree_node;
   unsigned bits_st, refs_st;
   unsigned bits_en, refs_en;
   mutable const unsigned char* ptr{nullptr};
-  mutable unsigned long long z;
+  mutable unsigned long long z{};
   mutable unsigned zd;
 
  public:
@@ -57,7 +57,9 @@ class CellSlice : public td::CntObject {
   CellSlice(const CellSlice& cs, unsigned _bits_en, unsigned _refs_en);
   CellSlice(const CellSlice& cs, unsigned _bits_en, unsigned _refs_en, unsigned _bits_st, unsigned _refs_st);
   CellSlice(const CellSlice&);
+  CellSlice(CellSlice&& other) noexcept;
   CellSlice& operator=(const CellSlice& other) = default;
+  CellSlice& operator=(CellSlice&& other) noexcept;
   CellSlice();
   Cell::LoadedCell move_as_loaded_cell();
   td::CntObject* make_copy() const override {

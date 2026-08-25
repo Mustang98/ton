@@ -78,6 +78,35 @@ CellSlice::CellSlice(Ref<DataCell> ref) : CellSlice(VirtualCell::LoadedCell{std:
 }
 CellSlice::CellSlice(const CellSlice& cs) = default;
 
+CellSlice::CellSlice(CellSlice&& other) noexcept
+    : effective_level(other.effective_level)
+    , cell(std::move(other.cell))
+    , tree_node(std::move(other.tree_node))
+    , bits_st(other.bits_st)
+    , refs_st(other.refs_st)
+    , bits_en(other.bits_en)
+    , refs_en(other.refs_en)
+    , ptr(other.ptr)
+    , z(other.z)
+    , zd(other.zd) {
+}
+
+CellSlice& CellSlice::operator=(CellSlice&& other) noexcept {
+  if (this != &other) {
+    effective_level = other.effective_level;
+    cell = std::move(other.cell);
+    tree_node = std::move(other.tree_node);
+    bits_st = other.bits_st;
+    refs_st = other.refs_st;
+    bits_en = other.bits_en;
+    refs_en = other.refs_en;
+    ptr = other.ptr;
+    z = other.z;
+    zd = other.zd;
+  }
+  return *this;
+}
+
 bool CellSlice::load(VirtualCell::LoadedCell loaded_cell) {
   effective_level = loaded_cell.effective_level;
   cell = std::move(loaded_cell.data_cell);
