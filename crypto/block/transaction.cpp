@@ -1525,18 +1525,20 @@ Ref<vm::Tuple> Transaction::prepare_vm_c7(const ComputePhaseConfig& cfg) const {
     throw CollatorError{"cannot generate valid SmartContractInfo"};
     return {};
   }
-  std::vector<vm::StackEntry> tuple = {
-      td::make_refint(0x076ef1ea),              // [ magic:0x076ef1ea
-      td::zero_refint(),                        //   actions:Integer
-      td::zero_refint(),                        //   msgs_sent:Integer
-      td::make_refint(now),                     //   unixtime:Integer
-      td::make_refint(account.block_lt),        //   block_lt:Integer
-      td::make_refint(start_lt),                //   trans_lt:Integer
-      std::move(rand_seed_int),                 //   rand_seed:Integer
-      balance.as_vm_tuple(),                    //   balance_remaining:[Integer (Maybe Cell)]
-      my_addr,                                  //   myself:MsgAddressInt
-      vm::StackEntry::maybe(cfg.global_config)  //   global_config:(Maybe Cell) ] = SmartContractInfo;
-  };
+  std::vector<vm::StackEntry> tuple;
+  tuple.reserve(10 + (cfg.global_version >= 4 ? 4 : 0) + (cfg.global_version >= 6 ? 3 : 0) +
+                (cfg.global_version >= 11 ? 1 : 0));
+  // Avoid std::initializer_list here: its const elements force an extra copy/refcount round for every owning entry.
+  tuple.emplace_back(td::make_refint(0x076ef1ea));               // [ magic:0x076ef1ea
+  tuple.emplace_back(td::zero_refint());                         //   actions:Integer
+  tuple.emplace_back(td::zero_refint());                         //   msgs_sent:Integer
+  tuple.emplace_back(td::make_refint(now));                      //   unixtime:Integer
+  tuple.emplace_back(td::make_refint(account.block_lt));         //   block_lt:Integer
+  tuple.emplace_back(td::make_refint(start_lt));                 //   trans_lt:Integer
+  tuple.emplace_back(std::move(rand_seed_int));                  //   rand_seed:Integer
+  tuple.emplace_back(balance.as_vm_tuple());                     //   balance_remaining:[Integer (Maybe Cell)]
+  tuple.emplace_back(my_addr);                                   //   myself:MsgAddressInt
+  tuple.emplace_back(vm::StackEntry::maybe(cfg.global_config));  //   global_config:(Maybe Cell) ]
   if (cfg.global_version >= 4) {
     tuple.push_back(vm::StackEntry::maybe(new_code));  // code:Cell
     if (msg_balance_remaining.is_valid()) {
