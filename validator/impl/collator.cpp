@@ -4304,7 +4304,7 @@ td::actor::Task<bool> Collator::process_inbound_external_messages() {
     }
     auto ext_msg = ext_msg_ref->root_cell();
     ton::Bits256 hash{ext_msg->get_hash().bits()};
-    int r = process_external_message(std::move(ext_msg), hash.bits());
+    int r = process_external_message(std::move(ext_msg));
     if (r > 0) {
       ++stats_.ext_msgs_accepted;
     } else {
@@ -4335,7 +4335,7 @@ td::actor::Task<bool> Collator::process_inbound_external_messages() {
  *           0 if the message is rejected.
  *           1 if the message was processed.
  */
-int Collator::process_external_message(Ref<vm::Cell> msg, td::ConstBitPtr msg_hash) {
+int Collator::process_external_message(Ref<vm::Cell> msg) {
   auto cs = load_cell_slice(msg);
   td::RefInt256 fwd_fees;
   block::gen::CommonMsgInfo::Record_ext_in_msg_info info;
@@ -4365,7 +4365,7 @@ int Collator::process_external_message(Ref<vm::Cell> msg, td::ConstBitPtr msg_ha
         && cb.store_ref_bool(trans_root));  // transaction:^Transaction
   Ref<vm::Cell> in_msg = cb.finalize();
   // 3. insert InMsg into InMsgDescr
-  if (!insert_in_msg(std::move(in_msg), msg_hash)) {
+  if (!insert_in_msg(std::move(in_msg))) {
     return -1;
   }
   return 1;
@@ -4664,38 +4664,6 @@ bool Collator::insert_in_msg(Ref<vm::Cell> in_msg) {
   bool ok;
   try {
     ok = in_msg_dict->set(msg->get_hash().bits(), 256, cs, vm::Dictionary::SetMode::Add);
-  } catch (vm::VmError&) {
-    LOG(ERROR) << "cannot add an InMsg into InMsgDescr dictionary!";
-    ok = false;
-  }
-  if (!ok) {
-    return fatal_error("cannot add an InMsg into InMsgDescr dictionary");
-  }
-  ++in_descr_cnt_;
-  return block_limit_status_->add_cell(std::move(in_msg)) &&
-         ((in_descr_cnt_ & 63) || block_limit_status_->add_cell(in_msg_dict->get_root_cell()));
-}
-
-/**
- * Inserts a locally constructed InMsg using the hash of the Message already
- * available to its caller.
- *
- * @param in_msg The input message descriptor to be inserted.
- * @param msg_hash The 256-bit hash of the Message referenced by the descriptor.
- *
- * @returns True if the insertion is successful, false otherwise.
- */
-bool Collator::insert_in_msg(Ref<vm::Cell> in_msg, td::ConstBitPtr msg_hash) {
-  if (verbosity > 2) {
-    FLOG(INFO) {
-      sb << "InMsg being inserted into InMsgDescr: ";
-      block::gen::t_InMsg.print_ref(sb, in_msg);
-    };
-  }
-  auto cs = load_cell_slice(in_msg);
-  bool ok;
-  try {
-    ok = in_msg_dict->set(msg_hash, 256, cs, vm::Dictionary::SetMode::Add);
   } catch (vm::VmError&) {
     LOG(ERROR) << "cannot add an InMsg into InMsgDescr dictionary!";
     ok = false;

@@ -359,7 +359,7 @@ class Collator final : public td::actor::Actor {
   bool process_inbound_message(Ref<vm::CellSlice> msg, ton::LogicalTime lt, td::ConstBitPtr key, int src_nb_idx);
   td::actor::Task<> process_external_and_new_messages();
   td::actor::Task<bool> process_inbound_external_messages();
-  int process_external_message(Ref<vm::Cell> msg, td::ConstBitPtr msg_hash);
+  int process_external_message(Ref<vm::Cell> msg);
   bool process_dispatch_queue();
   bool process_deferred_message(Ref<vm::CellSlice> enq_msg, StdSmcAddress src_addr, LogicalTime lt,
                                 td::optional<block::MsgMetadata>& msg_metadata);
@@ -371,7 +371,6 @@ class Collator final : public td::actor::Actor {
                                td::optional<LogicalTime> emitted_lt, bool from_dispatch_queue);
   bool delete_out_msg_queue_msg(td::ConstBitPtr key);
   bool insert_in_msg(Ref<vm::Cell> in_msg);
-  bool insert_in_msg(Ref<vm::Cell> in_msg, td::ConstBitPtr msg_hash);
   bool insert_out_msg(Ref<vm::Cell> out_msg);
   bool insert_out_msg(Ref<vm::Cell> out_msg, td::ConstBitPtr msg_hash);
   bool register_out_msg_queue_op(bool force = false);
