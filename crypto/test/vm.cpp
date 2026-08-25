@@ -16,9 +16,12 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <array>
+#include <memory>
 #include <sstream>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "common/bigint.hpp"
 #include "fift/utils.h"
@@ -26,6 +29,7 @@
 #include "td/utils/StringBuilder.h"
 #include "td/utils/base64.h"
 #include "td/utils/tests.h"
+#include "vm/cells/MerkleProof.h"
 #include "vm/cells/UsageCell.h"
 #include "vm/cp0.h"
 #include "vm/dict.h"
@@ -73,7 +77,7 @@ std::string run_vm(td::Ref<vm::Cell> cell) {
   return logger.res;  // must be a copy
 }
 
-td::Ref<vm::Cell> to_cell(const unsigned char *buff, int bits) {
+td::Ref<vm::Cell> to_cell(const unsigned char* buff, int bits) {
   return vm::CellBuilder().store_bits(buff, bits, 0).finalize();
 }
 void test_run_vm(td::Ref<vm::Cell> code) {
@@ -140,7 +144,7 @@ TEST(VM, cell_slice_move_preserves_state_and_ownership) {
   ASSERT_EQ(target.prefetch_ulong(40), expected_bits);
 
   auto self_move_refcount = cell->get_refcnt();
-  auto *target_alias = &target;
+  auto* target_alias = &target;
   target = std::move(*target_alias);
   ASSERT_TRUE(target.is_valid());
   ASSERT_EQ(cell->get_refcnt(), self_move_refcount);
@@ -198,8 +202,8 @@ TEST(VM, cell_slice_move_preserves_usage_tree_context) {
   auto source_tree = std::make_shared<vm::CellUsageTree>();
   std::size_t old_loads = 0;
   std::size_t source_loads = 0;
-  old_tree->set_cell_load_callback([&](const auto &) { ++old_loads; });
-  source_tree->set_cell_load_callback([&](const auto &) { ++source_loads; });
+  old_tree->set_cell_load_callback([&](const auto&) { ++old_loads; });
+  source_tree->set_cell_load_callback([&](const auto&) { ++source_loads; });
   auto old_usage_root = vm::UsageCell::create(old_root, old_tree->root_ptr());
   auto source_usage_root = vm::UsageCell::create(source_root, source_tree->root_ptr());
 
@@ -594,4 +598,426 @@ ATEXITALT
 RETALT
 )A";
   test_run_vm(fift::compile_asm(test1).move_as_ok());
+}
+
+namespace {
+
+td::Ref<vm::CellSlice> legacy_dictionary_lookup(td::Ref<vm::Cell> cell, td::ConstBitPtr key, int key_len,
+                                                int label_mode) {
+  int n = key_len;
+  while (true) {
+    vm::dict::LabelParser label{std::move(cell), n, label_mode};
+    if (!label.is_prefix_of(key, n)) {
+      return {};
+    }
+    n -= label.l_bits;
+    if (n <= 0) {
+      CHECK(!n);
+      label.skip_label();
+      return std::move(label.remainder);
+    }
+    key += label.l_bits;
+    bool branch = *key++;
+    --n;
+    cell = label.remainder->prefetch_ref(static_cast<unsigned>(branch));
+  }
+}
+
+td::Ref<vm::Cell> legacy_dictionary_lookup_ref(td::Ref<vm::Cell> root, td::ConstBitPtr key, int key_len) {
+  auto value = legacy_dictionary_lookup(std::move(root), key, key_len, vm::dict::LabelParser::chk_all);
+  if (value.is_null()) {
+    return {};
+  }
+  if (!value->size() && value->size_refs() == 1) {
+    return value->prefetch_ref();
+  }
+  throw vm::VmError{vm::Excno::dict_err, "dictionary value does not consist of exactly one reference"};
+}
+
+void assert_same_lookup_slice(const td::Ref<vm::CellSlice>& expected, const td::Ref<vm::CellSlice>& actual) {
+  ASSERT_EQ(expected.is_null(), actual.is_null());
+  if (expected.is_null()) {
+    return;
+  }
+  ASSERT_EQ(expected->cur_pos(), actual->cur_pos());
+  ASSERT_EQ(expected->size(), actual->size());
+  ASSERT_EQ(expected->size_refs(), actual->size_refs());
+  ASSERT_EQ(td::bitstring::bits_memcmp(expected->data_bits(), actual->data_bits(), expected->size()), 0);
+  ASSERT_EQ(expected->get_base_cell()->get_hash(), actual->get_base_cell()->get_hash());
+  for (unsigned i = 0; i < expected->size_refs(); ++i) {
+    ASSERT_EQ(expected->prefetch_ref(i)->get_hash(), actual->prefetch_ref(i)->get_hash());
+  }
+}
+
+class LookupTestAugmentation final : public vm::dict::AugmentationData {
+ public:
+  bool skip_extra(vm::CellSlice& cs) const override {
+    return cs.advance(16);
+  }
+
+  bool eval_leaf(vm::CellBuilder& cb, vm::CellSlice& value) const override {
+    return cb.store_long_bool((value.size() << 3) | value.size_refs(), 16);
+  }
+
+  bool eval_fork(vm::CellBuilder& cb, vm::CellSlice& left, vm::CellSlice& right) const override {
+    return left.have(16) && right.have(16) &&
+           cb.store_long_bool(left.prefetch_ulong(16) ^ right.prefetch_ulong(16), 16);
+  }
+
+  bool eval_empty(vm::CellBuilder& cb) const override {
+    return cb.store_zeroes_bool(16);
+  }
+};
+
+struct LookupErrorObservation {
+  bool threw{false};
+  int error{0};
+  std::string message;
+};
+
+template <class F>
+LookupErrorObservation observe_lookup_error(F&& function) {
+  try {
+    static_cast<void>(function());
+    return {};
+  } catch (const vm::VmError& error) {
+    return {true, error.get_errno(), error.get_msg()};
+  }
+}
+
+void assert_same_lookup_error(const LookupErrorObservation& expected, const LookupErrorObservation& actual) {
+  ASSERT_EQ(expected.threw, actual.threw);
+  ASSERT_EQ(expected.error, actual.error);
+  ASSERT_TRUE(expected.message == actual.message);
+}
+
+class LookupLazyCell final : public vm::Cell {
+ private:
+  struct PrivateTag {};
+
+ public:
+  using Trace = std::shared_ptr<std::vector<vm::CellHash>>;
+
+  static td::Ref<vm::Cell> create(td::Ref<vm::DataCell> data_cell, Trace trace) {
+    return td::Ref<LookupLazyCell>{true, std::move(data_cell), std::move(trace), PrivateTag{}};
+  }
+
+  LookupLazyCell(td::Ref<vm::DataCell> data_cell, Trace trace, PrivateTag)
+      : data_cell_(std::move(data_cell)), trace_(std::move(trace)) {
+  }
+
+  td::Status set_data_cell(td::Ref<vm::DataCell>&& data_cell) const override {
+    return data_cell->get_hash() == data_cell_->get_hash() ? td::Status::OK()
+                                                           : td::Status::Error("wrong lookup test cell");
+  }
+
+  td::Result<LoadedCell> load_cell() const override {
+    trace_->push_back(data_cell_->get_hash());
+    ++load_count_;
+    return LoadedCell{data_cell_, data_cell_->get_level(), {}};
+  }
+
+  bool is_virtualized() const override {
+    return false;
+  }
+
+  vm::CellUsageTree::NodePtr get_tree_node() const override {
+    return {};
+  }
+
+  bool is_loaded() const override {
+    return load_count_ != 0;
+  }
+
+  LevelMask get_level_mask() const override {
+    return data_cell_->get_level_mask();
+  }
+
+ protected:
+  const Hash do_get_hash(td::uint32 level) const override {
+    return data_cell_->get_hash(level);
+  }
+
+  td::uint16 do_get_depth(td::uint32 level) const override {
+    return data_cell_->get_depth(level);
+  }
+
+ private:
+  td::Ref<vm::DataCell> data_cell_;
+  Trace trace_;
+  mutable std::size_t load_count_{0};
+};
+
+td::Ref<vm::Cell> make_lazy_lookup_tree(const td::Ref<vm::Cell>& cell, const LookupLazyCell::Trace& trace) {
+  vm::CellSlice slice{vm::NoVm{}, cell};
+  vm::CellBuilder builder;
+  CHECK(builder.store_bits_bool(slice.data_bits(), slice.size()));
+  for (unsigned i = 0; i < slice.size_refs(); ++i) {
+    CHECK(builder.store_ref_bool(make_lazy_lookup_tree(slice.prefetch_ref(i), trace)));
+  }
+  auto data_cell = builder.finalize_novm(slice.is_special());
+  CHECK(data_cell->get_hash() == cell->get_hash());
+  return LookupLazyCell::create(std::move(data_cell), trace);
+}
+
+td::Ref<vm::Cell> make_malformed_right_branch(const LookupLazyCell::Trace& trace) {
+  td::BitArray<8> left_key{0LL};
+  td::BitArray<8> right_key{0x80LL};
+  vm::Dictionary dictionary{8};
+  vm::CellBuilder left_value;
+  left_value.store_long(0x11, 8);
+  ASSERT_TRUE(dictionary.set_builder(left_key, left_value, vm::Dictionary::SetMode::Add));
+  vm::CellBuilder right_value;
+  right_value.store_long(0x22, 8);
+  ASSERT_TRUE(dictionary.set_builder(right_key, right_value, vm::Dictionary::SetMode::Add));
+
+  vm::CellSlice root{vm::NoVm{}, dictionary.get_root_cell()};
+  ASSERT_EQ(root.size_refs(), 2u);
+  auto malformed_data = vm::CellBuilder{}.store_long(2, 2).finalize_novm();
+  auto malformed = LookupLazyCell::create(std::move(malformed_data), trace);
+  vm::CellBuilder builder;
+  CHECK(builder.store_bits_bool(root.data_bits(), root.size()));
+  CHECK(builder.store_ref_bool(root.prefetch_ref(0)));
+  CHECK(builder.store_ref_bool(std::move(malformed)));
+  return LookupLazyCell::create(builder.finalize_novm(), trace);
+}
+
+}  // namespace
+
+TEST(VM, dictionary_stack_lookup_matches_legacy_single_key_apis) {
+  constexpr std::array<unsigned, 7> present_keys{0x00, 0x01, 0x17, 0x55, 0x80, 0xfe, 0xff};
+  vm::Dictionary values{8};
+  for (unsigned key_value : present_keys) {
+    td::BitArray<8> key{key_value};
+    vm::CellBuilder value;
+    value.store_long(key_value * 3 + 1, 12);
+    value.store_ref(vm::CellBuilder{}.store_long(key_value, 8).finalize_novm());
+    ASSERT_TRUE(values.set_builder(key, value, vm::Dictionary::SetMode::Add));
+  }
+
+  for (unsigned key_value = 0; key_value < 256; ++key_value) {
+    td::BitArray<8> key{key_value};
+    auto expected = legacy_dictionary_lookup(values.get_root_cell(), key.bits(), 8, vm::dict::LabelParser::chk_all);
+    auto actual = values.lookup(key);
+    assert_same_lookup_slice(expected, actual);
+    ASSERT_EQ(values.key_exists(key), expected.not_null());
+  }
+
+  vm::Dictionary refs{8};
+  std::array<td::Ref<vm::Cell>, present_keys.size()> referenced;
+  for (std::size_t i = 0; i < present_keys.size(); ++i) {
+    td::BitArray<8> key{present_keys[i]};
+    referenced[i] = vm::CellBuilder{}.store_long(0x100 + static_cast<long long>(i), 12).finalize_novm();
+    ASSERT_TRUE(refs.set_ref(key.bits(), 8, referenced[i], vm::Dictionary::SetMode::Add));
+  }
+  for (unsigned key_value = 0; key_value < 256; ++key_value) {
+    td::BitArray<8> key{key_value};
+    auto expected = legacy_dictionary_lookup_ref(refs.get_root_cell(), key.bits(), 8);
+    auto actual = refs.lookup_ref(key);
+    ASSERT_EQ(expected.is_null(), actual.is_null());
+    if (expected.not_null()) {
+      ASSERT_EQ(expected.get(), actual.get());
+      ASSERT_EQ(expected->get_hash(), actual->get_hash());
+    }
+  }
+
+  LookupTestAugmentation augmentation;
+  vm::AugmentedDictionary augmented{8, augmentation};
+  for (std::size_t i = 0; i < present_keys.size(); ++i) {
+    td::BitArray<8> key{present_keys[i]};
+    ASSERT_TRUE(augmented.set_ref(key.bits(), 8, referenced[i], vm::Dictionary::SetMode::Add));
+  }
+  for (unsigned key_value = 0; key_value < 256; ++key_value) {
+    td::BitArray<8> key{key_value};
+    auto expected_full =
+        legacy_dictionary_lookup(augmented.get_root_cell(), key.bits(), 8, vm::dict::LabelParser::chk_size);
+    assert_same_lookup_slice(expected_full, augmented.lookup_with_extra(key.bits(), 8));
+    ASSERT_EQ(augmented.key_exists(key), expected_full.not_null());
+
+    auto expected_value = augmented.extract_value(
+        legacy_dictionary_lookup(augmented.get_root_cell(), key.bits(), 8, vm::dict::LabelParser::chk_size));
+    assert_same_lookup_slice(expected_value, augmented.lookup(key));
+
+    auto expected_ref = augmented.extract_value_ref(
+        legacy_dictionary_lookup(augmented.get_root_cell(), key.bits(), 8, vm::dict::LabelParser::chk_size));
+    auto actual_ref = augmented.lookup_ref(key);
+    ASSERT_EQ(expected_ref.is_null(), actual_ref.is_null());
+    if (expected_ref.not_null()) {
+      ASSERT_EQ(expected_ref.get(), actual_ref.get());
+    }
+
+    auto expected_extra = augmented.decompose_value_extra(
+        legacy_dictionary_lookup(augmented.get_root_cell(), key.bits(), 8, vm::dict::LabelParser::chk_size));
+    auto actual_extra = augmented.lookup_extra(key.bits(), 8);
+    assert_same_lookup_slice(expected_extra.first, actual_extra.first);
+    assert_same_lookup_slice(expected_extra.second, actual_extra.second);
+
+    auto expected_ref_extra = augmented.decompose_value_ref_extra(
+        legacy_dictionary_lookup(augmented.get_root_cell(), key.bits(), 8, vm::dict::LabelParser::chk_size));
+    auto actual_ref_extra = augmented.lookup_ref_extra(key.bits(), 8);
+    ASSERT_EQ(expected_ref_extra.first.is_null(), actual_ref_extra.first.is_null());
+    if (expected_ref_extra.first.not_null()) {
+      ASSERT_EQ(expected_ref_extra.first.get(), actual_ref_extra.first.get());
+    }
+    assert_same_lookup_slice(expected_ref_extra.second, actual_ref_extra.second);
+  }
+}
+
+TEST(VM, dictionary_stack_lookup_preserves_malformed_error_order) {
+  td::BitArray<8> key{0x80LL};
+  auto malformed_label = vm::CellBuilder{}.store_long(2, 2).finalize_novm();
+  auto malformed_fork = vm::CellBuilder{}.store_long(0, 2).finalize_novm();
+
+  auto check_ordinary = [&](const td::Ref<vm::Cell>& root, vm::Excno expected_error, td::Slice expected_message) {
+    auto legacy = observe_lookup_error(
+        [&] { return legacy_dictionary_lookup(root, key.bits(), 8, vm::dict::LabelParser::chk_all); });
+    vm::Dictionary dictionary{root, 8};
+    auto lookup = observe_lookup_error([&] { return dictionary.lookup(key); });
+    auto exists = observe_lookup_error([&] { return dictionary.key_exists(key); });
+    auto lookup_ref = observe_lookup_error([&] { return dictionary.lookup_ref(key); });
+    ASSERT_TRUE(legacy.threw);
+    ASSERT_EQ(legacy.error, static_cast<int>(expected_error));
+    ASSERT_TRUE(legacy.message == expected_message.str());
+    assert_same_lookup_error(legacy, lookup);
+    assert_same_lookup_error(legacy, exists);
+    assert_same_lookup_error(legacy, lookup_ref);
+  };
+  check_ordinary(malformed_label, vm::Excno::cell_und, "error while parsing a dictionary node label");
+  check_ordinary(malformed_fork, vm::Excno::dict_err, "invalid dictionary fork node");
+
+  LookupTestAugmentation augmentation;
+  auto legacy_augmented = observe_lookup_error(
+      [&] { return legacy_dictionary_lookup(malformed_fork, key.bits(), 8, vm::dict::LabelParser::chk_size); });
+  vm::AugmentedDictionary augmented{malformed_fork, 8, augmentation};
+  auto actual_augmented = observe_lookup_error([&] { return augmented.lookup_with_extra(key.bits(), 8); });
+  auto actual_augmented_exists = observe_lookup_error([&] { return augmented.key_exists(key); });
+  assert_same_lookup_error(legacy_augmented, actual_augmented);
+  assert_same_lookup_error(legacy_augmented, actual_augmented_exists);
+
+  vm::Dictionary malformed_value{8};
+  ASSERT_TRUE(malformed_value.set_builder(key, vm::CellBuilder{}.store_long(0x5a, 8), vm::Dictionary::SetMode::Add));
+  auto legacy_value_error = observe_lookup_error(
+      [&] { return legacy_dictionary_lookup_ref(malformed_value.get_root_cell(), key.bits(), 8); });
+  auto actual_value_error = observe_lookup_error([&] { return malformed_value.lookup_ref(key); });
+  ASSERT_TRUE(legacy_value_error.threw);
+  ASSERT_EQ(legacy_value_error.error, static_cast<int>(vm::Excno::dict_err));
+  ASSERT_TRUE(legacy_value_error.message == "dictionary value does not consist of exactly one reference");
+  assert_same_lookup_error(legacy_value_error, actual_value_error);
+
+  auto legacy_trace = std::make_shared<std::vector<vm::CellHash>>();
+  auto actual_trace = std::make_shared<std::vector<vm::CellHash>>();
+  auto legacy_root = make_malformed_right_branch(legacy_trace);
+  auto actual_root = make_malformed_right_branch(actual_trace);
+  td::BitArray<8> good_key{0LL};
+  auto legacy_good = legacy_dictionary_lookup(legacy_root, good_key.bits(), 8, vm::dict::LabelParser::chk_all);
+  vm::Dictionary actual_dictionary{actual_root, 8};
+  auto actual_good = actual_dictionary.lookup(good_key);
+  assert_same_lookup_slice(legacy_good, actual_good);
+  ASSERT_TRUE(*legacy_trace == *actual_trace);
+  ASSERT_EQ(legacy_trace->size(), 1u);
+
+  legacy_trace = std::make_shared<std::vector<vm::CellHash>>();
+  actual_trace = std::make_shared<std::vector<vm::CellHash>>();
+  legacy_root = make_malformed_right_branch(legacy_trace);
+  actual_root = make_malformed_right_branch(actual_trace);
+  auto legacy_bad = observe_lookup_error(
+      [&] { return legacy_dictionary_lookup(legacy_root, key.bits(), 8, vm::dict::LabelParser::chk_all); });
+  vm::Dictionary actual_bad_dictionary{actual_root, 8};
+  auto actual_bad = observe_lookup_error([&] { return actual_bad_dictionary.lookup(key); });
+  assert_same_lookup_error(legacy_bad, actual_bad);
+  ASSERT_TRUE(*legacy_trace == *actual_trace);
+  ASSERT_EQ(legacy_trace->size(), 2u);
+
+  auto mismatch_trace = std::make_shared<std::vector<vm::CellHash>>();
+  vm::Dictionary mismatch{make_malformed_right_branch(mismatch_trace), 8};
+  ASSERT_TRUE(mismatch.lookup(key.bits(), 7).is_null());
+  ASSERT_TRUE(!mismatch.key_exists(key.bits(), 7));
+  ASSERT_TRUE(mismatch.lookup_ref(key.bits(), 7).is_null());
+  ASSERT_TRUE(mismatch_trace->empty());
+}
+
+TEST(VM, dictionary_stack_lookup_preserves_lazy_virtual_and_usage_context) {
+  vm::Dictionary dictionary{8};
+  constexpr std::array<unsigned, 5> keys{0x00, 0x20, 0x55, 0x80, 0xff};
+  std::array<td::Ref<vm::Cell>, keys.size()> values;
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    td::BitArray<8> key{keys[i]};
+    values[i] = vm::CellBuilder{}.store_long(0xa0 + static_cast<long long>(i), 8).finalize_novm();
+    ASSERT_TRUE(dictionary.set_ref(key.bits(), 8, values[i], vm::Dictionary::SetMode::Add));
+  }
+  td::BitArray<8> key{0x55};
+
+  auto proof_usage_tree = std::make_shared<vm::CellUsageTree>();
+  auto proof_usage_root = vm::UsageCell::create(dictionary.get_root_cell(), proof_usage_tree->root_ptr());
+  ASSERT_TRUE(
+      legacy_dictionary_lookup(std::move(proof_usage_root), key.bits(), 8, vm::dict::LabelParser::chk_all).not_null());
+  auto proof = vm::MerkleProof::generate(dictionary.get_root_cell(), proof_usage_tree.get()).move_as_ok();
+  auto virtual_root = vm::MerkleProof::virtualize(std::move(proof)).move_as_ok();
+  ASSERT_TRUE(virtual_root->is_virtualized());
+  auto legacy_virtual = legacy_dictionary_lookup(virtual_root, key.bits(), 8, vm::dict::LabelParser::chk_all);
+  vm::Dictionary virtual_dictionary{virtual_root, 8};
+  auto actual_virtual = virtual_dictionary.lookup(key);
+  assert_same_lookup_slice(legacy_virtual, actual_virtual);
+  vm::CellSlice legacy_virtual_copy{*legacy_virtual};
+  vm::CellSlice actual_virtual_copy{*actual_virtual};
+  auto legacy_virtual_loaded = legacy_virtual_copy.move_as_loaded_cell();
+  auto actual_virtual_loaded = actual_virtual_copy.move_as_loaded_cell();
+  ASSERT_EQ(legacy_virtual_loaded.effective_level, actual_virtual_loaded.effective_level);
+  ASSERT_EQ(legacy_virtual_loaded.data_cell->get_hash(), actual_virtual_loaded.data_cell->get_hash());
+
+  struct ContextObservation {
+    td::Ref<vm::CellSlice> slice;
+    td::Ref<vm::Cell> value_ref;
+    LookupLazyCell::Trace lazy_loads;
+    std::vector<vm::CellHash> usage_loads;
+    std::shared_ptr<vm::CellUsageTree> usage_tree;
+  };
+  auto observe_context = [&](bool stack_lookup, bool return_ref) {
+    ContextObservation observation;
+    observation.lazy_loads = std::make_shared<std::vector<vm::CellHash>>();
+    auto lazy_root = make_lazy_lookup_tree(dictionary.get_root_cell(), observation.lazy_loads);
+    observation.usage_tree = std::make_shared<vm::CellUsageTree>();
+    observation.usage_tree->set_cell_load_callback(
+        [&](const vm::LoadedCell& loaded) { observation.usage_loads.push_back(loaded.data_cell->get_hash()); });
+    auto usage_root = vm::UsageCell::create(std::move(lazy_root), observation.usage_tree->root_ptr());
+    if (return_ref) {
+      if (stack_lookup) {
+        vm::Dictionary lookup_dictionary{usage_root, 8};
+        observation.value_ref = lookup_dictionary.lookup_ref(key);
+      } else {
+        observation.value_ref = legacy_dictionary_lookup_ref(std::move(usage_root), key.bits(), 8);
+      }
+    } else if (stack_lookup) {
+      vm::Dictionary lookup_dictionary{usage_root, 8};
+      observation.slice = lookup_dictionary.lookup(key);
+    } else {
+      observation.slice =
+          legacy_dictionary_lookup(std::move(usage_root), key.bits(), 8, vm::dict::LabelParser::chk_all);
+    }
+    return observation;
+  };
+
+  auto legacy_slice_context = observe_context(false, false);
+  auto stack_slice_context = observe_context(true, false);
+  assert_same_lookup_slice(legacy_slice_context.slice, stack_slice_context.slice);
+  ASSERT_TRUE(*legacy_slice_context.lazy_loads == *stack_slice_context.lazy_loads);
+  ASSERT_TRUE(legacy_slice_context.usage_loads == stack_slice_context.usage_loads);
+  ASSERT_TRUE(legacy_slice_context.usage_loads.size() > 1);
+  vm::CellSlice legacy_usage_copy{*legacy_slice_context.slice};
+  vm::CellSlice stack_usage_copy{*stack_slice_context.slice};
+  auto legacy_usage_loaded = legacy_usage_copy.move_as_loaded_cell();
+  auto stack_usage_loaded = stack_usage_copy.move_as_loaded_cell();
+  ASSERT_TRUE(legacy_usage_loaded.tree_node.is_from_tree(legacy_slice_context.usage_tree.get()));
+  ASSERT_TRUE(stack_usage_loaded.tree_node.is_from_tree(stack_slice_context.usage_tree.get()));
+  ASSERT_EQ(legacy_usage_loaded.effective_level, stack_usage_loaded.effective_level);
+
+  auto legacy_ref_context = observe_context(false, true);
+  auto stack_ref_context = observe_context(true, true);
+  ASSERT_TRUE(legacy_ref_context.value_ref.not_null());
+  ASSERT_TRUE(stack_ref_context.value_ref.not_null());
+  ASSERT_EQ(legacy_ref_context.value_ref->get_hash(), stack_ref_context.value_ref->get_hash());
+  ASSERT_TRUE(*legacy_ref_context.lazy_loads == *stack_ref_context.lazy_loads);
+  ASSERT_TRUE(legacy_ref_context.usage_loads == stack_ref_context.usage_loads);
+  ASSERT_TRUE(legacy_ref_context.value_ref->get_tree_node().is_from_tree(legacy_ref_context.usage_tree.get()));
+  ASSERT_TRUE(stack_ref_context.value_ref->get_tree_node().is_from_tree(stack_ref_context.usage_tree.get()));
 }

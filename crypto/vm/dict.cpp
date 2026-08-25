@@ -454,36 +454,142 @@ Ref<Cell> Dictionary::extract_value_ref(Ref<CellSlice> cs) {
   }
 }
 
+namespace {
+
+struct StackDictLabel {
+  int same{0};
+  int bits{0};
+  unsigned stored_bits{0};
+};
+
+bool parse_stack_dict_label(CellSlice& cs, int max_label_len, StackDictLabel& label) {
+  int ltype = static_cast<int>(cs.prefetch_ulong(2));
+  switch (ltype) {
+    case 0:
+      label.bits = 0;
+      cs.advance(2);
+      return true;
+    case 1:
+      cs.advance(1);
+      label.bits = cs.count_leading(1);
+      if (label.bits > max_label_len || !cs.have(2 * label.bits + 1)) {
+        return false;
+      }
+      cs.advance(label.bits + 1);
+      return true;
+    case 2: {
+      int len_bits = 32 - td::count_leading_zeroes32(max_label_len);
+      cs.advance(2);
+      label.bits = static_cast<int>(cs.fetch_ulong(len_bits));
+      if (label.bits < 0 || label.bits > max_label_len) {
+        return false;
+      }
+      return cs.have(label.bits);
+    }
+    case 3: {
+      int len_bits = 32 - td::count_leading_zeroes32(max_label_len);
+      if (!cs.have(3 + len_bits)) {
+        return false;
+      }
+      label.same = static_cast<int>(cs.fetch_ulong(3));
+      label.bits = static_cast<int>(cs.fetch_ulong(len_bits));
+      if (label.bits < 0 || label.bits > max_label_len) {
+        return false;
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+StackDictLabel parse_stack_dict_label_checked(CellSlice& cs, int max_label_len, int mode) {
+  StackDictLabel label;
+  if (!parse_stack_dict_label(cs, max_label_len, label)) {
+    throw VmError{Excno::cell_und, "error while parsing a dictionary node label"};
+  }
+  label.stored_bits = label.same ? 0 : static_cast<unsigned>(label.bits);
+  if (mode >= LabelParser::chk_size && label.bits < max_label_len) {
+    if (mode > LabelParser::chk_size && (cs.size() != label.stored_bits || cs.size_refs() != 2)) {
+      throw VmError{Excno::dict_err, "invalid dictionary fork node"};
+    }
+    if (mode == LabelParser::chk_size && (cs.size() < label.stored_bits || cs.size_refs() < 2)) {
+      throw VmError{Excno::dict_err, "invalid dictionary fork node"};
+    }
+  }
+  return label;
+}
+
+bool stack_dict_label_is_prefix(const CellSlice& cs, const StackDictLabel& label, td::ConstBitPtr key, int len) {
+  if (label.bits > len) {
+    return false;
+  }
+  if (label.same) {
+    return td::bitstring::bits_memscan(key, label.bits, label.same & 1) == static_cast<unsigned>(label.bits);
+  }
+  return cs.has_prefix(key, label.bits);
+}
+
+// Single-key lookup visits one node at a time. Keep intermediate slices on the
+// stack and allocate a ref-counted CellSlice only when lookup() returns a leaf.
+// CellSlice remains responsible for lazy loads, virtualization and usage-tree
+// propagation when a branch reference is followed.
+template <class GetLabelMode, class OnFound>
+bool dict_lookup_stack(Ref<Cell> cell, td::ConstBitPtr key, int key_len, GetLabelMode&& get_label_mode,
+                       OnFound&& on_found) {
+  CellSlice remainder;
+  int n = key_len;
+  while (true) {
+    remainder.load(std::move(cell));
+    auto label = parse_stack_dict_label_checked(remainder, n, get_label_mode());
+    if (!stack_dict_label_is_prefix(remainder, label, key, n)) {
+      return false;
+    }
+    n -= label.bits;
+    if (n <= 0) {
+      assert(!n);
+      remainder.advance(label.stored_bits);
+      on_found(std::move(remainder));
+      return true;
+    }
+    key += label.bits;
+    bool branch = *key++;
+    --n;
+    cell = remainder.prefetch_ref(static_cast<unsigned>(branch));
+    remainder.clear();
+  }
+}
+
+}  // namespace
+
 Ref<CellSlice> DictionaryFixed::lookup(td::ConstBitPtr key, int key_len) {
   force_validate();
   if (key_len != get_key_bits() || is_empty()) {
     return {};
   }
-  //std::cerr << "dictionary lookup for key = " << key.to_hex(key_len) << std::endl;
-  Ref<Cell> cell = get_root_cell();
-  int n = key_len;
-  while (true) {
-    LabelParser label{std::move(cell), n, label_mode()};
-    if (!label.is_prefix_of(key, n)) {
-      //std::cerr << "(not a prefix)\n";
-      return {};
-    }
-    n -= label.l_bits;
-    if (n <= 0) {
-      assert(!n);
-      label.skip_label();
-      return std::move(label.remainder);
-    }
-    key += label.l_bits;
-    bool sw = *key++;
-    //std::cerr << "key bit at position " << key_bits - n << " equals " << sw << std::endl;
-    --n;
-    cell = label.remainder->prefetch_ref(sw);
-  }
+  Ref<CellSlice> result;
+  dict_lookup_stack(
+      get_root_cell(), key, key_len, [this] { return label_mode(); },
+      [&](CellSlice&& value) { result = Ref<CellSlice>{true, std::move(value)}; });
+  return result;
 }
 
 Ref<Cell> Dictionary::lookup_ref(td::ConstBitPtr key, int key_len) {
-  return extract_value_ref(lookup(key, key_len));
+  force_validate();
+  if (key_len != get_key_bits() || is_empty()) {
+    return {};
+  }
+  Ref<Cell> result;
+  dict_lookup_stack(
+      get_root_cell(), key, key_len, [this] { return label_mode(); },
+      [&](CellSlice&& value) {
+        if (!value.size() && value.size_refs() == 1) {
+          result = value.prefetch_ref();
+        } else {
+          throw VmError{Excno::dict_err, "dictionary value does not consist of exactly one reference"};
+        }
+      });
+  return result;
 }
 
 bool DictionaryFixed::has_common_prefix(td::ConstBitPtr prefix, int prefix_len) {
@@ -508,7 +614,11 @@ int DictionaryFixed::get_common_prefix(td::BitPtr buffer, unsigned buffer_len) {
 }
 
 bool DictionaryFixed::key_exists(td::ConstBitPtr key, int key_len) {
-  return lookup(key, key_len).not_null();
+  force_validate();
+  if (key_len != get_key_bits() || is_empty()) {
+    return false;
+  }
+  return dict_lookup_stack(get_root_cell(), key, key_len, [this] { return label_mode(); }, [](CellSlice&&) {});
 }
 
 bool DictionaryFixed::int_key_exists(long long key) {
