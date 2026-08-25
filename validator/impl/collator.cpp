@@ -3382,6 +3382,7 @@ Ref<vm::Cell> Collator::create_ordinary_transaction(Ref<vm::Cell> msg_root,
  * @param serialize_cfg The configuration for the serialization of the transaction.
  * @param external Flag indicating if the message is external.
  * @param after_lt The logical time after which the transaction should occur. Used only for external messages.
+ * @param retain_storage_stat_updates Whether to retain roots for collator storage-dictionary proof bookkeeping.
  * @param stats Stats to write real/cpu time to (optional)
  *
  * @returns A Result object containing the created transaction.
@@ -3392,7 +3393,7 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
     Ref<vm::Cell> msg_root, block::Account* acc, UnixTime utime, LogicalTime lt,
     block::StoragePhaseConfig* storage_phase_cfg, block::ComputePhaseConfig* compute_phase_cfg,
     block::ActionPhaseConfig* action_phase_cfg, block::SerializeConfig* serialize_cfg, bool external,
-    LogicalTime after_lt, CollationStats* stats) {
+    LogicalTime after_lt, bool retain_storage_stat_updates, CollationStats* stats) {
   if (acc->last_trans_end_lt_ >= lt && acc->transactions.empty()) {
     return td::Status::Error(-669, PSTRING() << "last transaction time in the state of account " << acc->workchain
                                              << ":" << acc->addr.to_hex() << " is too large");
@@ -3404,6 +3405,7 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
 
   std::unique_ptr<block::transaction::Transaction> trans = std::make_unique<block::transaction::Transaction>(
       *acc, block::transaction::Transaction::tr_ord, trans_min_lt + 1, utime, msg_root);
+  trans->retain_storage_stat_updates = retain_storage_stat_updates;
   {
     td::RealCpuTimer timer;
     SCOPE_EXIT {
@@ -3473,6 +3475,16 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
     }
   }
   return std::move(trans);
+}
+
+td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_create_ordinary_transaction(
+    Ref<vm::Cell> msg_root, block::Account* acc, UnixTime utime, LogicalTime lt,
+    block::StoragePhaseConfig* storage_phase_cfg, block::ComputePhaseConfig* compute_phase_cfg,
+    block::ActionPhaseConfig* action_phase_cfg, block::SerializeConfig* serialize_cfg, bool external,
+    LogicalTime after_lt, CollationStats* stats) {
+  return impl_create_ordinary_transaction(msg_root, acc, utime, lt, storage_phase_cfg, compute_phase_cfg,
+                                          action_phase_cfg, serialize_cfg, external, after_lt,
+                                          /* retain_storage_stat_updates = */ true, stats);
 }
 
 /**

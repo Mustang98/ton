@@ -3333,7 +3333,7 @@ td::Status Transaction::check_state_limits(const SizeLimitsConfig& size_limits, 
     }
     StorageStatCalculationContext context{is_account_stat};
     StorageStatCalculationContext::Guard guard{&context};
-    if (is_account_stat) {
+    if (is_account_stat && retain_storage_stat_updates) {
       storage_stat_updates.push_back(new_code);
       storage_stat_updates.push_back(new_data);
       storage_stat_updates.push_back(new_library);
@@ -3671,7 +3671,9 @@ bool Transaction::compute_state(const SerializeConfig& cfg) {
     AccountStorageStat& stats = new_account_storage_stat.value_force();
     // Don't check Merkle depth and size here - they were checked in check_state_limits
     auto roots = new_storage_for_stat->prefetch_all_refs();
-    storage_stat_updates.insert(storage_stat_updates.end(), roots.begin(), roots.end());
+    if (retain_storage_stat_updates) {
+      storage_stat_updates.insert(storage_stat_updates.end(), roots.begin(), roots.end());
+    }
     {
       td::RealCpuTimer timer;
       StorageStatCalculationContext context{true};

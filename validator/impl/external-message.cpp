@@ -181,7 +181,8 @@ td::Status ExtMessageQ::run_message_on_account(ton::WorkchainId wc, block::Accou
                                                td::Ref<vm::Cell> msg_root, ExecutionConfig& exec_config) {
   auto res = Collator::impl_create_ordinary_transaction(msg_root, acc, utime, lt, &exec_config.storage_phase_cfg,
                                                         &exec_config.compute_phase_cfg, &exec_config.action_phase_cfg,
-                                                        &exec_config.serialize_config, true, lt);
+                                                        &exec_config.serialize_config, true, lt,
+                                                        /* retain_storage_stat_updates = */ false, nullptr);
   if (res.is_error()) {
     auto error = res.move_as_error();
     LOG(DEBUG) << "Cannot run message on account: " << error.message();
