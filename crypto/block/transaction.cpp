@@ -3128,9 +3128,6 @@ int Transaction::try_action_send_msg(const vm::CellSlice& cs0, ActionPhase& ap, 
   ap.msgs_created++;
   ap.end_lt++;
 
-  if (ap.out_msgs.empty()) {
-    ap.out_msgs.reserve(4);
-  }
   ap.out_msgs.push_back(std::move(new_msg));
   ap.total_action_fees += fees_collected;
   ap.total_fwd_fees += fees_total;
