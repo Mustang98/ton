@@ -2507,12 +2507,10 @@ bool Collator::dequeue_message(Ref<vm::Cell> msg_envelope, ton::LogicalTime deli
            && cb.store_long_bool(delivered_lt, 64)                        // import_block_lt:uint64
            && insert_out_msg(cb.finalize(), out_queue_key.bits() + 96);
   } else {
-    td::BitArray<352> out_queue_key;
-    return block::compute_out_msg_queue_key(msg_envelope, out_queue_key)  // (compute key)
-           && cb.store_long_bool(12, 4)                                   // msg_export_deq$1100
-           && cb.store_ref_bool(msg_envelope)                             // out_msg:^MsgEnvelope
-           && cb.store_long_bool(delivered_lt, 63)                        // import_block_lt:uint63
-           && insert_out_msg(cb.finalize(), out_queue_key.bits() + 96);
+    return cb.store_long_bool(12, 4)                // msg_export_deq$1100
+           && cb.store_ref_bool(msg_envelope)       // out_msg:^MsgEnvelope
+           && cb.store_long_bool(delivered_lt, 63)  // import_block_lt:uint63
+           && insert_out_msg(cb.finalize());
   }
 }
 
@@ -3660,10 +3658,8 @@ int Collator::process_one_new_message(block::NewOutMsg msg, bool enqueue_only, R
       auto src_prefix = block::tlb::MsgAddressInt::get_prefix(src);
       auto dest_prefix = block::tlb::MsgAddressInt::get_prefix(dest);
       CHECK(env.emitted_lt && env.emitted_lt.value() == msg.lt);
-      td::Bits256 msg_hash{msg.msg->get_hash().bits()};
-      ok =
-          enqueue_transit_message(std::move(msg.msg), msg_hash, std::move(msg_env), src_prefix, src_prefix, dest_prefix,
-                                  std::move(env.fwd_fee_remaining), std::move(env.metadata), msg.lt, true);
+      ok = enqueue_transit_message(std::move(msg.msg), std::move(msg_env), src_prefix, src_prefix, dest_prefix,
+                                   std::move(env.fwd_fee_remaining), std::move(env.metadata), msg.lt, true);
     } else {
       ok = enqueue_message(std::move(msg), std::move(fwd_fees), src_addr, defer);
     }
@@ -3671,13 +3667,10 @@ int Collator::process_one_new_message(block::NewOutMsg msg, bool enqueue_only, R
   }
   // process message by a transaction in this block:
   // 0. update last_proc_int_msg
-  td::Bits256 msg_hash;
-  if (!is_special) {
-    msg_hash = msg.msg->get_hash().bits();
-    if (!update_last_proc_int_msg({msg.lt, msg_hash})) {
-      fatal_error("processing a message AFTER a newer message has been processed");
-      return -1;
-    }
+  if (!is_special &&
+      !update_last_proc_int_msg(std::pair<ton::LogicalTime, ton::Bits256>(msg.lt, msg.msg->get_hash().bits()))) {
+    fatal_error("processing a message AFTER a newer message has been processed");
+    return -1;
   }
   // 1. create a Transaction processing this Message
   auto trans_root = create_ordinary_transaction(msg.msg, msg.metadata, msg.lt, is_special != nullptr);
@@ -3714,10 +3707,7 @@ int Collator::process_one_new_message(block::NewOutMsg msg, bool enqueue_only, R
   }
   // 4. insert InMsg into InMsgDescr
   Ref<vm::Cell> in_msg = cb.finalize();
-  if (is_special) {
-    msg_hash = msg.msg->get_hash().bits();
-  }
-  if (!insert_in_msg(in_msg, msg_hash.bits())) {
+  if (!insert_in_msg(in_msg)) {
     return -1;
   }
   // 4.1. for special messages, return here
@@ -3732,7 +3722,7 @@ int Collator::process_one_new_message(block::NewOutMsg msg, bool enqueue_only, R
           && cb.store_ref_bool(msg.trans)  // transaction:^Transaction
           && cb.store_ref_bool(in_msg));   // reimport:^InMsg
     // 6. insert OutMsg into OutMsgDescr
-    if (!insert_out_msg(cb.finalize(), msg_hash.bits())) {
+    if (!insert_out_msg(cb.finalize())) {
       return -1;
     }
   }
@@ -3766,17 +3756,17 @@ int Collator::process_one_new_message(block::NewOutMsg msg, bool enqueue_only, R
  *
  * @returns True if the transit message is successfully enqueued, false otherwise.
  */
-bool Collator::enqueue_transit_message(Ref<vm::Cell> msg, const td::Bits256& msg_hash, Ref<vm::Cell> old_msg_env,
+bool Collator::enqueue_transit_message(Ref<vm::Cell> msg, Ref<vm::Cell> old_msg_env,
                                        ton::AccountIdPrefixFull prev_prefix, ton::AccountIdPrefixFull cur_prefix,
                                        ton::AccountIdPrefixFull dest_prefix, td::RefInt256 fwd_fee_remaining,
                                        td::optional<block::MsgMetadata> msg_metadata,
                                        td::optional<LogicalTime> emitted_lt, bool from_dispatch_queue) {
   if (from_dispatch_queue) {
     CHECK(emitted_lt);
-    LOG(DEBUG) << "enqueueing message from dispatch queue " << msg_hash.bits().to_hex(256)
+    LOG(DEBUG) << "enqueueing message from dispatch queue " << msg->get_hash().bits().to_hex(256)
                << ", emitted_lt=" << emitted_lt.value();
   } else {
-    LOG(DEBUG) << "enqueueing transit message " << msg_hash.bits().to_hex(256);
+    LOG(DEBUG) << "enqueueing transit message " << msg->get_hash().bits().to_hex(256);
   }
   bool requeue = !from_dispatch_queue && is_our_address(prev_prefix);
   // 1. perform hypercube routing
@@ -3824,7 +3814,7 @@ bool Collator::enqueue_transit_message(Ref<vm::Cell> msg, const td::Bits256& msg
       block::gen::t_OutMsg.print_ref(sb, out_msg);
     };
   }
-  if (!insert_out_msg(out_msg, msg_hash.bits())) {
+  if (!insert_out_msg(out_msg)) {
     return fatal_error("cannot insert a new OutMsg into OutMsgDescr");
   }
   // 4.2. insert InMsg into InMsgDescr
@@ -3834,7 +3824,7 @@ bool Collator::enqueue_transit_message(Ref<vm::Cell> msg, const td::Bits256& msg
       block::gen::t_InMsg.print_ref(sb, in_msg);
     };
   }
-  if (!insert_in_msg(in_msg, msg_hash.bits())) {
+  if (!insert_in_msg(in_msg)) {
     return fatal_error("cannot insert a new InMsg into InMsgDescr");
   }
   // 5. create EnqueuedMsg
@@ -3846,7 +3836,7 @@ bool Collator::enqueue_transit_message(Ref<vm::Cell> msg, const td::Bits256& msg
   td::BitArray<32 + 64 + 256> key;
   key.bits().store_int(next_hop.workchain, 32);
   (key.bits() + 32).store_int(next_hop.account_id_prefix, 64);
-  (key.bits() + 96).copy_from(msg_hash.bits(), 256);
+  (key.bits() + 96).copy_from(msg->get_hash().bits(), 256);
   bool ok;
   try {
     LOG(DEBUG) << "inserting into outbound queue message with (lt,key)=(" << start_lt << "," << key.to_hex() << ")";
@@ -3966,8 +3956,7 @@ bool Collator::process_inbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalT
     return false;
   }
   // 2.0. update last_proc_int_msg
-  td::Bits256 msg_hash{env.msg->get_hash().bits()};
-  if (!update_last_proc_int_msg({lt, msg_hash})) {
+  if (!update_last_proc_int_msg(std::pair<ton::LogicalTime, ton::Bits256>(lt, env.msg->get_hash().bits()))) {
     return fatal_error("processing a message AFTER a newer message has been processed");
   }
   // 2.1. check fwd_fee and fwd_fee_remaining
@@ -4007,7 +3996,7 @@ bool Collator::process_inbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalT
         << "inbound internal message has invalid key in OutMsgQueue : its first 96 bits differ from next_hop_addr";
     return false;
   }
-  if (td::bitstring::bits_memcmp(key + 96, msg_hash.bits(), 256)) {
+  if (td::bitstring::bits_memcmp(key + 96, env.msg->get_hash().bits(), 256)) {
     LOG(ERROR)
         << "inbound internal message has invalid key in OutMsgQueue : its last 256 bits differ from the message hash";
     return false;
@@ -4022,8 +4011,9 @@ bool Collator::process_inbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalT
   bool our = ton::shard_contains(shard_, cur_prefix);
   bool to_us = ton::shard_contains(shard_, dest_prefix);
 
-  block::EnqueuedMsgDescr enq_msg_descr{
-      cur_prefix, next_prefix, env.emitted_lt ? env.emitted_lt.value() : info.created_lt, enqueued_lt, msg_hash.bits()};
+  block::EnqueuedMsgDescr enq_msg_descr{cur_prefix, next_prefix,
+                                        env.emitted_lt ? env.emitted_lt.value() : info.created_lt, enqueued_lt,
+                                        env.msg->get_hash().bits()};
   if (processed_upto_->already_processed(enq_msg_descr)) {
     LOG(DEBUG) << "inbound internal message with lt=" << enq_msg_descr.lt_ << " hash=" << enq_msg_descr.hash_.to_hex()
                << " enqueued_lt=" << enq_msg_descr.enqueued_lt_ << " has been already processed by us before, skipping";
@@ -4040,7 +4030,7 @@ bool Collator::process_inbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalT
   if (!to_us) {
     // destination is outside our shard, relay transit message
     // (very similar to enqueue_message())
-    if (!enqueue_transit_message(std::move(env.msg), msg_hash, std::move(msg_env), cur_prefix, next_prefix, dest_prefix,
+    if (!enqueue_transit_message(std::move(env.msg), std::move(msg_env), cur_prefix, next_prefix, dest_prefix,
                                  std::move(env.fwd_fee_remaining), std::move(env.metadata), env.emitted_lt, false)) {
       return fatal_error("cannot enqueue transit internal message with key "s + key.to_hex(352));
     }
@@ -4068,7 +4058,7 @@ bool Collator::process_inbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalT
           && cb.store_ref_bool(msg_env)   // out_msg:^MsgEnvelope
           && cb.store_ref_bool(in_msg));  // reimport:^InMsg
     // 11. insert OutMsg into OutMsgDescr
-    if (!insert_out_msg(cb.finalize(), msg_hash.bits())) {
+    if (!insert_out_msg(cb.finalize())) {
       return fatal_error("cannot insert a dequeueing OutMsg with msg_export_deq_imm constructor into OutMsgDescr");
     }
     // 12. delete message from OutMsgQueue
@@ -4077,7 +4067,7 @@ bool Collator::process_inbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalT
     }
   }
   // 13. insert InMsg into InMsgDescr
-  if (!insert_in_msg(std::move(in_msg), msg_hash.bits())) {
+  if (!insert_in_msg(std::move(in_msg))) {
     return fatal_error("cannot insert InMsg into InMsgDescr");
   }
   return true;
@@ -4646,11 +4636,10 @@ bool Collator::process_deferred_message(Ref<vm::CellSlice> enq_msg, StdSmcAddres
  * Inserts an InMsg into the block's InMsgDescr.
  *
  * @param in_msg The input message to be inserted.
- * @param msg_hash The known Message hash, or null to derive it from the descriptor.
  *
  * @returns True if the insertion is successful, false otherwise.
  */
-bool Collator::insert_in_msg(Ref<vm::Cell> in_msg, td::ConstBitPtr msg_hash) {
+bool Collator::insert_in_msg(Ref<vm::Cell> in_msg) {
   if (verbosity > 2) {
     FLOG(INFO) {
       sb << "InMsg being inserted into InMsgDescr: ";
@@ -4661,28 +4650,22 @@ bool Collator::insert_in_msg(Ref<vm::Cell> in_msg, td::ConstBitPtr msg_hash) {
   if (!cs.size_refs()) {
     return false;
   }
-  td::Bits256 key;
-  if (msg_hash.ptr) {
-    key = msg_hash;
-  } else {
-    Ref<vm::Cell> msg = cs.prefetch_ref();
-    int tag = block::gen::t_InMsg.get_tag(cs);
-    // msg_import_ext$000 or msg_import_ihr$010 contain (Message Any) directly
-    if (!(tag == block::gen::InMsg::msg_import_ext || tag == block::gen::InMsg::msg_import_ihr)) {
-      // extract Message Any from MsgEnvelope to compute correct key
-      auto cs2 = load_cell_slice(std::move(msg));
-      if (!cs2.size_refs()) {
-        return false;
-      }
-      msg = cs2.prefetch_ref();  // use hash of (Message Any)
+  Ref<vm::Cell> msg = cs.prefetch_ref();
+  int tag = block::gen::t_InMsg.get_tag(cs);
+  // msg_import_ext$000 or msg_import_ihr$010 contain (Message Any) directly
+  if (!(tag == block::gen::InMsg::msg_import_ext || tag == block::gen::InMsg::msg_import_ihr)) {
+    // extract Message Any from MsgEnvelope to compute correct key
+    auto cs2 = load_cell_slice(std::move(msg));
+    if (!cs2.size_refs()) {
+      return false;
     }
-    key = msg->get_hash().bits();
+    msg = cs2.prefetch_ref();  // use hash of (Message Any)
   }
   Ref<vm::CellBuilder> value{true};
   if (!value.write().append_cellslice_bool(cs)) {
     return fatal_error("cannot add an InMsg into InMsgDescr dictionary");
   }
-  pending_in_msg_descriptors_.push_back({std::move(key), std::move(value)});
+  pending_in_msg_descriptors_.push_back({td::Bits256{msg->get_hash().bits()}, std::move(value)});
   ++in_descr_cnt_;
   if (!(in_descr_cnt_ & 63) && !flush_in_msg_descriptors()) {
     return false;
@@ -4826,8 +4809,7 @@ bool Collator::enqueue_message(block::NewOutMsg msg, td::RefInt256 fwd_fees_rema
       block::gen::t_OutMsg.print_ref(sb, out_msg);
     };
   }
-  td::Bits256 msg_hash{msg.msg->get_hash().bits()};
-  if (!insert_out_msg(out_msg, msg_hash.bits())) {
+  if (!insert_out_msg(out_msg)) {
     return fatal_error("cannot insert a new OutMsg into OutMsgDescr");
   }
   // 5. create EnqueuedMsg
@@ -4857,7 +4839,7 @@ bool Collator::enqueue_message(block::NewOutMsg msg, td::RefInt256 fwd_fees_rema
   td::BitArray<32 + 64 + 256> key;
   key.bits().store_int(next_hop.workchain, 32);
   (key.bits() + 32).store_int(next_hop.account_id_prefix, 64);
-  (key.bits() + 96).copy_from(msg_hash.bits(), 256);
+  (key.bits() + 96).copy_from(msg.msg->get_hash().bits(), 256);
   bool ok;
   try {
     LOG(DEBUG) << "inserting into outbound queue a new message with (lt,key)=(" << start_lt << "," << key.to_hex()
