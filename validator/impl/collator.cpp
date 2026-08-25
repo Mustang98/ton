@@ -4855,7 +4855,8 @@ bool Collator::process_new_messages(bool& enqueue_only) {
       LOG(INFO) << "soft timeout reached, enqueue all remaining new messages";
       block_full_ = true;
     }
-    block::NewOutMsg msg = new_msgs.pop_move();
+    block::NewOutMsg msg = new_msgs.top();
+    new_msgs.pop();
     block_limit_status_->extra_out_msgs--;
     if ((block_full_ || have_unprocessed_account_dispatch_queue_) && !enqueue_only) {
       LOG(INFO) << "BLOCK FULL, enqueue all remaining new messages";
