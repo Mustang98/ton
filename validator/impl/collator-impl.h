@@ -217,11 +217,6 @@ class Collator final : public td::actor::Actor {
     Ref<vm::CellBuilder> value;
   };
   std::vector<PendingInMsgDescriptor> pending_in_msg_descriptors_;
-  struct PendingOutMsgDescriptor {
-    td::Bits256 key;
-    Ref<vm::CellBuilder> value;
-  };
-  std::vector<PendingOutMsgDescriptor> pending_out_msg_descriptors_;
   std::map<StdSmcAddress, size_t> unprocessed_deferred_messages_;  // number of messages from dispatch queue in new_msgs
   td::uint64 out_msg_queue_size_ = 0;
   td::uint64 old_out_msg_queue_size_ = 0;
@@ -384,7 +379,6 @@ class Collator final : public td::actor::Actor {
   bool flush_in_msg_descriptors();
   bool insert_out_msg(Ref<vm::Cell> out_msg);
   bool insert_out_msg(Ref<vm::Cell> out_msg, td::ConstBitPtr msg_hash);
-  bool flush_out_msg_descriptors();
   bool register_out_msg_queue_op(bool force = false);
   bool register_dispatch_queue_op(bool force = false);
   bool update_account_dict_estimation(const block::transaction::Transaction& trans);
