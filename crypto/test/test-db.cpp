@@ -642,6 +642,302 @@ std::vector<Ref<Cell>> gen_random_cells(int roots, int size, td::Random::Xorshif
   return RandomBagOfCells(size, rnd, with_prunned_branches, std::move(cells)).get_random_roots(roots, rnd);
 }
 
+namespace {
+
+Ref<Cell> consume_virtualize_ref(Ref<Cell> cell, td::uint32 effective_level) {
+  CHECK(cell.not_null());
+  auto *cell_ptr = cell.get();
+  return cell_ptr->virtualize_ref(std::move(cell), effective_level);
+}
+
+Ref<DataCell> make_level_three_pruned_data_cell() {
+  auto leaf = CellBuilder{}.store_long(0x41, 8).finalize_novm();
+  auto branch = CellBuilder{}.store_long(0x42, 8).store_ref(std::move(leaf)).finalize_novm();
+  auto pruned = CellBuilder::do_create_pruned_branch(std::move(branch), 3);
+  CHECK(pruned->is_special());
+  CHECK(pruned->special_type() == Cell::SpecialType::PrunnedBranch);
+  CHECK(pruned->get_level() == 3);
+  return pruned;
+}
+
+void assert_same_virtualized_cell(const Ref<Cell> &expected, const Ref<Cell> &actual) {
+  ASSERT_TRUE(expected.not_null());
+  ASSERT_TRUE(actual.not_null());
+  ASSERT_EQ(expected->get_level_mask(), actual->get_level_mask());
+  ASSERT_EQ(expected->is_virtualized(), actual->is_virtualized());
+  ASSERT_EQ(expected->is_loaded(), actual->is_loaded());
+  for (unsigned level = 0; level <= Cell::max_level; ++level) {
+    ASSERT_EQ(expected->get_hash(level), actual->get_hash(level));
+    ASSERT_EQ(expected->get_depth(level), actual->get_depth(level));
+  }
+
+  auto expected_loaded_result = expected->load_cell();
+  auto actual_loaded_result = actual->load_cell();
+  ASSERT_EQ(expected_loaded_result.is_ok(), actual_loaded_result.is_ok());
+  if (expected_loaded_result.is_error()) {
+    return;
+  }
+  auto expected_loaded = expected_loaded_result.move_as_ok();
+  auto actual_loaded = actual_loaded_result.move_as_ok();
+  ASSERT_TRUE(expected_loaded.data_cell.get() == actual_loaded.data_cell.get());
+  ASSERT_EQ(expected_loaded.effective_level, actual_loaded.effective_level);
+  ASSERT_EQ(expected_loaded.tree_node.empty(), actual_loaded.tree_node.empty());
+}
+
+struct VirtualizeOverrideProbeState {
+  unsigned calls{0};
+  unsigned destructions{0};
+  unsigned refcount_during_call{0};
+  td::uint32 requested_level{Cell::max_level};
+};
+
+class VirtualizeOverrideProbe final : public Cell {
+ public:
+  static Ref<Cell> create(Ref<Cell> view, Ref<Cell> result, std::shared_ptr<VirtualizeOverrideProbeState> state) {
+    return Ref<VirtualizeOverrideProbe>{true, std::move(view), std::move(result), std::move(state)};
+  }
+
+  VirtualizeOverrideProbe(Ref<Cell> view, Ref<Cell> result, std::shared_ptr<VirtualizeOverrideProbeState> state)
+      : view_(std::move(view)), result_(std::move(result)), state_(std::move(state)) {
+  }
+
+  ~VirtualizeOverrideProbe() override {
+    ++state_->destructions;
+  }
+
+  td::Status set_data_cell(Ref<DataCell> &&data_cell) const override {
+    return view_->set_data_cell(std::move(data_cell));
+  }
+
+  td::Result<LoadedCell> load_cell() const override {
+    return view_->load_cell();
+  }
+
+  Ref<Cell> virtualize(td::uint32 effective_level) const override {
+    ++state_->calls;
+    state_->requested_level = effective_level;
+    state_->refcount_during_call = static_cast<unsigned>(get_refcnt());
+    CHECK(state_->destructions == 0);
+    return result_;
+  }
+
+  bool is_virtualized() const override {
+    return view_->is_virtualized();
+  }
+
+  CellUsageTree::NodePtr get_tree_node() const override {
+    return view_->get_tree_node();
+  }
+
+  bool is_loaded() const override {
+    return view_->is_loaded();
+  }
+
+  LevelMask get_level_mask() const override {
+    return view_->get_level_mask();
+  }
+
+ private:
+  td::uint16 do_get_depth(td::uint32 level) const override {
+    return view_->get_depth(level);
+  }
+
+  const Hash do_get_hash(td::uint32 level) const override {
+    return view_->get_hash(level);
+  }
+
+  Ref<Cell> view_;
+  Ref<Cell> result_;
+  std::shared_ptr<VirtualizeOverrideProbeState> state_;
+};
+
+}  // namespace
+
+TEST(Cell, VirtualizeRefDataCellPaths) {
+  Ref<Cell> ordinary = CellBuilder{}.store_long(0x1234, 16).finalize_novm();
+  auto *ordinary_ptr = ordinary.get();
+  ASSERT_EQ(ordinary_ptr->get_refcnt(), 1);
+  auto ordinary_result = consume_virtualize_ref(std::move(ordinary), Cell::max_level);
+  ASSERT_TRUE(ordinary.is_null());
+  ASSERT_TRUE(ordinary_result.get() == ordinary_ptr);
+  ASSERT_EQ(ordinary_ptr->get_refcnt(), 1);
+
+  Ref<Cell> pruned = make_level_three_pruned_data_cell();
+  for (td::uint32 effective_level = 0; effective_level <= Cell::max_level; ++effective_level) {
+    auto expected = pruned->virtualize(effective_level);
+    auto input = pruned;
+    auto actual = consume_virtualize_ref(std::move(input), effective_level);
+    ASSERT_TRUE(input.is_null());
+    assert_same_virtualized_cell(expected, actual);
+    ASSERT_EQ(actual.get() == pruned.get(), effective_level >= pruned->get_level());
+  }
+
+  auto parent = CellBuilder{}.store_long(0x55, 8).store_ref(ordinary_result).store_ref(pruned).finalize_novm();
+  ASSERT_EQ(parent->get_level(), 3u);
+  auto virtual_parent = parent->virtualize(0);
+
+  CellSlice prefetch_slice{NoVm{}, virtual_parent};
+  auto ordinary_prefetched = prefetch_slice.prefetch_ref(0);
+  auto pruned_prefetched = prefetch_slice.prefetch_ref(1);
+  ASSERT_TRUE(ordinary_prefetched.get() == ordinary_result.get());
+  assert_same_virtualized_cell(pruned->virtualize(0), pruned_prefetched);
+
+  CellSlice fetch_slice{NoVm{}, std::move(virtual_parent)};
+  auto ordinary_fetched = fetch_slice.fetch_ref();
+  auto pruned_fetched = fetch_slice.fetch_ref();
+  ASSERT_TRUE(ordinary_fetched.get() == ordinary_result.get());
+  assert_same_virtualized_cell(pruned->virtualize(0), pruned_fetched);
+  ASSERT_TRUE(fetch_slice.fetch_ref().is_null());
+}
+
+TEST(Cell, VirtualizeRefWrapperFallbackContexts) {
+  Ref<Cell> pruned = make_level_three_pruned_data_cell();
+
+  auto virtual_cell = VirtualCell::create(1, pruned);
+  auto *virtual_cell_ptr = virtual_cell.get();
+  auto virtual_noop_expected = virtual_cell->virtualize(2);
+  auto virtual_noop = consume_virtualize_ref(std::move(virtual_cell), 2);
+  ASSERT_TRUE(virtual_cell.is_null());
+  ASSERT_TRUE(virtual_noop.get() == virtual_cell_ptr);
+  assert_same_virtualized_cell(virtual_noop_expected, virtual_noop);
+
+  auto virtual_source = VirtualCell::create(2, pruned);
+  auto *virtual_source_ptr = virtual_source.get();
+  auto virtual_expected = virtual_source->virtualize(0);
+  auto virtual_actual = consume_virtualize_ref(std::move(virtual_source), 0);
+  ASSERT_TRUE(virtual_source.is_null());
+  ASSERT_TRUE(virtual_actual.get() != virtual_source_ptr);
+  assert_same_virtualized_cell(virtual_expected, virtual_actual);
+
+  auto usage_tree = std::make_shared<CellUsageTree>();
+  unsigned usage_callbacks = 0;
+  td::uint32 usage_callback_level = Cell::max_level;
+  usage_tree->set_cell_load_callback([&](const LoadedCell &loaded) {
+    ++usage_callbacks;
+    usage_callback_level = loaded.effective_level;
+    ASSERT_TRUE(loaded.tree_node.empty());
+  });
+  auto usage_cell = UsageCell::create(pruned, usage_tree->root_ptr());
+  auto *usage_cell_ptr = usage_cell.get();
+  auto usage_noop = consume_virtualize_ref(std::move(usage_cell), Cell::max_level);
+  ASSERT_TRUE(usage_cell.is_null());
+  ASSERT_TRUE(usage_noop.get() == usage_cell_ptr);
+  ASSERT_EQ(usage_callbacks, 0u);
+  ASSERT_TRUE(usage_noop->get_tree_node().is_from_tree(usage_tree.get()));
+  auto usage_loaded = usage_noop->load_cell().move_as_ok();
+  ASSERT_EQ(usage_callbacks, 1u);
+  ASSERT_EQ(usage_callback_level, 3u);
+  ASSERT_EQ(usage_loaded.effective_level, 3u);
+  ASSERT_TRUE(usage_loaded.tree_node.is_from_tree(usage_tree.get()));
+  ASSERT_TRUE(usage_tree->is_loaded(usage_tree->root_id()));
+
+  auto lower_tree = std::make_shared<CellUsageTree>();
+  unsigned lower_callbacks = 0;
+  td::uint32 lower_callback_level = Cell::max_level;
+  lower_tree->set_cell_load_callback([&](const LoadedCell &loaded) {
+    ++lower_callbacks;
+    lower_callback_level = loaded.effective_level;
+  });
+  auto usage_lower_source = UsageCell::create(pruned, lower_tree->root_ptr());
+  auto *usage_lower_source_ptr = usage_lower_source.get();
+  auto usage_lower = consume_virtualize_ref(std::move(usage_lower_source), 0);
+  ASSERT_TRUE(usage_lower_source.is_null());
+  ASSERT_TRUE(usage_lower.get() != usage_lower_source_ptr);
+  ASSERT_TRUE(usage_lower->get_tree_node().is_from_tree(lower_tree.get()));
+  ASSERT_EQ(lower_callbacks, 0u);
+  auto usage_lower_loaded = usage_lower->load_cell().move_as_ok();
+  ASSERT_EQ(lower_callbacks, 1u);
+  ASSERT_EQ(lower_callback_level, 0u);
+  ASSERT_EQ(usage_lower_loaded.effective_level, 0u);
+  ASSERT_TRUE(usage_lower_loaded.tree_node.is_from_tree(lower_tree.get()));
+
+  auto expired_tree = std::make_shared<CellUsageTree>();
+  auto expired_usage = UsageCell::create(pruned, expired_tree->root_ptr());
+  auto *expired_usage_ptr = expired_usage.get();
+  expired_tree.reset();
+  auto expired_result = consume_virtualize_ref(std::move(expired_usage), Cell::max_level);
+  ASSERT_TRUE(expired_usage.is_null());
+  ASSERT_TRUE(expired_result.get() != expired_usage_ptr);
+  ASSERT_TRUE(expired_result.get() == pruned.get());
+
+  auto usage_outside_tree = std::make_shared<CellUsageTree>();
+  td::uint32 usage_outside_callback_level = Cell::max_level;
+  usage_outside_tree->set_cell_load_callback(
+      [&](const LoadedCell &loaded) { usage_outside_callback_level = loaded.effective_level; });
+  auto usage_outside = UsageCell::create(VirtualCell::create(1, pruned), usage_outside_tree->root_ptr());
+  auto usage_outside_result = consume_virtualize_ref(std::move(usage_outside), 0);
+  auto usage_outside_loaded = usage_outside_result->load_cell().move_as_ok();
+  ASSERT_EQ(usage_outside_callback_level, 0u);
+  ASSERT_EQ(usage_outside_loaded.effective_level, 0u);
+  ASSERT_TRUE(usage_outside_loaded.tree_node.is_from_tree(usage_outside_tree.get()));
+
+  auto virtual_outside_tree = std::make_shared<CellUsageTree>();
+  td::uint32 virtual_outside_callback_level = Cell::max_level;
+  virtual_outside_tree->set_cell_load_callback(
+      [&](const LoadedCell &loaded) { virtual_outside_callback_level = loaded.effective_level; });
+  auto virtual_outside = VirtualCell::create(1, UsageCell::create(pruned, virtual_outside_tree->root_ptr()));
+  auto virtual_outside_result = consume_virtualize_ref(std::move(virtual_outside), 0);
+  auto virtual_outside_loaded = virtual_outside_result->load_cell().move_as_ok();
+  ASSERT_EQ(virtual_outside_callback_level, 3u);
+  ASSERT_EQ(virtual_outside_loaded.effective_level, 0u);
+  ASSERT_TRUE(virtual_outside_loaded.tree_node.is_from_tree(virtual_outside_tree.get()));
+}
+
+TEST(Cell, VirtualizeRefFallbackHonorsOverrideAndLifetime) {
+  Ref<Cell> view = CellBuilder{}.store_long(0x7788, 16).finalize_novm();
+  Ref<Cell> replacement = CellBuilder{}.store_long(0x7788, 16).finalize_novm();
+  ASSERT_TRUE(view.get() != replacement.get());
+  ASSERT_EQ(view->get_hash(), replacement->get_hash());
+
+  auto slice_state = std::make_shared<VirtualizeOverrideProbeState>();
+  {
+    auto probe = VirtualizeOverrideProbe::create(view, replacement, slice_state);
+    auto parent = CellBuilder{}.store_ref(std::move(probe)).finalize_novm();
+
+    CellSlice prefetch_slice{NoVm{}, parent};
+    auto prefetched = prefetch_slice.prefetch_ref();
+    ASSERT_TRUE(prefetched.get() == replacement.get());
+    ASSERT_EQ(slice_state->calls, 1u);
+    ASSERT_EQ(slice_state->requested_level, 0u);
+
+    CellSlice fetch_slice{NoVm{}, std::move(parent)};
+    auto fetched = fetch_slice.fetch_ref();
+    ASSERT_TRUE(fetched.get() == replacement.get());
+    ASSERT_EQ(slice_state->calls, 2u);
+    ASSERT_EQ(slice_state->requested_level, 0u);
+    ASSERT_EQ(slice_state->destructions, 0u);
+  }
+  ASSERT_EQ(slice_state->destructions, 1u);
+
+  auto sole_state = std::make_shared<VirtualizeOverrideProbeState>();
+  auto sole = VirtualizeOverrideProbe::create(view, replacement, sole_state);
+  ASSERT_EQ(sole->get_refcnt(), 1);
+  auto sole_result = consume_virtualize_ref(std::move(sole), 2);
+  ASSERT_TRUE(sole.is_null());
+  ASSERT_TRUE(sole_result.get() == replacement.get());
+  ASSERT_EQ(sole_state->calls, 1u);
+  ASSERT_EQ(sole_state->requested_level, 2u);
+  ASSERT_EQ(sole_state->refcount_during_call, 1u);
+  ASSERT_EQ(sole_state->destructions, 1u);
+}
+
+TEST(TonDb, VirtualizeRefPreservesStaticBocRootSemantics) {
+  auto source = CellBuilder{}.store_long(0xabcdef, 24).finalize_novm();
+  auto serialized = std_boc_serialize(source, 31).move_as_ok();
+  auto db = StaticBagOfCellsDbLazy::create(std::move(serialized)).move_as_ok();
+  std::weak_ptr<StaticBagOfCellsDb> weak_db = db;
+  auto root = db->get_root_cell(0).move_as_ok();
+  auto loaded_root = root->load_cell().move_as_ok();
+  auto *inner_root_ptr = loaded_root.data_cell.get();
+
+  db.reset();
+  ASSERT_TRUE(!weak_db.expired());
+  auto result = consume_virtualize_ref(std::move(root), Cell::max_level);
+  ASSERT_TRUE(root.is_null());
+  ASSERT_TRUE(result.get() == inner_root_ptr);
+  ASSERT_TRUE(weak_db.expired());
+}
+
 TEST(Cell, MerkleProof) {
   td::Random::Xorshift128plus rnd{123};
   for (int t = 0; t < 1000; t++) {

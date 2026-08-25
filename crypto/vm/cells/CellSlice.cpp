@@ -778,7 +778,9 @@ bool CellSlice::prefetch_bytes(td::MutableSlice slice) const {
 Ref<Cell> CellSlice::prefetch_ref(unsigned offset) const {
   if (offset < size_refs()) {
     auto ref_id = refs_st + offset;
-    auto res = cell->get_ref(ref_id)->virtualize(child_effective_level());
+    auto res = cell->get_ref(ref_id);
+    auto* res_ptr = res.get();
+    res = res_ptr->virtualize_ref(std::move(res), child_effective_level());
     if (!tree_node.empty()) {
       res = UsageCell::create(std::move(res), tree_node.create_child(ref_id));
     }
@@ -791,7 +793,9 @@ Ref<Cell> CellSlice::prefetch_ref(unsigned offset) const {
 Ref<Cell> CellSlice::fetch_ref() {
   if (have_refs()) {
     auto ref_id = refs_st++;
-    auto res = cell->get_ref(ref_id)->virtualize(child_effective_level());
+    auto res = cell->get_ref(ref_id);
+    auto* res_ptr = res.get();
+    res = res_ptr->virtualize_ref(std::move(res), child_effective_level());
     if (!tree_node.empty()) {
       res = UsageCell::create(std::move(res), tree_node.create_child(ref_id));
     }

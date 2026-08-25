@@ -56,6 +56,8 @@ class Cell : public CellTraits {
   virtual td::Status set_data_cell(Ref<DataCell>&& data_cell) const = 0;
   virtual td::Result<LoadedCell> load_cell() const = 0;
   virtual Ref<Cell> virtualize(td::uint32 effective_level) const;
+  // Equivalent to virtualize(), but allows implementations to reuse an existing reference to this cell.
+  virtual Ref<Cell> virtualize_ref(Ref<Cell> self, td::uint32 effective_level) const;
   // Cell is virtualized if its effective level is less than its actual level.
   virtual bool is_virtualized() const = 0;
   virtual CellUsageTree::NodePtr get_tree_node() const = 0;

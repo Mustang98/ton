@@ -52,6 +52,16 @@ Ref<Cell> Cell::virtualize(td::uint32 effective_level) const {
   return VirtualCell::create(effective_level, Ref<Cell>(this));
 }
 
+Ref<Cell> Cell::virtualize_ref(Ref<Cell> self, td::uint32 effective_level) const {
+  CHECK(self.get() == this);
+  return virtualize(effective_level);
+}
+
+Ref<Cell> DataCell::virtualize_ref(Ref<Cell> self, td::uint32 effective_level) const {
+  CHECK(self.get() == this);
+  return VirtualCell::create(effective_level, std::move(self));
+}
+
 std::ostream& operator<<(std::ostream& os, const Cell& c) {
   return os << c.get_hash().to_hex();
 }

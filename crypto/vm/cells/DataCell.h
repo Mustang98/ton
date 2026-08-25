@@ -76,6 +76,8 @@ class DataCell final : public Cell {
     };
   }
 
+  Ref<Cell> virtualize_ref(Ref<Cell> self, td::uint32 effective_level) const override;
+
   virtual bool is_virtualized() const override {
     return virtualized_;
   }
