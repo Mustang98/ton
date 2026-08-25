@@ -182,7 +182,6 @@ class Collator final : public td::actor::Actor {
   std::unique_ptr<vm::Dictionary> shard_libraries_;
   Ref<vm::Cell> mc_state_extra_;
   std::unique_ptr<vm::AugmentedDictionary> account_dict, old_account_dict;
-  bool account_dict_proof_scan_required_{true};
   std::map<ton::StdSmcAddress, std::unique_ptr<block::Account>> accounts;
   std::vector<block::StoragePrices> storage_prices_;
   block::StoragePhaseConfig storage_phase_cfg_{&storage_prices_};
