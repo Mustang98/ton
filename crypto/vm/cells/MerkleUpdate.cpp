@@ -20,6 +20,7 @@
 
 #include "td/utils/HashMap.h"
 #include "td/utils/HashSet.h"
+#include "vm/boc.h"
 #include "vm/cells/MerkleProof.h"
 #include "vm/cells/MerkleUpdate.h"
 
@@ -377,20 +378,33 @@ td::Result<Ref<Cell>> MerkleUpdate::apply_raw(Ref<Cell> from, Ref<Cell> update_f
 
 td::Result<std::pair<Ref<Cell>, Ref<Cell>>> MerkleUpdate::generate_raw(Ref<Cell> from, Ref<Cell> to,
                                                                        CellUsageTree *usage_tree) {
+  return generate_raw(std::move(from), std::move(to), usage_tree, nullptr);
+}
+
+td::Result<Ref<Cell>> MerkleUpdate::generate_raw_to(Ref<Cell> to, CellUsageTree *usage_tree,
+                                                    NewCellStorageStatProofTraversal *proof_stat) {
   // create Merkle update cell->new_cell
-  TRY_RESULT(update_to, MerkleProof::generate_raw(to, [tree = usage_tree](const Ref<Cell> &cell) {
-               CellUsageTree::NodePtr node;
-               if (cell->is_loaded()) {
-                 auto loaded_cell = cell->load_cell().move_as_ok();
-                 if (loaded_cell.data_cell->size_refs() == 0) {
-                   return false;
-                 }
-                 node = loaded_cell.tree_node;
-               } else {
-                 node = cell->get_tree_node();
-               }
-               return !node.empty() && node.mark_path(tree);
-             }));
+  auto is_prunned = [tree = usage_tree](const Ref<Cell> &cell) {
+    CellUsageTree::NodePtr node;
+    if (cell->is_loaded()) {
+      auto loaded_cell = cell->load_cell().move_as_ok();
+      if (loaded_cell.data_cell->size_refs() == 0) {
+        return false;
+      }
+      node = loaded_cell.tree_node;
+    } else {
+      node = cell->get_tree_node();
+    }
+    return !node.empty() && node.mark_path(tree);
+  };
+  return proof_stat ? MerkleProof::generate_raw(std::move(to), std::move(is_prunned), proof_stat)
+                    : MerkleProof::generate_raw(std::move(to), std::move(is_prunned));
+}
+
+td::Result<std::pair<Ref<Cell>, Ref<Cell>>> MerkleUpdate::generate_raw(Ref<Cell> from, Ref<Cell> to,
+                                                                       CellUsageTree *usage_tree,
+                                                                       NewCellStorageStatProofTraversal *proof_stat) {
+  TRY_RESULT(update_to, generate_raw_to(std::move(to), usage_tree, proof_stat));
   usage_tree->set_use_mark_for_is_loaded(true);
   TRY_RESULT(update_from, MerkleProof::generate_raw(from, usage_tree));
   return std::make_pair(std::move(update_from), std::move(update_to));
@@ -421,6 +435,23 @@ td::Result<Ref<Cell>> MerkleUpdate::generate(Ref<Cell> from, Ref<Cell> to, CellU
   }
   TRY_RESULT(res, generate_raw(std::move(from), std::move(to), usage_tree));
   return CellBuilder::create_merkle_update(res.first, res.second);
+}
+
+td::Result<Ref<Cell>> MerkleUpdate::generate(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree,
+                                             NewCellStorageStat &proof_stat) {
+  if (from->get_level() != 0 || to->get_level() != 0) {
+    return td::Status::Error("roots have non-zero level");
+  }
+  Ref<Cell> proof_root = to;
+  NewCellStorageStatProofTraversal proof_traversal(proof_stat, usage_tree);
+  TRY_RESULT(res, generate_raw(std::move(from), std::move(to), usage_tree, &proof_traversal));
+  auto update = CellBuilder::create_merkle_update(res.first, res.second);
+  if (proof_traversal.is_covered()) {
+    proof_traversal.commit();
+  } else {
+    proof_stat.add_proof(std::move(proof_root), usage_tree);
+  }
+  return update;
 }
 
 namespace detail {

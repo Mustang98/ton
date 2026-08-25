@@ -5849,7 +5849,8 @@ bool Collator::create_shard_state() {
     };
   }
   LOG(INFO) << "creating Merkle update for the ShardState";
-  auto r_state_update = vm::MerkleUpdate::generate(prev_state_root_, state_root, state_usage_tree_.get());
+  auto r_state_update =
+      vm::MerkleUpdate::generate(prev_state_root_, state_root, state_usage_tree_.get(), block_limit_status_->st_stat);
   if (r_state_update.is_error()) {
     return fatal_error("cannot create Merkle update for ShardState");
   }
@@ -5861,9 +5862,7 @@ bool Collator::create_shard_state() {
       cs.print_rec(sb);
     };
   }
-  LOG(INFO) << "updating block profile statistics";
-  block_limit_status_->add_proof(state_root);
-  LOG(INFO) << "new ShardState and corresponding Merkle update created";
+  LOG(INFO) << "new ShardState, corresponding Merkle update and block profile statistics created";
   return true;
 }
 

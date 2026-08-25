@@ -1214,6 +1214,68 @@ NewCellStorageStat::Stat NewCellStorageStat::tentative_add_proof(Ref<Cell> cell,
   return stat.get_proof_stat();
 }
 
+NewCellStorageStatProofTraversal::NewCellStorageStatProofTraversal(NewCellStorageStat& stat,
+                                                                   const CellUsageTree* usage_tree)
+    : stat_(&stat)
+    , usage_tree_(usage_tree)
+    , previous_usage_tree_(stat.usage_tree_)
+    , previous_proof_stat_(stat.proof_stat_) {
+  CHECK(usage_tree_);
+  stat_->usage_tree_ = usage_tree_;
+}
+
+NewCellStorageStatProofTraversal::~NewCellStorageStatProofTraversal() {
+  rollback();
+}
+
+NewCellStorageStatProofTraversal::Action NewCellStorageStatProofTraversal::enter(const Ref<Cell>& cell,
+                                                                                 const Cell::Hash& hash) {
+  CHECK(stat_ && cell.not_null());
+  auto tree_node = cell->get_tree_node();
+  if (!tree_node.empty() && tree_node.is_from_tree(usage_tree_)) {
+    stat_->proof_stat_.external_refs++;
+    return Action::Stop;
+  }
+
+  stat_->proof_stat_.internal_refs++;
+  if ((stat_->parent_ && stat_->parent_->proof_seen_.count(hash) != 0) || !stat_->proof_seen_.insert(hash).second) {
+    return Action::Stop;
+  }
+  inserted_hashes_.push_back(hash);
+  stat_->proof_stat_.cells++;
+  return Action::Descend;
+}
+
+void NewCellStorageStatProofTraversal::add_bits(unsigned bits) {
+  CHECK(stat_);
+  stat_->proof_stat_.bits += bits;
+}
+
+void NewCellStorageStatProofTraversal::mark_uncovered() {
+  if (!covered_) {
+    return;
+  }
+  covered_ = false;
+  rollback();
+}
+
+void NewCellStorageStatProofTraversal::commit() {
+  CHECK(covered_ && stat_);
+  stat_ = nullptr;
+}
+
+void NewCellStorageStatProofTraversal::rollback() {
+  if (!stat_) {
+    return;
+  }
+  for (const auto& hash : inserted_hashes_) {
+    CHECK(stat_->proof_seen_.erase(hash) == 1);
+  }
+  stat_->proof_stat_ = previous_proof_stat_;
+  stat_->usage_tree_ = previous_usage_tree_;
+  stat_ = nullptr;
+}
+
 void NewCellStorageStat::dfs(Ref<Cell> cell, bool need_stat, bool need_proof_stat) {
   if (cell.is_null()) {
     // FIXME: save error flag?

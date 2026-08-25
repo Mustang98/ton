@@ -19,6 +19,7 @@
 #pragma once
 #include <map>
 #include <set>
+#include <vector>
 
 #include "td/utils/CancellationToken.h"
 #include "td/utils/HashMap.h"
@@ -33,6 +34,8 @@
 
 namespace vm {
 using td::Ref;
+
+class NewCellStorageStatProofTraversal;
 
 class NewCellStorageStat {
  public:
@@ -100,7 +103,9 @@ class NewCellStorageStat {
   }
 
  private:
-  const CellUsageTree* usage_tree_;
+  friend class NewCellStorageStatProofTraversal;
+
+  const CellUsageTree* usage_tree_{nullptr};
   td::HashSet<vm::Cell::Hash> seen_;
   Stat stat_;
   td::HashSet<vm::Cell::Hash> proof_seen_;
@@ -108,6 +113,41 @@ class NewCellStorageStat {
   const NewCellStorageStat* parent_{nullptr};
 
   void dfs(Ref<Cell> cell, bool need_stat, bool need_proof_stat);
+};
+
+// Transactional sidecar used while another DFS is already walking the proof root. It implements exactly the
+// proof half of NewCellStorageStat::dfs without loading cells itself. If the owning traversal skips a subtree
+// which the storage-stat traversal needs, mark_uncovered() rolls all tentative changes back and lets the caller
+// fall back to add_proof() after the owning traversal has finished.
+class NewCellStorageStatProofTraversal {
+ public:
+  enum class Action { Stop, Descend };
+
+  NewCellStorageStatProofTraversal(NewCellStorageStat& stat, const CellUsageTree* usage_tree);
+  NewCellStorageStatProofTraversal(const NewCellStorageStatProofTraversal&) = delete;
+  NewCellStorageStatProofTraversal& operator=(const NewCellStorageStatProofTraversal&) = delete;
+  ~NewCellStorageStatProofTraversal();
+
+  Action enter(const Ref<Cell>& cell, const Cell::Hash& hash);
+  void add_bits(unsigned bits);
+  void mark_uncovered();
+  bool is_active() const {
+    return stat_ != nullptr;
+  }
+  bool is_covered() const {
+    return covered_;
+  }
+  void commit();
+
+ private:
+  NewCellStorageStat* stat_;
+  const CellUsageTree* usage_tree_;
+  const CellUsageTree* previous_usage_tree_;
+  NewCellStorageStat::Stat previous_proof_stat_;
+  std::vector<Cell::Hash> inserted_hashes_;
+  bool covered_{true};
+
+  void rollback();
 };
 
 struct CellStorageStat {
