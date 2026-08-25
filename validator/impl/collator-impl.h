@@ -18,7 +18,6 @@
 */
 #pragma once
 #include <map>
-#include <optional>
 #include <queue>
 
 #include "block/block-db.h"
@@ -113,14 +112,11 @@ class Collator final : public td::actor::Actor {
     return 2;
   }
 
-  static td::Status impl_create_ordinary_transaction(Ref<vm::Cell> msg_root, block::Account* acc, UnixTime utime,
-                                                     LogicalTime lt, block::StoragePhaseConfig* storage_phase_cfg,
-                                                     block::ComputePhaseConfig* compute_phase_cfg,
-                                                     block::ActionPhaseConfig* action_phase_cfg,
-                                                     block::SerializeConfig* serialize_cfg, bool external,
-                                                     LogicalTime after_lt,
-                                                     std::optional<block::transaction::Transaction>& transaction,
-                                                     CollationStats* stats = nullptr);
+  static td::Result<std::unique_ptr<block::transaction::Transaction>> impl_create_ordinary_transaction(
+      Ref<vm::Cell> msg_root, block::Account* acc, UnixTime utime, LogicalTime lt,
+      block::StoragePhaseConfig* storage_phase_cfg, block::ComputePhaseConfig* compute_phase_cfg,
+      block::ActionPhaseConfig* action_phase_cfg, block::SerializeConfig* serialize_cfg, bool external,
+      LogicalTime after_lt, CollationStats* stats = nullptr);
 
  private:
   void start_up() override;
