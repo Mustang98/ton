@@ -4736,19 +4736,45 @@ bool Collator::insert_out_msg(Ref<vm::Cell> out_msg) {
  * @returns True if the insertion was successful, false otherwise.
  */
 bool Collator::insert_out_msg(Ref<vm::Cell> out_msg, td::ConstBitPtr msg_hash) {
-  bool ok;
+  Ref<vm::CellBuilder> value{true};
+  bool value_ok = false;
   try {
-    ok = out_msg_dict->set(msg_hash, 256, load_cell_slice(out_msg), vm::Dictionary::SetMode::Add);
+    value_ok = value.write().append_cellslice_bool(load_cell_slice(out_msg));
   } catch (vm::VmError&) {
-    ok = false;
   }
+  if (!value_ok) {
+    LOG(ERROR) << "cannot add an OutMsg into OutMsgDescr dictionary!";
+    return false;
+  }
+  pending_out_msg_descriptors_.push_back({td::Bits256{msg_hash}, std::move(value)});
+  ++out_descr_cnt_;
+  if (!(out_descr_cnt_ & 63) && !flush_out_msg_descriptors()) {
+    return false;
+  }
+  return block_limit_status_->add_cell(std::move(out_msg)) &&
+         ((out_descr_cnt_ & 63) || block_limit_status_->add_cell(out_msg_dict->get_root_cell()));
+}
+
+bool Collator::flush_out_msg_descriptors() {
+  if (pending_out_msg_descriptors_.empty()) {
+    return true;
+  }
+  std::vector<vm::AugmentedDictionary::BatchSetEntry> updates;
+  updates.reserve(pending_out_msg_descriptors_.size());
+  for (auto& descriptor : pending_out_msg_descriptors_) {
+    updates.push_back({descriptor.key.bits(), std::move(descriptor.value), vm::Dictionary::SetMode::Add});
+  }
+  bool ok = false;
+  try {
+    ok = out_msg_dict->multiset(updates);
+  } catch (vm::VmError&) {
+  }
+  pending_out_msg_descriptors_.clear();
   if (!ok) {
     LOG(ERROR) << "cannot add an OutMsg into OutMsgDescr dictionary!";
     return false;
   }
-  ++out_descr_cnt_;
-  return block_limit_status_->add_cell(std::move(out_msg)) &&
-         ((out_descr_cnt_ & 63) || block_limit_status_->add_cell(out_msg_dict->get_root_cell()));
+  return true;
 }
 
 /**
@@ -5943,7 +5969,7 @@ bool Collator::compute_out_msg_queue_info(Ref<vm::Cell>& out_msg_queue_info) {
  * @returns True if the total balance computation is successful, false otherwise.
  */
 bool Collator::compute_total_balance() {
-  if (!flush_in_msg_descriptors()) {
+  if (!flush_in_msg_descriptors() || !flush_out_msg_descriptors()) {
     return false;
   }
   // 1. compute total_balance_ from the augmentation value of ShardAccounts
