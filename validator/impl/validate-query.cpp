@@ -3428,13 +3428,6 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
     return reject_query("(HASH_UPDATE Account) from the AccountBlock of "s + acc_id.to_hex(256) +
                         " has incorrect new hash");
   }
-  auto address = StdSmcAddress{acc_id};
-  if (!prechecked_old_shard_accounts_.empty() && !(prechecked_old_shard_accounts_.back().address < address)) {
-    prechecked_old_shard_accounts_ordered_ = false;
-  }
-  // Retain the exact post-augmentation cursor occurrence. Copying the Ref
-  // above did not advance it: extract_account_state() only prefetches its ref.
-  prechecked_old_shard_accounts_.push_back({std::move(address), std::move(old_value)});
   return true;
 }
 
@@ -3445,19 +3438,9 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
  */
 bool ValidateQuery::precheck_account_updates() {
   LOG(INFO) << "pre-checking all Account updates between the old and the new state";
-  prechecked_old_shard_accounts_.clear();
-  prechecked_old_shard_accounts_root_.clear();
-  prechecked_old_shard_account_position_ = 0;
-  prechecked_old_shard_account_last_address_.reset();
-  prechecked_old_shard_accounts_ordered_ = false;
-  old_shard_account_handoff_enabled_ = false;
   try {
     REJECT_UNLESS(ps_.account_dict_);
     REJECT_UNLESS(ns_.account_dict_);
-    // Own and later pointer-gate the exact dictionary root occurrence. Hash
-    // equality is intentionally insufficient for UsageCell/VirtualCell roots.
-    prechecked_old_shard_accounts_root_ = ps_.account_dict_->get_root_cell();
-    prechecked_old_shard_accounts_ordered_ = true;
     if (!ps_.account_dict_->scan_diff_stack(
             *ns_.account_dict_,
             [this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra,
@@ -3467,9 +3450,6 @@ bool ValidateQuery::precheck_account_updates() {
             },
             2 /* check augmentation of changed nodes in the new dict */)) {
       return reject_query("invalid ShardAccounts dictionary in the new state");
-    }
-    if (!prechecked_old_shard_accounts_ordered_) {
-      prechecked_old_shard_accounts_.clear();
     }
   } catch (vm::VmError& err) {
     return reject_query("invalid ShardAccount dictionary difference between the old and the new state: "s +
@@ -5893,16 +5873,8 @@ std::unique_ptr<block::Account> ValidateQuery::CheckAccountTxs::make_account_fro
  *          Returns nullptr if an error occured.
  */
 std::unique_ptr<block::Account> ValidateQuery::CheckAccountTxs::unpack_account(td::ConstBitPtr addr) {
-  Ref<vm::CellSlice> old_shard_account;
-  if (ctx_.old_shard_account_handoff_available) {
-    ctx_.old_shard_account_handoff_available = false;
-    old_shard_account = std::move(ctx_.old_shard_account_handoff);
-  } else {
-    // Preserve the original lookup, load, and error order on every miss.
-    auto dict_entry = vq_.ps_.account_dict_->lookup_extra(addr, 256);
-    old_shard_account = std::move(dict_entry.first);
-  }
-  auto new_acc = make_account_from(addr, std::move(old_shard_account));
+  auto dict_entry = vq_.ps_.account_dict_->lookup_extra(addr, 256);
+  auto new_acc = make_account_from(addr, std::move(dict_entry.first));
   if (!new_acc) {
     reject_query("cannot load state of account "s + addr.to_hex(256) + " from previous shardchain state");
     return {};
@@ -6645,28 +6617,6 @@ ValidateQuery::CheckAccountTxs::Context ValidateQuery::load_check_account_transa
   if (account_expected_defer_all_messages_.contains(address)) {
     ctx.defer_all_messages = true;
   }
-  if (old_shard_account_handoff_enabled_) {
-    // The AccountBlocks traversal must remain strictly ascending. A regression
-    // disables the remaining handoffs instead of attempting to resynchronize.
-    if (prechecked_old_shard_account_last_address_.has_value() &&
-        !(prechecked_old_shard_account_last_address_.value() < address)) {
-      old_shard_account_handoff_enabled_ = false;
-    }
-    prechecked_old_shard_account_last_address_ = address;
-  }
-  if (old_shard_account_handoff_enabled_ &&
-      prechecked_old_shard_account_position_ < prechecked_old_shard_accounts_.size()) {
-    auto& next = prechecked_old_shard_accounts_[prechecked_old_shard_account_position_];
-    if (next.address == address) {
-      ctx.old_shard_account_handoff_available = true;
-      ctx.old_shard_account_handoff = std::move(next.value);
-      ++prechecked_old_shard_account_position_;
-    } else if (next.address < address) {
-      // A captured occurrence was skipped, so the ordered zipper invariant no
-      // longer holds. All current and later accounts use the legacy lookup.
-      old_shard_account_handoff_enabled_ = false;
-    }
-  }
   return ctx;
 }
 
@@ -6746,11 +6696,6 @@ bool ValidateQuery::check_account_failures() {
  */
 bool ValidateQuery::check_transactions() {
   LOG(INFO) << "checking all transactions";
-  prechecked_old_shard_account_position_ = 0;
-  prechecked_old_shard_account_last_address_.reset();
-  auto current_old_accounts_root = ps_.account_dict_ ? ps_.account_dict_->get_root_cell() : Ref<vm::Cell>{};
-  old_shard_account_handoff_enabled_ = prechecked_old_shard_accounts_ordered_ && ps_.account_dict_ &&
-                                       prechecked_old_shard_accounts_root_.get() == current_old_accounts_root.get();
   size_t accounts_count = 0;
   bool result = account_blocks_dict_->check_for_each_value_stack(
       [this, &accounts_count](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {

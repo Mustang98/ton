@@ -244,16 +244,6 @@ class ValidateQuery : public td::actor::Actor {
   block::tlb::InMsgDescr t_InMsgDescr{0};
   block::tlb::OutMsgDescr t_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict_, out_msg_dict_, account_blocks_dict_;
-  struct PrecheckedOldShardAccount {
-    StdSmcAddress address;
-    Ref<vm::CellSlice> value;
-  };
-  std::vector<PrecheckedOldShardAccount> prechecked_old_shard_accounts_;
-  Ref<vm::Cell> prechecked_old_shard_accounts_root_;
-  std::size_t prechecked_old_shard_account_position_{0};
-  std::optional<StdSmcAddress> prechecked_old_shard_account_last_address_;
-  bool prechecked_old_shard_accounts_ordered_{false};
-  bool old_shard_account_handoff_enabled_{false};
   enum class Stage0WorkerFailureKind { None, FatalVmError, RejectCellCreate, RejectCellWrite, RejectVmVirtError };
   struct Stage0WorkerFailure {
     Stage0WorkerFailureKind kind{Stage0WorkerFailureKind::None};
@@ -457,10 +447,6 @@ class ValidateQuery : public td::actor::Actor {
       block::CurrencyCollection total_burned{0};
       std::vector<std::tuple<Bits256, Bits256, bool>> lib_publishers{};
       bool defer_all_messages = false;
-      // A missing old account is a valid handoff value for account creation,
-      // so availability cannot be inferred from a null CellSlice.
-      bool old_shard_account_handoff_available = false;
-      Ref<vm::CellSlice> old_shard_account_handoff;
       std::vector<std::pair<td::Ref<vm::Cell>, td::uint32>> storage_stat_cache_update{};
       ValidationStats::WorkTimeStats work_time{};
 
