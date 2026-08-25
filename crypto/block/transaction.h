@@ -243,6 +243,7 @@ struct ActionPhase {
   Ref<vm::Cell> new_code;
   td::BitArray<256> action_list_hash;
   block::CurrencyCollection remaining_balance, reserved_balance;
+  std::vector<Ref<vm::Cell>> action_list;  // processed in reverse order
   std::vector<Ref<vm::Cell>> out_msgs;
   ton::LogicalTime end_lt;
   unsigned long long tot_msg_bits{0}, tot_msg_cells{0};
