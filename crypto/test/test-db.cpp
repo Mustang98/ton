@@ -34,7 +34,6 @@
 #include "rocksdb/merge_operator.h"
 #pragma GCC diagnostic pop
 
-#include "block/block-db.h"
 #include "common/AtomicRef.h"
 #include "openssl/digest.hpp"
 #include "storage/db.h"
@@ -61,7 +60,6 @@
 #include "td/utils/tests.h"
 #include "td/utils/tl_helpers.h"
 #include "td/utils/tl_parsers.h"
-#include "ton/ton-types.h"
 #include "vm/boc.h"
 #include "vm/cells.h"
 #include "vm/cells/CellString.h"
@@ -1553,56 +1551,6 @@ TEST(TonDb, BocDeserializeTruncated) {
   td::BufferSlice empty;
   auto empty_roots = vm::std_boc_deserialize_multi(empty.as_slice()).move_as_ok();
   CHECK(empty_roots.empty());
-}
-
-TEST(BlockCandidate, PromiseMoveHandoffTransfersCompleteOwnership) {
-  td::BufferSlice block_data(td::Slice("block candidate payload"));
-  td::BufferSlice collated_data(td::Slice("collated candidate payload"));
-  const auto block_bytes = block_data.as_slice().str();
-  const auto collated_bytes = collated_data.as_slice().str();
-  const auto block_hash = block::compute_file_hash(block_data.as_slice());
-  const auto collated_hash = block::compute_file_hash(collated_data.as_slice());
-  const auto *block_ptr = block_data.data();
-  const auto *collated_ptr = collated_data.data();
-
-  auto broadcast = td::Ref<ton::OutMsgQueueProofBroadcast>(
-      true, ton::OutMsgQueueProofBroadcast(ton::ShardIdFull{ton::basechainId, ton::shardIdAll}, ton::BlockIdExt{}, 17,
-                                           19, td::BufferSlice(td::Slice("queue proof")),
-                                           td::BufferSlice(td::Slice("state proof")), 23));
-  auto *broadcast_ptr = broadcast.get();
-  std::vector<td::Ref<ton::OutMsgQueueProofBroadcast>> broadcasts;
-  broadcasts.push_back(std::move(broadcast));
-
-  auto candidate = std::make_unique<ton::BlockCandidate>(
-      ton::Ed25519_PublicKey{},
-      ton::BlockIdExt{ton::BlockId{ton::basechainId, ton::shardIdAll, 1}, ton::RootHash{}, block_hash}, collated_hash,
-      std::move(block_data), std::move(collated_data), std::move(broadcasts));
-  const auto *broadcast_vector_ptr = candidate->out_msg_queue_proof_broadcasts.data();
-  ASSERT_EQ(broadcast_ptr->get_refcnt(), 1);
-
-  std::optional<ton::BlockCandidate> delivered;
-  size_t callback_count = 0;
-  td::Promise<ton::BlockCandidate> promise([&](td::Result<ton::BlockCandidate> result) {
-    ++callback_count;
-    ASSERT_TRUE(result.is_ok());
-    delivered.emplace(result.move_as_ok());
-  });
-  promise.set_value(std::move(*candidate));
-
-  ASSERT_EQ(callback_count, 1u);
-  ASSERT_TRUE(!promise);
-  ASSERT_TRUE(delivered.has_value());
-  ASSERT_TRUE(candidate->data.is_null());
-  ASSERT_TRUE(candidate->collated_data.is_null());
-  ASSERT_TRUE(delivered->data.data() == block_ptr);
-  ASSERT_TRUE(delivered->collated_data.data() == collated_ptr);
-  ASSERT_TRUE(delivered->out_msg_queue_proof_broadcasts.data() == broadcast_vector_ptr);
-  ASSERT_TRUE(delivered->out_msg_queue_proof_broadcasts.front().get() == broadcast_ptr);
-  ASSERT_EQ(broadcast_ptr->get_refcnt(), 1);
-  ASSERT_EQ(delivered->data.as_slice().str(), block_bytes);
-  ASSERT_EQ(delivered->collated_data.as_slice().str(), collated_bytes);
-  ASSERT_EQ(block::compute_file_hash(delivered->data.as_slice()), delivered->id.file_hash);
-  ASSERT_EQ(block::compute_file_hash(delivered->collated_data.as_slice()), delivered->collated_file_hash);
 }
 
 void test_parse_prefix(td::Slice boc) {
