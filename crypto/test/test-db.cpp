@@ -34,6 +34,7 @@
 #include "rocksdb/merge_operator.h"
 #pragma GCC diagnostic pop
 
+#include "block/block-db.h"
 #include "common/AtomicRef.h"
 #include "openssl/digest.hpp"
 #include "storage/db.h"
@@ -42,6 +43,7 @@
 #include "td/db/RocksDb.h"
 #include "td/db/utils/BlobView.h"
 #include "td/db/utils/CyclicBuffer.h"
+#include "td/utils/CancellationToken.h"
 #include "td/utils/Random.h"
 #include "td/utils/ScopeGuard.h"
 #include "td/utils/Slice.h"
@@ -1551,6 +1553,211 @@ TEST(TonDb, BocDeserializeTruncated) {
   td::BufferSlice empty;
   auto empty_roots = vm::std_boc_deserialize_multi(empty.as_slice()).move_as_ok();
   CHECK(empty_roots.empty());
+}
+
+namespace {
+
+td::BufferSlice serialize_roots(BagOfCells &boc, const std::vector<Ref<Cell>> &roots, int mode) {
+  CHECK(boc.set_roots(roots) == static_cast<int>(roots.size()));
+  boc.import_cells().ensure();
+  return boc.serialize_to_slice(mode).move_as_ok();
+}
+
+td::BufferSlice serialize_roots_fresh(const std::vector<Ref<Cell>> &roots, int mode) {
+  BagOfCells boc;
+  return serialize_roots(boc, roots, mode);
+}
+
+std::vector<Ref<Cell>> make_shared_dag_roots() {
+  auto shared = CellBuilder{}.store_long(0x51, 8).finalize_novm();
+  auto left = CellBuilder{}.store_long(0x4c, 8).store_ref(shared).finalize_novm();
+  auto right = CellBuilder{}.store_long(0x52, 8).store_ref(shared).finalize_novm();
+  auto root = CellBuilder{}.store_long(0x44, 8).store_ref(std::move(left)).store_ref(std::move(right)).finalize_novm();
+  return {root, root, std::move(shared)};
+}
+
+Ref<Cell> make_wide_boc_tree(std::size_t leaf_count) {
+  CHECK(leaf_count != 0);
+  std::vector<Ref<Cell>> level;
+  level.reserve(leaf_count);
+  for (std::size_t i = 0; i < leaf_count; ++i) {
+    level.push_back(CellBuilder{}.store_long(i, 32).finalize_novm());
+  }
+  td::uint64 generation = 1;
+  while (level.size() > 1) {
+    std::vector<Ref<Cell>> next;
+    next.reserve((level.size() + Cell::max_refs - 1) / Cell::max_refs);
+    for (std::size_t i = 0; i < level.size(); i += Cell::max_refs) {
+      CellBuilder builder;
+      builder.store_long(generation, 32).store_long(i / Cell::max_refs, 32);
+      for (std::size_t j = i; j < std::min(level.size(), i + Cell::max_refs); ++j) {
+        builder.store_ref(level[j]);
+      }
+      next.push_back(builder.finalize_novm());
+    }
+    level = std::move(next);
+    ++generation;
+  }
+  return std::move(level.front());
+}
+
+bool has_stored_cache_bit(const td::BufferSlice &serialized) {
+  BagOfCells::Info info;
+  CHECK(info.parse_serialized_header(serialized.as_slice()) == static_cast<long long>(serialized.size()));
+  if (!info.has_cache_bits) {
+    return false;
+  }
+  auto index = serialized.as_slice().ubegin() + info.index_offset;
+  for (int i = 0; i < info.cell_count; ++i) {
+    if (info.read_offset(index + i * info.offset_byte_size) & 1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::size_t count_substrings(const std::string &haystack, const std::string &needle) {
+  std::size_t result = 0;
+  for (std::size_t at = 0; (at = haystack.find(needle, at)) != std::string::npos; at += needle.size()) {
+    ++result;
+  }
+  return result;
+}
+
+class BocLogCapture final : public td::LogInterface {
+ public:
+  void append(td::CSlice slice) override {
+    text_.append(slice.data(), slice.size());
+  }
+
+  const std::string &text() const {
+    return text_;
+  }
+
+ private:
+  std::string text_;
+};
+
+}  // namespace
+
+TEST(TonDb, BocReuseMatchesFreshSerializationInEveryMode) {
+  auto block_root = make_wide_boc_tree(64);
+  auto collated_roots = make_shared_dag_roots();
+
+  for (int mode : get_serialization_modes()) {
+    BagOfCells reused;
+    auto block_data = serialize_roots(reused, {block_root}, BagOfCells::max);
+    const auto block_bytes = block_data.as_slice().str();
+    const auto block_hash = block::compute_file_hash(block_data.as_slice());
+
+    auto reused_data = serialize_roots(reused, collated_roots, mode);
+    auto fresh_data = serialize_roots_fresh(collated_roots, mode);
+    ASSERT_EQ(reused_data.as_slice(), fresh_data.as_slice());
+    ASSERT_EQ(block::compute_file_hash(reused_data.as_slice()), block::compute_file_hash(fresh_data.as_slice()));
+    ASSERT_EQ(block_data.as_slice().str(), block_bytes);
+    ASSERT_EQ(block::compute_file_hash(block_data.as_slice()), block_hash);
+
+    BagOfCells::Info info;
+    ASSERT_EQ(info.parse_serialized_header(reused_data.as_slice()), static_cast<long long>(reused_data.size()));
+    ASSERT_EQ(info.has_cache_bits, static_cast<bool>(mode & BagOfCells::WithCacheBits));
+    if (mode & BagOfCells::WithCacheBits) {
+      ASSERT_TRUE(has_stored_cache_bit(reused_data));
+      ASSERT_EQ(has_stored_cache_bit(reused_data), has_stored_cache_bit(fresh_data));
+    }
+  }
+}
+
+TEST(TonDb, BocReuseLargeSmallLargeKeepsReturnedSliceIndependent) {
+  auto large_root = make_wide_boc_tree(256);
+  auto small_roots = make_shared_dag_roots();
+  auto fresh_large = serialize_roots_fresh({large_root}, BagOfCells::max);
+  auto fresh_small = serialize_roots_fresh(small_roots, BagOfCells::WithCRC32C);
+
+  BagOfCells reused;
+  auto first_large = serialize_roots(reused, {large_root}, BagOfCells::max);
+  const auto *first_data_ptr = first_large.data();
+  const auto first_bytes = first_large.as_slice().str();
+  const auto first_hash = block::compute_file_hash(first_large.as_slice());
+  auto small = serialize_roots(reused, small_roots, BagOfCells::WithCRC32C);
+  auto second_large = serialize_roots(reused, {large_root}, BagOfCells::max);
+
+  ASSERT_TRUE(first_large.data() == first_data_ptr);
+  ASSERT_EQ(first_large.as_slice().str(), first_bytes);
+  ASSERT_EQ(block::compute_file_hash(first_large.as_slice()), first_hash);
+  ASSERT_EQ(first_large.as_slice(), fresh_large.as_slice());
+  ASSERT_EQ(small.as_slice(), fresh_small.as_slice());
+  ASSERT_EQ(second_large.as_slice(), fresh_large.as_slice());
+}
+
+TEST(TonDb, BocReuseReleasesPreviousLazyDatabase) {
+  auto original = serialize_roots_fresh({make_wide_boc_tree(32)}, BagOfCells::max);
+  const auto original_bytes = original.as_slice().str();
+  auto db = StaticBagOfCellsDbLazy::create(std::move(original)).move_as_ok();
+  std::weak_ptr<StaticBagOfCellsDb> weak_db = db;
+  auto lazy_root = db->get_root_cell(0).move_as_ok();
+
+  BagOfCells reused;
+  reused.set_root(std::move(lazy_root));
+  reused.import_cells().ensure();
+  auto lazy_bytes = reused.serialize_to_slice(BagOfCells::max).move_as_ok();
+  ASSERT_EQ(lazy_bytes.as_slice().str(), original_bytes);
+  db.reset();
+  ASSERT_TRUE(!weak_db.expired());
+
+  reused.set_root(CellBuilder{}.store_long(7, 8).finalize_novm());
+  ASSERT_TRUE(weak_db.expired());
+  reused.import_cells().ensure();
+  reused.serialize_to_slice(BagOfCells::max).ensure();
+  ASSERT_EQ(lazy_bytes.as_slice().str(), original_bytes);
+}
+
+TEST(TonDb, BocReuseRecoversAfterCancelledImportAndRestartsLoggerStages) {
+  auto root = make_wide_boc_tree(1024);
+  auto expected = serialize_roots_fresh({root}, BagOfCells::max);
+
+  BagOfCells reused;
+  auto previous = serialize_roots(reused, {make_wide_boc_tree(16)}, BagOfCells::max);
+  const auto previous_bytes = previous.as_slice().str();
+  const auto previous_hash = block::compute_file_hash(previous.as_slice());
+
+  td::CancellationTokenSource cancellation;
+  BagOfCellsLogger cancelled_logger(cancellation.get_cancellation_token());
+  cancellation.cancel();
+  reused.set_root(root);
+  reused.set_logger(&cancelled_logger);
+
+  BocLogCapture capture;
+  auto *previous_log = td::log_interface;
+  td::log_interface = &capture;
+  SCOPE_EXIT {
+    td::log_interface = previous_log;
+  };
+
+  auto failed = reused.import_cells();
+  ASSERT_TRUE(failed.is_error());
+  auto error = failed.move_as_error();
+  ASSERT_EQ(error.code(), 653);
+  ASSERT_EQ(error.message().str(), "cancelled");
+
+  BagOfCellsLogger retry_logger;
+  reused.set_logger(&retry_logger);
+  reused.import_cells().ensure();
+  auto actual = reused.serialize_to_slice(BagOfCells::max).move_as_ok();
+  ASSERT_EQ(actual.as_slice(), expected.as_slice());
+  ASSERT_EQ(previous.as_slice().str(), previous_bytes);
+  ASSERT_EQ(block::compute_file_hash(previous.as_slice()), previous_hash);
+
+  const auto &logs = capture.text();
+  auto import_at = logs.find("serializer: import_cells took");
+  auto index_at = logs.find("serializer: generate_index took");
+  auto serialize_at = logs.find("serializer: serialize took");
+  ASSERT_TRUE(import_at != std::string::npos);
+  ASSERT_TRUE(index_at != std::string::npos);
+  ASSERT_TRUE(serialize_at != std::string::npos);
+  ASSERT_TRUE(import_at < index_at && index_at < serialize_at);
+  ASSERT_EQ(count_substrings(logs, "serializer: import_cells took"), 1u);
+  ASSERT_EQ(count_substrings(logs, "serializer: generate_index took"), 1u);
+  ASSERT_EQ(count_substrings(logs, "serializer: serialize took"), 1u);
 }
 
 void test_parse_prefix(td::Slice boc) {
