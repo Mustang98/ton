@@ -665,8 +665,7 @@ bool CellSlice::fetch_bits_to(td::BitPtr buffer, unsigned bits) {
   if (!have(bits)) {
     return false;
   }
-  td::bitstring::bits_memcpy(buffer, data_bits(), bits);
-  advance(bits);
+  fetch_bits(bits).copy_to(buffer);
   return true;
 }
 
@@ -674,7 +673,7 @@ bool CellSlice::prefetch_bits_to(td::BitPtr buffer, unsigned bits) const {
   if (!have(bits)) {
     return false;
   }
-  td::bitstring::bits_memcpy(buffer, data_bits(), bits);
+  prefetch_bits(bits).copy_to(buffer);
   return true;
 }
 
@@ -725,7 +724,7 @@ bool CellSlice::prefetch_bytes(unsigned char* buffer, unsigned bytes) const {
   if (!have(bytes * 8)) {
     return false;
   } else {
-    td::bitstring::bits_memcpy(td::BitPtr{buffer}, data_bits(), bytes * 8);
+    td::BitSliceWrite{buffer, bytes* 8} = prefetch_bits(bytes * 8);
     return true;
   }
 }
