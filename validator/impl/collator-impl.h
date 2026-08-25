@@ -321,6 +321,9 @@ class Collator final : public td::actor::Actor {
   bool create_ticktock_transaction(const ton::StdSmcAddress& smc_addr, ton::LogicalTime req_start_lt, int mask);
   Ref<vm::Cell> create_ordinary_transaction(Ref<vm::Cell> msg_root, td::optional<block::MsgMetadata> msg_metadata,
                                             LogicalTime after_lt, bool is_special_tx = false);
+  Ref<vm::Cell> create_ordinary_transaction_to(Ref<vm::Cell> msg_root, td::optional<block::MsgMetadata> msg_metadata,
+                                               const ton::StdSmcAddress& addr, bool external, LogicalTime after_lt,
+                                               bool is_special_tx = false);
   bool check_cur_validator_set();
   bool unpack_last_mc_state();
   bool unpack_last_state();
@@ -352,7 +355,8 @@ class Collator final : public td::actor::Actor {
   bool is_our_address(Ref<vm::CellSlice> addr_ref) const;
   bool is_our_address(ton::AccountIdPrefixFull addr_prefix) const;
   bool is_our_address(const ton::StdSmcAddress& addr) const;
-  td::Status register_external_message(Ref<ExtMessage> ext_msg, int priority);
+  td::Status register_external_message(Ref<ExtMessage> ext_msg, int priority,
+                                       td::optional<ton::StdSmcAddress>* validated_dest = nullptr);
   td::actor::Task<> wait_for_external_message(td::Timestamp timeout);
 
   void register_new_msg(block::NewOutMsg msg);
@@ -365,6 +369,8 @@ class Collator final : public td::actor::Actor {
   td::actor::Task<> process_external_and_new_messages();
   td::actor::Task<bool> process_inbound_external_messages();
   int process_external_message(Ref<vm::Cell> msg);
+  int process_external_message_to(Ref<vm::Cell> msg, const ton::StdSmcAddress& validated_dest);
+  int process_external_message_impl(Ref<vm::Cell> msg, const ton::StdSmcAddress* validated_dest);
   bool process_dispatch_queue();
   bool process_deferred_message(Ref<vm::CellSlice> enq_msg, StdSmcAddress src_addr, LogicalTime lt,
                                 td::optional<block::MsgMetadata>& msg_metadata);

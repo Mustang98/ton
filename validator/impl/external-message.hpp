@@ -29,6 +29,10 @@ namespace ton {
 namespace validator {
 
 class ExtMessageQ : public ExtMessage {
+  struct StructurallyValidated {};
+
+  friend class td::Ref<ExtMessageQ>;
+
   td::Ref<vm::Cell> root_;
   AccountIdPrefixFull addr_prefix_;
   td::BufferSlice data_;
@@ -36,6 +40,10 @@ class ExtMessageQ : public ExtMessage {
   Hash hash_norm_;
   ton::WorkchainId wc_;
   ton::StdSmcAddress addr_;
+  bool structurally_validated_{false};
+
+  ExtMessageQ(td::BufferSlice data, td::Ref<vm::Cell> root, AccountIdPrefixFull shard, ton::WorkchainId wc,
+              ton::StdSmcAddress addr, Hash hash, Hash hash_norm, StructurallyValidated);
 
  public:
   AccountIdPrefixFull shard() const override {
@@ -61,8 +69,16 @@ class ExtMessageQ : public ExtMessage {
     return addr_;
   }
 
+  bool structurally_validated() const {
+    return structurally_validated_;
+  }
+
   ExtMessageQ(td::BufferSlice data, td::Ref<vm::Cell> root, AccountIdPrefixFull shard, ton::WorkchainId wc,
               ton::StdSmcAddress addr, Hash hash, Hash hash_norm);
+  ExtMessageQ(const ExtMessageQ&) = delete;
+  ExtMessageQ(ExtMessageQ&&) = delete;
+  ExtMessageQ& operator=(const ExtMessageQ&) = delete;
+  ExtMessageQ& operator=(ExtMessageQ&&) = delete;
   static td::Result<td::Ref<ExtMessageQ>> create_ext_message(td::BufferSlice data,
                                                              block::SizeLimitsConfig::ExtMsgLimits limits);
   static td::Result<td::Ref<ExtMessageQ>> create_ext_message(td::Ref<vm::Cell> root);  // Skips message size checks.

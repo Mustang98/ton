@@ -43,6 +43,12 @@ ExtMessageQ::ExtMessageQ(td::BufferSlice data, td::Ref<vm::Cell> root, AccountId
     , addr_(addr) {
 }
 
+ExtMessageQ::ExtMessageQ(td::BufferSlice data, td::Ref<vm::Cell> root, AccountIdPrefixFull addr_prefix,
+                         ton::WorkchainId wc, ton::StdSmcAddress addr, Hash hash, Hash hash_norm, StructurallyValidated)
+    : ExtMessageQ(std::move(data), std::move(root), addr_prefix, wc, addr, hash, hash_norm) {
+  structurally_validated_ = true;
+}
+
 td::Result<td::Bits256> get_ext_in_msg_hash_norm(td::Ref<vm::Cell> ext_in_msg_cell) {
   block::gen::Message::Record message;
   if (!tlb::type_unpack_cell(ext_in_msg_cell, block::gen::t_Message_Any, message)) {
@@ -125,6 +131,10 @@ td::Result<Ref<ExtMessageQ>> ExtMessageQ::create_ext_message(td::BufferSlice dat
   }
 
   TRY_RESULT(hash_norm, get_ext_in_msg_hash_norm(ext_msg));
+  if (block::tlb::validate_message_libs(ext_msg)) {
+    return Ref<ExtMessageQ>{true, std::move(data), std::move(ext_msg),     dest_prefix, wc, addr,
+                            hash, hash_norm,       StructurallyValidated{}};
+  }
   return Ref<ExtMessageQ>{true, std::move(data), std::move(ext_msg), dest_prefix, wc, addr, hash, hash_norm};
 }
 

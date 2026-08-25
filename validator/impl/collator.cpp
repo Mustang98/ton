@@ -37,6 +37,7 @@
 #include "vm/dict.h"
 
 #include "collator-impl.h"
+#include "external-message.hpp"
 #include "fabric.h"
 #include "storage-stat-cache.hpp"
 #include "top-shard-descr.hpp"
@@ -3308,6 +3309,14 @@ Ref<vm::Cell> Collator::create_ordinary_transaction(Ref<vm::Cell> msg_root,
   if (!block::tlb::t_MsgAddressInt.extract_std_address(dest, wc, addr) || wc != workchain()) {
     return {};
   }
+  return create_ordinary_transaction_to(std::move(msg_root), std::move(msg_metadata), addr, external, after_lt,
+                                        is_special_tx);
+}
+
+Ref<vm::Cell> Collator::create_ordinary_transaction_to(Ref<vm::Cell> msg_root,
+                                                       td::optional<block::MsgMetadata> msg_metadata,
+                                                       const ton::StdSmcAddress& addr, bool external,
+                                                       LogicalTime after_lt, bool is_special_tx) {
   LOG(DEBUG) << "inbound message to our smart contract " << addr.to_hex();
   auto acc_res = make_account(addr.cbits(), true);
   if (acc_res.is_error()) {
@@ -4293,7 +4302,8 @@ td::actor::Task<bool> Collator::process_inbound_external_messages() {
     td::ScopedRealCpuTimer timer_total{stats_.work_time.total};
     auto [ext_msg_ref, priority] = std::move(item);
     ++stats_.ext_msgs_total;
-    if (register_external_message(ext_msg_ref, priority).is_error()) {
+    td::optional<StdSmcAddress> validated_dest;
+    if (register_external_message(ext_msg_ref, priority, &validated_dest).is_error()) {
       ++stats_.ext_msgs_filtered;
       bad_ext_msgs_.emplace_back(ext_msg_ref->hash());
       continue;
@@ -4304,7 +4314,8 @@ td::actor::Task<bool> Collator::process_inbound_external_messages() {
     }
     auto ext_msg = ext_msg_ref->root_cell();
     ton::Bits256 hash{ext_msg->get_hash().bits()};
-    int r = process_external_message(std::move(ext_msg));
+    int r = validated_dest ? process_external_message_to(std::move(ext_msg), validated_dest.value())
+                           : process_external_message(std::move(ext_msg));
     if (r > 0) {
       ++stats_.ext_msgs_accepted;
     } else {
@@ -4345,9 +4356,18 @@ int Collator::process_external_message(Ref<vm::Cell> msg) {
   if (!is_our_address(info.dest)) {
     return 0;
   }
+  return process_external_message_impl(std::move(msg), nullptr);
+}
+
+int Collator::process_external_message_to(Ref<vm::Cell> msg, const ton::StdSmcAddress& validated_dest) {
+  return process_external_message_impl(std::move(msg), &validated_dest);
+}
+
+int Collator::process_external_message_impl(Ref<vm::Cell> msg, const ton::StdSmcAddress* validated_dest) {
   // process message by a transaction in this block:
   // 1. create a Transaction processing this Message
-  auto trans_root = create_ordinary_transaction(msg, /* metadata = */ {}, 0);
+  auto trans_root = validated_dest ? create_ordinary_transaction_to(msg, /* metadata = */ {}, *validated_dest, true, 0)
+                                   : create_ordinary_transaction(msg, /* metadata = */ {}, 0);
   if (trans_root.is_null()) {
     if (busy_) {
       // transaction rejected by account
@@ -6570,7 +6590,31 @@ void Collator::return_block_candidate() {
  *          - If the external message is invalid or duplicate, returns an error.
  *          - Otherwise returns OK.
  */
-td::Status Collator::register_external_message(Ref<ExtMessage> ext_msg, int priority) {
+td::Status Collator::register_external_message(Ref<ExtMessage> ext_msg, int priority,
+                                               td::optional<ton::StdSmcAddress>* validated_dest) {
+  if (validated_dest) {
+    *validated_dest = {};
+  }
+  const auto* checked_ext_msg = dynamic_cast<const ExtMessageQ*>(ext_msg.get());
+  if (checked_ext_msg && checked_ext_msg->structurally_validated()) {
+    if (registered_ext_msgs_.contains(checked_ext_msg->hash())) {
+      return td::Status::Error("external message has been registered before");
+    }
+    if (!ton::shard_contains(shard_, checked_ext_msg->shard())) {
+      return td::Status::Error("inbound external message has destination address not in this shard");
+    }
+    if (validated_dest && checked_ext_msg->wc() == workchain()) {
+      *validated_dest = checked_ext_msg->addr();
+    }
+    if (verbosity > 2) {
+      FLOG(INFO) {
+        sb << "registered external message: ";
+        block::gen::t_Message_Any.print_ref(sb, checked_ext_msg->root_cell());
+      };
+    }
+    registered_ext_msgs_.insert(checked_ext_msg->hash());
+    return td::Status::OK();
+  }
   Ref<vm::Cell> ext_msg_cell = ext_msg->root_cell();
   if (ext_msg_cell.is_null()) {
     return td::Status::Error("external message cell is null");
