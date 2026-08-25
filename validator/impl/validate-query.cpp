@@ -16,7 +16,9 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <cmath>
 #include <ctime>
+#include <exception>
 
 #include "adnl/utils.hpp"
 #include "block/block-auto.h"
@@ -26,6 +28,7 @@
 #include "block/output-queue-merger.h"
 #include "block/validator-set.h"
 #include "common/errorlog.h"
+#include "td/utils/port/thread.h"
 #include "ton/ton-io.hpp"
 #include "ton/ton-tl.hpp"
 #include "vm/boc.h"
@@ -480,6 +483,58 @@ bool ValidateQuery::unpack_block_candidate() {
     return reject_query(PSTRING() << "block candidate has invalid file hash: declared " << id_.file_hash.to_hex()
                                   << ", actual " << fhash.to_hex());
   }
+
+  auto& scheduler_context = td::actor::SchedulerContext::get();
+  auto* scheduler_group = scheduler_context.scheduler_group();
+  auto scheduler_id = scheduler_context.get_scheduler_id();
+  const bool has_eight_thread_scheduler = scheduler_group != nullptr && scheduler_id.is_valid() &&
+                                          scheduler_id.value() < scheduler_group->schedulers.size() &&
+                                          scheduler_group->schedulers[scheduler_id.value()].cpu_threads_count >= 8;
+  static constexpr std::size_t kParallelCollatedDecodeMinBytes = 64 << 10;
+  const bool use_parallel_collated_decode = parallel_accounts_validation_ && has_eight_thread_scheduler &&
+                                            block_candidate.collated_data.size() >= kParallelCollatedDecodeMinBytes;
+
+  td::Result<std::vector<Ref<vm::Cell>>> parallel_collated_roots;
+  std::exception_ptr parallel_collated_exception;
+  double parallel_collated_cpu_time = 0.0;
+  td::thread parallel_collated_decoder;
+  bool parallel_collated_decoder_joined = false;
+  auto join_parallel_collated_decoder = [&](bool propagate_exception) {
+    if (parallel_collated_decoder_joined || !use_parallel_collated_decode) {
+      return;
+    }
+    parallel_collated_decoder.join();
+    parallel_collated_decoder_joined = true;
+    if (std::isfinite(parallel_collated_cpu_time)) {
+      stats_.work_time.unpack_block_candidate.cpu += parallel_collated_cpu_time;
+      stats_.work_time.total.cpu += parallel_collated_cpu_time;
+    }
+    if (propagate_exception && parallel_collated_exception) {
+      std::rethrow_exception(parallel_collated_exception);
+    }
+  };
+  SCOPE_EXIT {
+    // The worker owns its input clone, while its result and exception live in
+    // this frame. Join before either can be destroyed. On a block-side error,
+    // ignore a sibling decode exception so the legacy block-first error order
+    // is preserved; the normal collated-data path rethrows it below.
+    join_parallel_collated_decoder(false);
+  };
+  if (use_parallel_collated_decode) {
+    auto collated_data = block_candidate.collated_data.clone();
+    parallel_collated_decoder = td::thread([collated_data = std::move(collated_data), &parallel_collated_roots,
+                                            &parallel_collated_exception, &parallel_collated_cpu_time]() mutable {
+      td::RealCpuTimer timer;
+      try {
+        parallel_collated_roots = vm::std_boc_deserialize_multi(collated_data);
+      } catch (...) {
+        parallel_collated_exception = std::current_exception();
+      }
+      parallel_collated_cpu_time = timer.elapsed_cpu();
+    });
+    parallel_collated_decoder.set_name("collated-boc");
+  }
+
   auto res1 = boc1.deserialize(block_candidate.data);
   if (res1.is_error()) {
     return reject_query("cannot deserialize block", res1.move_as_error());
@@ -513,7 +568,18 @@ bool ValidateQuery::unpack_block_candidate() {
   }
   // ...
   // 8. deserialize collated data
-  auto res2 = vm::std_boc_deserialize_multi(block_candidate.collated_data);
+  if (!use_parallel_collated_decode) {
+    auto res2 = vm::std_boc_deserialize_multi(block_candidate.collated_data);
+    if (res2.is_error()) {
+      return reject_query("cannot deserialize collated data", res2.move_as_error());
+    }
+    collated_roots_ = res2.move_as_ok();
+    // 9. extract/classify collated data
+    return extract_collated_data();
+  }
+
+  join_parallel_collated_decoder(true);
+  auto& res2 = parallel_collated_roots;
   if (res2.is_error()) {
     return reject_query("cannot deserialize collated data", res2.move_as_error());
   }
