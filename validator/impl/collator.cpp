@@ -6526,7 +6526,7 @@ void Collator::return_block_candidate() {
   finalize_stats();
   stats_.status = td::Status::OK();
   td::actor::send_closure(manager, &ValidatorManager::log_collate_query_stats, std::move(stats_));
-  main_promise.set_value(block_candidate->clone());
+  main_promise.set_value(std::move(*block_candidate));
   busy_ = false;
   stop();
 }
