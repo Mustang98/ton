@@ -60,7 +60,6 @@
 #include "td/utils/tests.h"
 #include "td/utils/tl_helpers.h"
 #include "td/utils/tl_parsers.h"
-#include "validator/impl/account-block-snapshot.h"
 #include "vm/boc.h"
 #include "vm/cells.h"
 #include "vm/cells/CellString.h"
@@ -1278,108 +1277,6 @@ TEST(TonDb, BocDirectRefsPreserveDuplicateDagAndAllModes) {
     auto multi = serialize_boc(roots, mode);
     ASSERT_EQ(multi, serialize_boc(deserialize_boc_multiple(multi), mode));
   }
-}
-
-TEST(TonDb, AccountBlockSnapshotAtomicOrderAndExactRoots) {
-  auto make_cell = [](unsigned value) {
-    vm::CellBuilder builder;
-    builder.store_long(value, 32);
-    return builder.finalize_novm();
-  };
-  auto make_address = [](unsigned char suffix) {
-    ton::StdSmcAddress address;
-    address.set_zero();
-    address.as_array().back() = suffix;
-    return address;
-  };
-
-  auto wrapped_root = make_cell(0x10203040);
-  auto same_hash_wrapped_root = make_cell(0x10203040);
-  auto inner_root = make_cell(0x50607080);
-  auto same_hash_inner_root = make_cell(0x50607080);
-  ASSERT_TRUE(wrapped_root.get() != same_hash_wrapped_root.get());
-  ASSERT_TRUE(wrapped_root->get_hash() == same_hash_wrapped_root->get_hash());
-  ASSERT_TRUE(wrapped_root->load_cell().move_as_ok().data_cell.get() !=
-              same_hash_wrapped_root->load_cell().move_as_ok().data_cell.get());
-  ASSERT_TRUE(inner_root.get() != same_hash_inner_root.get());
-  ASSERT_TRUE(inner_root->get_hash() == same_hash_inner_root->get_hash());
-
-  auto first_data = make_cell(0xa0b0c0d0);
-  auto second_data = make_cell(0xa0b0c0d0);
-  ASSERT_TRUE(first_data.get() != second_data.get());
-  ASSERT_TRUE(first_data->get_hash() == second_data->get_hash());
-  auto first_usage_tree = std::make_shared<vm::CellUsageTree>();
-  auto second_usage_tree = std::make_shared<vm::CellUsageTree>();
-  auto first_value = vm::load_cell_slice_ref(vm::UsageCell::create(first_data, first_usage_tree->root_ptr()));
-  auto second_value = vm::load_cell_slice_ref(vm::UsageCell::create(second_data, second_usage_tree->root_ptr()));
-  auto first_address = make_address(1);
-  auto missing_address = make_address(2);
-  auto second_address = make_address(3);
-
-  ton::validator::detail::AccountBlockSnapshotBuilder empty{wrapped_root, td::Ref<vm::Cell>{}};
-  auto empty_snapshot = std::move(empty).finish(true);
-  ASSERT_TRUE(empty_snapshot != nullptr);
-  ASSERT_TRUE(empty_snapshot->entries.empty());
-  ASSERT_TRUE(
-      ton::validator::detail::account_block_snapshot_matches(*empty_snapshot, wrapped_root, td::Ref<vm::Cell>{}));
-
-  ton::validator::detail::AccountBlockSnapshotBuilder incomplete{wrapped_root, inner_root};
-  ASSERT_TRUE(incomplete.append(first_value, first_address.cbits(), 256));
-  ASSERT_TRUE(std::move(incomplete).finish(false) == nullptr);
-
-  ton::validator::detail::AccountBlockSnapshotBuilder out_of_order{wrapped_root, inner_root};
-  ASSERT_TRUE(out_of_order.append(second_value, second_address.cbits(), 256));
-  ASSERT_TRUE(!out_of_order.append(first_value, first_address.cbits(), 256));
-  ASSERT_TRUE(std::move(out_of_order).finish(true) == nullptr);
-
-  ton::validator::detail::AccountBlockSnapshotBuilder null_value{wrapped_root, inner_root};
-  ASSERT_TRUE(!null_value.append({}, first_address.cbits(), 256));
-  ASSERT_TRUE(std::move(null_value).finish(true) == nullptr);
-
-  ton::validator::detail::AccountBlockSnapshotBuilder wrong_key_size{wrapped_root, inner_root};
-  ASSERT_TRUE(!wrong_key_size.append(first_value, first_address.cbits(), 255));
-  ASSERT_TRUE(std::move(wrong_key_size).finish(true) == nullptr);
-
-  ton::validator::detail::AccountBlockSnapshotBuilder valid{wrapped_root, inner_root};
-  ASSERT_TRUE(valid.append(first_value, first_address.cbits(), 256));
-  ASSERT_TRUE(valid.append(second_value, second_address.cbits(), 256));
-  auto snapshot = std::move(valid).finish(true);
-  ASSERT_TRUE(snapshot != nullptr);
-  ASSERT_EQ(snapshot->entries.size(), 2u);
-  ASSERT_TRUE(ton::validator::detail::account_block_snapshot_matches(*snapshot, wrapped_root, inner_root));
-  // Hash equality cannot satisfy either occurrence gate.
-  ASSERT_TRUE(!ton::validator::detail::account_block_snapshot_matches(*snapshot, same_hash_wrapped_root, inner_root));
-  ASSERT_TRUE(!ton::validator::detail::account_block_snapshot_matches(*snapshot, wrapped_root, same_hash_inner_root));
-
-  std::size_t position = 0;
-  ASSERT_TRUE(ton::validator::detail::take_ordered_account_block(*snapshot, position, make_address(0)).is_null());
-  ASSERT_EQ(position, 0u);
-  auto first_taken = ton::validator::detail::take_ordered_account_block(*snapshot, position, first_address);
-  ASSERT_TRUE(first_taken.not_null());
-  ASSERT_EQ(position, 1u);
-  ASSERT_TRUE(ton::validator::detail::take_ordered_account_block(*snapshot, position, missing_address).is_null());
-  ASSERT_EQ(position, 1u);
-  auto second_taken = ton::validator::detail::take_ordered_account_block(*snapshot, position, second_address);
-  ASSERT_TRUE(second_taken.not_null());
-  ASSERT_EQ(position, 2u);
-
-  auto *first_data_ptr = first_data.get();
-  auto *second_data_ptr = second_data.get();
-  snapshot.reset();
-  first_value.clear();
-  second_value.clear();
-  first_data.clear();
-  second_data.clear();
-  auto actor_owned_value = std::move(first_taken);
-  ASSERT_TRUE(first_taken.is_null());
-  auto first_base = actor_owned_value->get_base_cell();
-  ASSERT_TRUE(first_base->load_cell().move_as_ok().data_cell.get() == first_data_ptr);
-  ASSERT_TRUE(first_base->get_tree_node().is_from_tree(first_usage_tree.get()));
-  ASSERT_TRUE(!first_base->get_tree_node().is_from_tree(second_usage_tree.get()));
-  auto second_base = second_taken->get_base_cell();
-  ASSERT_TRUE(second_base->load_cell().move_as_ok().data_cell.get() == second_data_ptr);
-  ASSERT_TRUE(second_base->get_tree_node().is_from_tree(second_usage_tree.get()));
-  ASSERT_TRUE(!second_base->get_tree_node().is_from_tree(first_usage_tree.get()));
 }
 
 TEST(Cell, MerkleProof) {

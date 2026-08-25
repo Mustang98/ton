@@ -2820,8 +2820,6 @@ bool ValidateQuery::add_trivial_neighbor() {
 bool ValidateQuery::unpack_block_data() {
   auto tlb_cache = tlb::TLB::ValidateCache::create_for_type(&block::tlb::t_Ref_Transaction.ref_type);
   tlb::TLB::ValidateCache::Guard guard(&tlb_cache);
-  account_blocks_wrapped_root_.clear();
-  account_block_snapshot_.reset();
   LOG(DEBUG) << "unpacking block structures";
   block::gen::Block::Record blk;
   block::gen::BlockExtra::Record extra;
@@ -2830,7 +2828,6 @@ bool ValidateQuery::unpack_block_data() {
   }
   auto inmsg_cs = vm::load_cell_slice_ref(std::move(extra.in_msg_descr));
   auto outmsg_cs = vm::load_cell_slice_ref(std::move(extra.out_msg_descr));
-  auto account_blocks_root = std::move(extra.account_blocks);
   // run some hand-written checks from block::tlb::
   // (automatic tests from block::gen:: have been already run for the entire block)
   t_InMsgDescr.aug.global_version = global_version_;
@@ -2841,14 +2838,13 @@ bool ValidateQuery::unpack_block_data() {
   if (!t_OutMsgDescr.validate_upto(10000000, *outmsg_cs)) {
     return reject_query("OutMsgDescr of the new block failed to pass handwritten validity tests");
   }
-  if (!block::tlb::t_ShardAccountBlocks.validate_ref(10000000, account_blocks_root)) {
+  if (!block::tlb::t_ShardAccountBlocks.validate_ref(10000000, extra.account_blocks)) {
     return reject_query("ShardAccountBlocks of the new block failed to pass handwritten validity tests");
   }
   in_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(inmsg_cs), 256, t_InMsgDescr.aug);
   out_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(outmsg_cs), 256, t_OutMsgDescr.aug);
-  account_blocks_wrapped_root_ = account_blocks_root;
   account_blocks_dict_ = std::make_unique<vm::AugmentedDictionary>(
-      vm::load_cell_slice_ref(std::move(account_blocks_root)), 256, block::tlb::aug_ShardAccountBlocks);
+      vm::load_cell_slice_ref(std::move(extra.account_blocks)), 256, block::tlb::aug_ShardAccountBlocks);
   LOG(DEBUG) << "validating InMsgDescr";
   if (!in_msg_dict_->validate_all()) {
     return reject_query("InMsgDescr dictionary is invalid");
@@ -3049,38 +3045,6 @@ bool ValidateQuery::compute_minted_amount(block::CurrencyCollection& to_mint) {
   return true;
 }
 
-void ValidateQuery::prepare_account_block_snapshot() {
-  account_block_snapshot_.reset();
-  if (!account_blocks_dict_ || account_blocks_wrapped_root_.is_null()) {
-    return;
-  }
-
-  // Publish only after a complete traversal. A failed probe is an
-  // optimization miss; the consumer will run the untouched legacy path.
-  detail::AccountBlockSnapshotBuilder builder{account_blocks_wrapped_root_, account_blocks_dict_->get_root_cell()};
-  bool complete = false;
-  try {
-    complete = account_blocks_dict_->check_for_each_value_stack(
-        [&builder](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
-          return builder.append(std::move(value), key, key_len);
-        });
-  } catch (vm::VmError&) {
-    return;
-  } catch (vm::VmVirtError&) {
-    return;
-  }
-  account_block_snapshot_ = std::move(builder).finish(complete);
-}
-
-const detail::AccountBlockSnapshot* ValidateQuery::select_account_block_snapshot() const {
-  if (account_block_snapshot_ && account_blocks_dict_ &&
-      detail::account_block_snapshot_matches(*account_block_snapshot_, account_blocks_wrapped_root_,
-                                             account_blocks_dict_->get_root_cell())) {
-    return account_block_snapshot_.get();
-  }
-  return nullptr;
-}
-
 /**
  * Pre-validates the update of an account in a query.
  *
@@ -3091,18 +3055,11 @@ const detail::AccountBlockSnapshot* ValidateQuery::select_account_block_snapshot
  * @returns True if the accounts passes preliminary checks, false otherwise.
  */
 bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::CellSlice> old_value,
-                                                Ref<vm::CellSlice> new_value,
-                                                const detail::AccountBlockSnapshot* account_blocks,
-                                                std::size_t& account_block_position) {
+                                                Ref<vm::CellSlice> new_value) {
   LOG(DEBUG) << "checking update of account " << acc_id.to_hex(256);
   old_value = ps_.account_dict_->extract_value(std::move(old_value));
   new_value = ns_.account_dict_->extract_value(std::move(new_value));
-  Ref<vm::CellSlice> acc_blk_root;
-  if (account_blocks != nullptr) {
-    acc_blk_root = detail::take_ordered_account_block(*account_blocks, account_block_position, StdSmcAddress{acc_id});
-  } else {
-    acc_blk_root = account_blocks_dict_->lookup(acc_id, 256);
-  }
+  auto acc_blk_root = account_blocks_dict_->lookup(acc_id, 256);
   if (acc_blk_root.is_null()) {
     if (verbosity >= 3 * 0) {
       FLOG(INFO) {
@@ -3165,19 +3122,15 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
  */
 bool ValidateQuery::precheck_account_updates() {
   LOG(INFO) << "pre-checking all Account updates between the old and the new state";
-  prepare_account_block_snapshot();
-  const auto* account_blocks = select_account_block_snapshot();
-  std::size_t account_block_position = 0;
   try {
     REJECT_UNLESS(ps_.account_dict_);
     REJECT_UNLESS(ns_.account_dict_);
     if (!ps_.account_dict_->scan_diff_stack(
             *ns_.account_dict_,
-            [this, account_blocks, &account_block_position](
-                td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra, Ref<vm::CellSlice> new_val_extra) {
+            [this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra,
+                   Ref<vm::CellSlice> new_val_extra) {
               REJECT_UNLESS(key_len == 256);
-              return precheck_one_account_update(key, std::move(old_val_extra), std::move(new_val_extra),
-                                                 account_blocks, account_block_position);
+              return precheck_one_account_update(key, std::move(old_val_extra), std::move(new_val_extra));
             },
             2 /* check augmentation of changed nodes in the new dict */)) {
       return reject_query("invalid ShardAccounts dictionary in the new state");
@@ -3359,33 +3312,13 @@ bool ValidateQuery::precheck_account_transactions() {
   LOG(INFO) << "pre-checking all AccountBlocks, and all transactions of all accounts";
   try {
     REJECT_UNLESS(account_blocks_dict_);
-    const auto* account_blocks = select_account_block_snapshot();
-    auto precheck_account_block = [this](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
-      REJECT_UNLESS(key_len == 256);
-      return precheck_one_account_block(key, std::move(value)) ||
-             reject_query("invalid AccountBlock for account "s + key.to_hex(256) + " in the new block "s +
-                          id_.to_str());
-    };
-    bool valid_account_blocks;
-    if (account_blocks != nullptr) {
-      valid_account_blocks = true;
-      for (const auto& entry : account_blocks->entries) {
-        // Parse an independent COW cursor while retaining the exact cell and
-        // attached access context captured from this root occurrence.
-        auto value = entry.value;
-        if (!precheck_account_block(std::move(value), entry.account.cbits(), 256)) {
-          valid_account_blocks = false;
-          break;
-        }
-      }
-    } else {
-      // Preserve the legacy augmentation-validating traversal on every miss.
-      valid_account_blocks = account_blocks_dict_->validate_check_extra(
-          [&precheck_account_block](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
-            return precheck_account_block(std::move(value), key, key_len);
-          });
-    }
-    if (!valid_account_blocks) {
+    if (!account_blocks_dict_->validate_check_extra(
+            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+              REJECT_UNLESS(key_len == 256);
+              return precheck_one_account_block(key, std::move(value)) ||
+                     reject_query("invalid AccountBlock for account "s + key.to_hex(256) + " in the new block "s +
+                                  id_.to_str());
+            })) {
       return reject_query("invalid ShardAccountBlock dictionary in the new block "s + id_.to_str());
     }
   } catch (vm::VmError& err) {
@@ -6448,43 +6381,27 @@ bool ValidateQuery::check_account_failures() {
 bool ValidateQuery::check_transactions() {
   LOG(INFO) << "checking all transactions";
   size_t accounts_count = 0;
-  const auto* account_blocks = select_account_block_snapshot();
-  auto check_account_transactions = [this, &accounts_count](Ref<vm::CellSlice> value, td::ConstBitPtr key,
-                                                            int key_len) {
-    REJECT_UNLESS(key_len == 256);
-    accounts_count++;
-    StdSmcAddress address = key;
-    if (parallel_accounts_validation_) {
-      pending++;
-      LOG(INFO) << "starting actor #" << accounts_count << " for account " << address.to_hex();
-      // The actor owns this Ref copy; it never retains a pointer into the
-      // snapshot vector.
-      td::actor::create_actor<CheckAccountTxs>(PSTRING() << get_name() << ":#" << accounts_count, *this, actor_id(this),
-                                               address, std::move(value),
-                                               load_check_account_transactions_context(address))
-          .release();
-      return true;
-    } else {
-      CheckAccountTxs checker(*this, actor_id(this), address, std::move(value),
-                              load_check_account_transactions_context(address));
-      bool result = checker.try_check();
-      save_account_transactions_context(address, checker.extract_context());
-      return result;
-    }
-  };
-  bool result;
-  if (account_blocks != nullptr) {
-    result = true;
-    for (const auto& entry : account_blocks->entries) {
-      auto value = entry.value;
-      if (!check_account_transactions(std::move(value), entry.account.cbits(), 256)) {
-        result = false;
-        break;
-      }
-    }
-  } else {
-    result = account_blocks_dict_->check_for_each_value_stack(check_account_transactions);
-  }
+  bool result = account_blocks_dict_->check_for_each_value_stack(
+      [this, &accounts_count](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
+        REJECT_UNLESS(key_len == 256);
+        accounts_count++;
+        StdSmcAddress address = key;
+        if (parallel_accounts_validation_) {
+          pending++;
+          LOG(INFO) << "starting actor #" << accounts_count << " for account " << address.to_hex();
+          td::actor::create_actor<CheckAccountTxs>(PSTRING() << get_name() << ":#" << accounts_count, *this,
+                                                   actor_id(this), address, std::move(value),
+                                                   load_check_account_transactions_context(address))
+              .release();
+          return true;
+        } else {
+          CheckAccountTxs checker(*this, actor_id(this), address, std::move(value),
+                                  load_check_account_transactions_context(address));
+          bool result = checker.try_check();
+          save_account_transactions_context(address, checker.extract_context());
+          return result;
+        }
+      });
   if (accounts_count == 0 && parallel_accounts_validation_) {
     parallel_accounts_validation_ = false;
   }
