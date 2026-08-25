@@ -1765,12 +1765,12 @@ bool Transaction::run_precompiled_contract(const ComputePhaseConfig& cfg, precom
   ComputePhase& cp = *compute_phase;
   FAIL_UNLESS(cp.precompiled_gas_usage);
   td::uint64 gas_usage = cp.precompiled_gas_usage.value();
-  td::Timer timer;
+  td::RealCpuTimer timer;
   auto result =
       impl.run(my_addr, now, start_lt, balance, new_data, *in_msg_body, in_msg, msg_balance_remaining, in_msg_extern,
                compute_vm_libraries(cfg), cfg.global_version, cfg.max_vm_data_depth, new_code,
                cfg.unpacked_config_tuple, due_payment.not_null() ? due_payment : td::zero_refint(), gas_usage);
-  time_tvm = td::RealCpuTimer::Time::real_only(timer.elapsed());
+  time_tvm = timer.elapsed_both();
   cp.vm_init_state_hash = td::Bits256::zero();
   cp.exit_code = result.exit_code;
   cp.out_of_gas = false;
@@ -1781,7 +1781,7 @@ bool Transaction::run_precompiled_contract(const ComputePhaseConfig& cfg, precom
   cp.success = (cp.accepted && result.committed);
   LOG(INFO) << "Running precompiled smart contract " << impl.get_name() << ": exit_code=" << result.exit_code
             << " accepted=" << result.accepted << " success=" << cp.success << " gas_used=" << gas_usage
-            << " time=" << time_tvm.real << "s cpu_time=na";
+            << " time=" << time_tvm.real << "s cpu_time=" << time_tvm.cpu;
   if (cp.accepted & use_msg_state) {
     was_activated = true;
     acc_status = Account::acc_active;
@@ -2004,9 +2004,9 @@ bool Transaction::prepare_compute_phase(const ComputePhaseConfig& cfg) {
 
   LOG(DEBUG) << "starting VM";
   cp.vm_init_state_hash = vm.get_state_hash();
-  td::Timer timer;
+  td::RealCpuTimer timer;
   cp.exit_code = ~vm.run();
-  time_tvm = td::RealCpuTimer::Time::real_only(timer.elapsed());
+  time_tvm = timer.elapsed_both();
   LOG(DEBUG) << "VM terminated with exit code " << cp.exit_code;
   cp.out_of_gas = (cp.exit_code == ~(int)vm::Excno::out_of_gas);
   cp.vm_final_state_hash = vm.get_final_state_hash(cp.exit_code);
@@ -2032,7 +2032,7 @@ bool Transaction::prepare_compute_phase(const ComputePhaseConfig& cfg) {
   LOG(INFO) << "steps: " << vm.get_steps_count() << " gas: used=" << gas.gas_consumed() << ", max=" << gas.gas_max
             << ", limit=" << gas.gas_limit << ", credit=" << gas.gas_credit;
   LOG(INFO) << "out_of_gas=" << cp.out_of_gas << ", accepted=" << cp.accepted << ", success=" << cp.success
-            << ", time=" << time_tvm.real << "s, cpu_time=na";
+            << ", time=" << time_tvm.real << "s, cpu_time=" << time_tvm.cpu;
   if (logger != nullptr) {
     cp.vm_log = logger->get_log();
   }
@@ -3321,12 +3321,11 @@ td::Status Transaction::check_state_limits(const SizeLimitsConfig& size_limits, 
   }
   {
     TD_PERF_COUNTER(transaction_storage_stat_a);
-    td::Timer timer;
+    td::RealCpuTimer timer;
     SCOPE_EXIT {
-      const double elapsed = timer.elapsed();
-      LOG_IF(INFO, elapsed > 0.1) << "Compute used storage (1) took " << elapsed << "s";
+      LOG_IF(INFO, timer.elapsed_real() > 0.1) << "Compute used storage (1) took " << timer.elapsed_real() << "s";
       if (is_account_stat) {
-        time_storage_stat += td::RealCpuTimer::Time::real_only(elapsed);
+        time_storage_stat += timer.elapsed_both();
       }
     };
     if (is_account_stat && compute_phase) {
@@ -3674,11 +3673,11 @@ bool Transaction::compute_state(const SerializeConfig& cfg) {
     auto roots = new_storage_for_stat->prefetch_all_refs();
     storage_stat_updates.insert(storage_stat_updates.end(), roots.begin(), roots.end());
     {
-      td::Timer timer;
+      td::RealCpuTimer timer;
       StorageStatCalculationContext context{true};
       StorageStatCalculationContext::Guard guard{&context};
       td::Status S = stats.replace_roots(roots);
-      time_storage_stat += td::RealCpuTimer::Time::real_only(timer.elapsed());
+      time_storage_stat += timer.elapsed_both();
       if (S.is_error()) {
         LOG(ERROR) << "Cannot recompute storage stats for account " << account.addr.to_hex() << ": "
                    << S.move_as_error();

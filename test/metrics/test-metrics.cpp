@@ -1022,27 +1022,6 @@ TEST(Metrics, BlockProcessingMetricsRenderEveryPhase) {
   }
 }
 
-TEST(Metrics, BlockProcessingMetricsOmitsUnavailablePhaseCpu) {
-  BlockProcessingMetrics metrics;
-  metrics.add_collation_phase(BlockChain::master, BlockResult::ok, CollationPhase::trx_tvm,
-                              td::RealCpuTimer::Time::real_only(1.25));
-  metrics.add_validation_phase(BlockChain::shard, BlockResult::error, ValidationPhase::check_transactions_other,
-                               td::RealCpuTimer::Time::real_only(2.5));
-
-  auto out = render(metrics, "");
-  ASSERT_TRUE(
-      has_line(out,
-               "block_processing_seconds_total{operation=\"collate\",chain=\"master\",result=\"ok\",phase=\"trx_tvm\","
-               "clock=\"real\"} 1.250000"));
-  ASSERT_TRUE(has_line(out,
-                       "block_processing_seconds_total{operation=\"validate\",chain=\"shard\",result=\"error\","
-                       "phase=\"check_transactions_other\",clock=\"real\"} 2.500000"));
-  ASSERT_EQ(std::string::npos,
-            out.find("operation=\"collate\",chain=\"master\",result=\"ok\",phase=\"trx_tvm\",clock=\"cpu\""));
-  ASSERT_EQ(std::string::npos, out.find("operation=\"validate\",chain=\"shard\",result=\"error\","
-                                        "phase=\"check_transactions_other\",clock=\"cpu\""));
-}
-
 TEST(Metrics, ExtMessagePoolSnapshotRendersEachFamily) {
   ExtMessagePoolSnapshot snapshot{
       .pending_ext_messages = 3,

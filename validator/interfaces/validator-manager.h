@@ -153,15 +153,13 @@ struct CollationStats {
     td::RealCpuTimer::Time total;
     td::RealCpuTimer::Time preinit;
     td::RealCpuTimer::Time queue_cleanup;
-    // These hot, nested intervals deliberately expose real time only. Their
-    // NaN CPU component is serialized as "na"; total.cpu stays measured.
-    td::RealCpuTimer::Time prelim_storage_stat = td::RealCpuTimer::Time::real_only();
-    td::RealCpuTimer::Time trx_tvm = td::RealCpuTimer::Time::real_only();
-    td::RealCpuTimer::Time trx_storage_stat = td::RealCpuTimer::Time::real_only();
-    td::RealCpuTimer::Time trx_other = td::RealCpuTimer::Time::real_only();
-    td::RealCpuTimer::Time final_storage_stat = td::RealCpuTimer::Time::real_only();
+    td::RealCpuTimer::Time prelim_storage_stat;
+    td::RealCpuTimer::Time trx_tvm;
+    td::RealCpuTimer::Time trx_storage_stat;
+    td::RealCpuTimer::Time trx_other;
+    td::RealCpuTimer::Time final_storage_stat;
     td::RealCpuTimer::Time enqueue_new_messages;
-    td::RealCpuTimer::Time combine_account_transactions = td::RealCpuTimer::Time::real_only();
+    td::RealCpuTimer::Time combine_account_transactions;
     td::RealCpuTimer::Time create_shard_state;
     td::RealCpuTimer::Time create_block;
     td::RealCpuTimer::Time create_collated_data;
@@ -172,23 +170,22 @@ struct CollationStats {
     td::RealCpuTimer::Time process_new_msgs;
 
     std::string to_str(bool is_cpu) const {
-      return PSTRING() << "total=" << total.formatted(is_cpu) << " preinit=" << preinit.formatted(is_cpu)
-                       << " queue_cleanup=" << queue_cleanup.formatted(is_cpu)
-                       << " prelim_storage_stat=" << prelim_storage_stat.formatted(is_cpu)
-                       << " trx_tvm=" << trx_tvm.formatted(is_cpu)
-                       << " trx_storage_stat=" << trx_storage_stat.formatted(is_cpu)
-                       << " trx_other=" << trx_other.formatted(is_cpu)
-                       << " final_storage_stat=" << final_storage_stat.formatted(is_cpu)
-                       << " enqueue_new_messages=" << enqueue_new_messages.formatted(is_cpu)
-                       << " combine_account_transactions=" << combine_account_transactions.formatted(is_cpu)
-                       << " create_shard_state=" << create_shard_state.formatted(is_cpu)
-                       << " create_block=" << create_block.formatted(is_cpu)
-                       << " create_collated_data=" << create_collated_data.formatted(is_cpu)
-                       << " create_block_candidate=" << create_block_candidate.formatted(is_cpu)
-                       << " dispatch_queue=" << dispatch_queue.formatted(is_cpu)
-                       << " import_internals=" << import_internals.formatted(is_cpu)
-                       << " import_externals=" << import_externals.formatted(is_cpu)
-                       << " process_new_msgs=" << process_new_msgs.formatted(is_cpu);
+      return PSTRING() << "total=" << total.get(is_cpu) << " preinit=" << preinit.get(is_cpu)
+                       << " queue_cleanup=" << queue_cleanup.get(is_cpu)
+                       << " prelim_storage_stat=" << prelim_storage_stat.get(is_cpu)
+                       << " trx_tvm=" << trx_tvm.get(is_cpu) << " trx_storage_stat=" << trx_storage_stat.get(is_cpu)
+                       << " trx_other=" << trx_other.get(is_cpu)
+                       << " final_storage_stat=" << final_storage_stat.get(is_cpu)
+                       << " enqueue_new_messages=" << enqueue_new_messages.get(is_cpu)
+                       << " combine_account_transactions=" << combine_account_transactions.get(is_cpu)
+                       << " create_shard_state=" << create_shard_state.get(is_cpu)
+                       << " create_block=" << create_block.get(is_cpu)
+                       << " create_collated_data=" << create_collated_data.get(is_cpu)
+                       << " create_block_candidate=" << create_block_candidate.get(is_cpu)
+                       << " dispatch_queue=" << dispatch_queue.get(is_cpu)
+                       << " import_internals=" << import_internals.get(is_cpu)
+                       << " import_externals=" << import_externals.get(is_cpu)
+                       << " process_new_msgs=" << process_new_msgs.get(is_cpu);
     }
   };
   WorkTimeStats work_time;
@@ -243,12 +240,10 @@ struct ValidationStats {
     td::RealCpuTimer::Time total;
     td::RealCpuTimer::Time unpack_block_candidate;
     td::RealCpuTimer::Time process_mc_state;
-    // Per-account/transaction attribution is wall-only. Coarse stages and the
-    // active-query total retain exact thread CPU measurements.
-    td::RealCpuTimer::Time trx_tvm = td::RealCpuTimer::Time::real_only();
-    td::RealCpuTimer::Time trx_storage_stat = td::RealCpuTimer::Time::real_only();
-    td::RealCpuTimer::Time trx_other = td::RealCpuTimer::Time::real_only();
-    td::RealCpuTimer::Time check_transactions_other = td::RealCpuTimer::Time::real_only();
+    td::RealCpuTimer::Time trx_tvm;
+    td::RealCpuTimer::Time trx_storage_stat;
+    td::RealCpuTimer::Time trx_other;
+    td::RealCpuTimer::Time check_transactions_other;
     td::RealCpuTimer::Time unpack_state;
     td::RealCpuTimer::Time stage0_state_apply;
     td::RealCpuTimer::Time validate_block_tlb;
@@ -265,27 +260,25 @@ struct ValidationStats {
     td::RealCpuTimer::Time check_new_state;
 
     std::string to_str(bool is_cpu) const {
-      return PSTRING() << "total=" << total.formatted(is_cpu)
-                       << " unpack_block_candidate=" << unpack_block_candidate.formatted(is_cpu)
-                       << " process_mc_state=" << process_mc_state.formatted(is_cpu)
-                       << " trx_tvm=" << trx_tvm.formatted(is_cpu)
-                       << " trx_storage_stat=" << trx_storage_stat.formatted(is_cpu)
-                       << " trx_other=" << trx_other.formatted(is_cpu)
-                       << " check_transactions_other=" << check_transactions_other.formatted(is_cpu)
-                       << " unpack_state=" << unpack_state.formatted(is_cpu)
-                       << " stage0_state_apply=" << stage0_state_apply.formatted(is_cpu)
-                       << " validate_block_tlb=" << validate_block_tlb.formatted(is_cpu)
-                       << " unpack_block_data=" << unpack_block_data.formatted(is_cpu)
-                       << " precheck_account_updates=" << precheck_account_updates.formatted(is_cpu)
-                       << " precheck_account_transactions=" << precheck_account_transactions.formatted(is_cpu)
-                       << " precheck_msg_queue=" << precheck_msg_queue.formatted(is_cpu)
-                       << " unpack_dispatch_queue=" << unpack_dispatch_queue.formatted(is_cpu)
-                       << " check_in_msg_descr=" << check_in_msg_descr.formatted(is_cpu)
-                       << " check_out_msg_descr=" << check_out_msg_descr.formatted(is_cpu)
-                       << " check_dispatch_queue=" << check_dispatch_queue.formatted(is_cpu)
-                       << " check_processed_upto=" << check_processed_upto.formatted(is_cpu)
-                       << " check_in_queue=" << check_in_queue.formatted(is_cpu)
-                       << " check_new_state=" << check_new_state.formatted(is_cpu);
+      return PSTRING() << "total=" << total.get(is_cpu)
+                       << " unpack_block_candidate=" << unpack_block_candidate.get(is_cpu)
+                       << " process_mc_state=" << process_mc_state.get(is_cpu) << " trx_tvm=" << trx_tvm.get(is_cpu)
+                       << " trx_storage_stat=" << trx_storage_stat.get(is_cpu) << " trx_other=" << trx_other.get(is_cpu)
+                       << " check_transactions_other=" << check_transactions_other.get(is_cpu)
+                       << " unpack_state=" << unpack_state.get(is_cpu)
+                       << " stage0_state_apply=" << stage0_state_apply.get(is_cpu)
+                       << " validate_block_tlb=" << validate_block_tlb.get(is_cpu)
+                       << " unpack_block_data=" << unpack_block_data.get(is_cpu)
+                       << " precheck_account_updates=" << precheck_account_updates.get(is_cpu)
+                       << " precheck_account_transactions=" << precheck_account_transactions.get(is_cpu)
+                       << " precheck_msg_queue=" << precheck_msg_queue.get(is_cpu)
+                       << " unpack_dispatch_queue=" << unpack_dispatch_queue.get(is_cpu)
+                       << " check_in_msg_descr=" << check_in_msg_descr.get(is_cpu)
+                       << " check_out_msg_descr=" << check_out_msg_descr.get(is_cpu)
+                       << " check_dispatch_queue=" << check_dispatch_queue.get(is_cpu)
+                       << " check_processed_upto=" << check_processed_upto.get(is_cpu)
+                       << " check_in_queue=" << check_in_queue.get(is_cpu)
+                       << " check_new_state=" << check_new_state.get(is_cpu);
     }
   };
   WorkTimeStats work_time;

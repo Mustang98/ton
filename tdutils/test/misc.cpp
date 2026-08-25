@@ -35,7 +35,6 @@
 #include "td/utils/StringBuilder.h"
 #include "td/utils/ThreadSafeCounter.h"
 #include "td/utils/Time.h"
-#include "td/utils/Timer.h"
 #include "td/utils/as.h"
 #include "td/utils/base64.h"
 #include "td/utils/bits.h"
@@ -73,58 +72,6 @@ TEST(Misc, PerfCounterIgnoresClockRegression) {
   }
   CHECK(counter.count.sum() == 1);
   CHECK(counter.duration.sum() == 0);
-}
-
-TEST(Timer, WallOnlyCpuAvailability) {
-  using Time = RealCpuTimer::Time;
-
-  auto wall = Time::real_only(3.0);
-  ASSERT_EQ(wall.real, 3.0);
-  ASSERT_TRUE(std::isfinite(wall.real));
-  ASSERT_TRUE(wall.real >= 0.0);
-  ASSERT_TRUE(std::isnan(wall.cpu));
-  ASSERT_TRUE(!wall.is_cpu_available());
-  ASSERT_STREQ("na", PSLICE() << wall.formatted(true));
-
-  Time accumulated{.real = 1.0, .cpu = 2.0};
-  accumulated += wall;
-  ASSERT_EQ(accumulated.real, 4.0);
-  ASSERT_TRUE(std::isnan(accumulated.cpu));
-  ASSERT_TRUE(std::isnan((Time{.real = 5.0, .cpu = 6.0} - wall).cpu));
-  ASSERT_TRUE(std::isnan((wall * -1.0).cpu));
-  Time subtracted{.real = 5.0, .cpu = 6.0};
-  subtracted -= wall;
-  ASSERT_EQ(subtracted.real, 2.0);
-  ASSERT_TRUE(std::isnan(subtracted.cpu));
-
-  Time scoped;
-  {
-    ScopedWallTimer timer{scoped};
-    timer.pause();
-    const auto first_pause = scoped;
-    timer.pause();
-    ASSERT_EQ(scoped.real, first_pause.real);
-    ASSERT_TRUE(std::isnan(scoped.cpu));
-
-    timer.resume();
-    timer.resume();
-    timer.pause();
-    const auto second_pause = scoped;
-    timer.pause();
-    ASSERT_EQ(scoped.real, second_pause.real);
-    ASSERT_TRUE(std::isnan(scoped.cpu));
-  }
-  ASSERT_TRUE(std::isfinite(scoped.real));
-  ASSERT_TRUE(scoped.real >= 0.0);
-  ASSERT_TRUE(!scoped.is_cpu_available());
-
-  Time negative{.real = 3.0, .cpu = 4.0};
-  {
-    ScopedWallTimer timer{negative, -1.0};
-  }
-  ASSERT_TRUE(std::isfinite(negative.real));
-  ASSERT_TRUE(negative.real <= 3.0);
-  ASSERT_TRUE(std::isnan(negative.cpu));
 }
 
 #if TD_LINUX || TD_DARWIN

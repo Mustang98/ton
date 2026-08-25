@@ -18,9 +18,7 @@
 */
 #pragma once
 
-#include <cmath>
 #include <functional>
-#include <limits>
 
 #include "td/utils/Status.h"
 #include "td/utils/StringBuilder.h"
@@ -99,31 +97,9 @@ class RealCpuTimer {
     return cpu_.elapsed();
   }
   struct Time {
-    static_assert(std::numeric_limits<double>::has_quiet_NaN);
-
     double real = 0.0, cpu = 0.0;
-
-    static Time real_only(double real = 0.0) {
-      return {.real = real, .cpu = std::numeric_limits<double>::quiet_NaN()};
-    }
-    bool is_cpu_available() const {
-      return std::isfinite(cpu);
-    }
     double get(bool is_cpu) const {
       return is_cpu ? cpu : real;
-    }
-    struct Formatted {
-      const Time *time;
-      bool is_cpu;
-    };
-    Formatted formatted(bool is_cpu) const {
-      return {.time = this, .is_cpu = is_cpu};
-    }
-    friend StringBuilder &operator<<(StringBuilder &sb, Formatted value) {
-      if (value.is_cpu && !value.time->is_cpu_available()) {
-        return sb << "na";
-      }
-      return sb << value.time->get(value.is_cpu);
     }
     Time &operator+=(const Time &other) {
       real += other.real;
@@ -194,43 +170,6 @@ class ScopedRealCpuTimer {
   RealCpuTimer::Time *time_;
   double coef_;
   RealCpuTimer timer_;
-  bool paused_ = false;
-};
-
-// Accumulates exact monotonic wall time without reading the thread CPU clock.
-// The CPU component is deliberately set to NaN: zero would incorrectly claim
-// that a measured interval consumed no CPU.
-class ScopedWallTimer {
- public:
-  explicit ScopedWallTimer(RealCpuTimer::Time &time, double coef = 1.0) : time_(&time), coef_(coef) {
-  }
-  ScopedWallTimer(const ScopedWallTimer &) = delete;
-  ScopedWallTimer(ScopedWallTimer &&) = delete;
-  ~ScopedWallTimer() {
-    pause();
-  }
-  void pause() {
-    if (paused_) {
-      return;
-    }
-    paused_ = true;
-    *time_ += RealCpuTimer::Time::real_only(timer_.elapsed() * coef_);
-  }
-  void resume() {
-    if (!paused_) {
-      return;
-    }
-    paused_ = false;
-    timer_ = {};
-  }
-
-  ScopedWallTimer &operator=(const ScopedWallTimer &) = delete;
-  ScopedWallTimer &operator=(ScopedWallTimer &&other) = delete;
-
- private:
-  RealCpuTimer::Time *time_;
-  double coef_;
-  Timer timer_;
   bool paused_ = false;
 };
 
