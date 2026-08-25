@@ -6035,7 +6035,8 @@ bool ValidateQuery::CheckAccountTxs::check_one_transaction(block::Account& accou
   // similar to Collator::create_ordinary_transaction() and Collator::create_ticktock_transaction()
   // ....
   std::unique_ptr<block::transaction::Transaction> trs =
-      std::make_unique<block::transaction::Transaction>(account, trans_type, lt, vq_.now_, in_msg_root);
+      std::make_unique<block::transaction::Transaction>(account, trans_type, lt, vq_.now_, in_msg_root,
+                                                        /* collect_storage_stat_updates = */ false);
   td::RealCpuTimer timer;
   SCOPE_EXIT {
     auto elapsed = timer.elapsed_both();
