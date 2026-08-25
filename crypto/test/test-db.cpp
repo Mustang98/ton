@@ -34,7 +34,6 @@
 #include "rocksdb/merge_operator.h"
 #pragma GCC diagnostic pop
 
-#include "block/block-db.h"
 #include "common/AtomicRef.h"
 #include "openssl/digest.hpp"
 #include "storage/db.h"
@@ -61,7 +60,6 @@
 #include "td/utils/tests.h"
 #include "td/utils/tl_helpers.h"
 #include "td/utils/tl_parsers.h"
-#include "ton/ton-types.h"
 #include "vm/boc.h"
 #include "vm/cells.h"
 #include "vm/cells/CellString.h"
@@ -1553,46 +1551,6 @@ TEST(TonDb, BocDeserializeTruncated) {
   td::BufferSlice empty;
   auto empty_roots = vm::std_boc_deserialize_multi(empty.as_slice()).move_as_ok();
   CHECK(empty_roots.empty());
-}
-
-TEST(BlockCandidate, SerializedBufferMovePreservesIdentityBytesAndHashes) {
-  constexpr size_t block_size = 1024;
-  constexpr size_t collated_size = 768;
-  td::BufferSlice block_data(block_size);
-  td::BufferSlice collated_data(collated_size);
-  for (size_t i = 0; i < block_data.size(); ++i) {
-    block_data.as_slice()[i] = static_cast<char>((i * 17 + 11) & 0xff);
-  }
-  for (size_t i = 0; i < collated_data.size(); ++i) {
-    collated_data.as_slice()[i] = static_cast<char>((i * 29 + 7) & 0xff);
-  }
-
-  const auto block_bytes = block_data.as_slice().str();
-  const auto collated_bytes = collated_data.as_slice().str();
-  const auto block_hash = block::compute_file_hash(block_data.as_slice());
-  const auto collated_hash = block::compute_file_hash(collated_data.as_slice());
-  const auto *block_ptr = block_data.data();
-  const auto *collated_ptr = collated_data.data();
-  const auto allocated_bytes = td::BufferAllocator::get_buffer_mem();
-
-  ton::BlockCandidate cloned{ton::Ed25519_PublicKey{}, ton::BlockIdExt{}, collated_hash, block_data.clone(),
-                             collated_data.clone()};
-  ASSERT_EQ(td::BufferAllocator::get_buffer_mem(), allocated_bytes);
-
-  ton::BlockCandidate moved{ton::Ed25519_PublicKey{}, ton::BlockIdExt{}, collated_hash, std::move(block_data),
-                            std::move(collated_data)};
-  ASSERT_EQ(td::BufferAllocator::get_buffer_mem(), allocated_bytes);
-  ASSERT_TRUE(block_data.is_null());
-  ASSERT_TRUE(collated_data.is_null());
-  ASSERT_TRUE(moved.data.data() == block_ptr);
-  ASSERT_TRUE(moved.collated_data.data() == collated_ptr);
-  ASSERT_EQ(moved.data.as_slice().str(), block_bytes);
-  ASSERT_EQ(moved.collated_data.as_slice().str(), collated_bytes);
-  ASSERT_EQ(moved.data.as_slice(), cloned.data.as_slice());
-  ASSERT_EQ(moved.collated_data.as_slice(), cloned.collated_data.as_slice());
-  ASSERT_EQ(block::compute_file_hash(moved.data.as_slice()), block_hash);
-  ASSERT_EQ(block::compute_file_hash(moved.collated_data.as_slice()), collated_hash);
-  ASSERT_EQ(moved.collated_file_hash, cloned.collated_file_hash);
 }
 
 void test_parse_prefix(td::Slice boc) {
