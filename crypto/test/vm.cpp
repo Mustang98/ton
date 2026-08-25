@@ -16,6 +16,8 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <array>
+
 #include "common/bigint.hpp"
 #include "fift/utils.h"
 #include "td/utils/ScopeGuard.h"
@@ -24,7 +26,51 @@
 #include "td/utils/tests.h"
 #include "vm/cp0.h"
 #include "vm/dict.h"
+#include "vm/opctable.h"
 #include "vm/vm.h"
+
+namespace vm {
+
+class OpcodeTableTestAccess {
+ public:
+  struct SliceLookup {
+    const OpcodeInstr* instr;
+    unsigned opcode;
+    unsigned bits;
+  };
+
+  static const OpcodeInstr* lookup_fast(const OpcodeTable& table, unsigned opcode, unsigned bits = max_opcode_bits) {
+    return table.lookup_instr(opcode, bits);
+  }
+
+  // This is the predecessor search used before the prefix index was added.
+  static const OpcodeInstr* lookup_legacy(const OpcodeTable& table, unsigned opcode) {
+    std::size_t i = 0;
+    std::size_t j = table.instruction_list.size();
+    while (j - i > 1) {
+      auto k = ((j + i) >> 1);
+      if (table.instruction_list[k].first <= opcode) {
+        i = k;
+      } else {
+        j = k;
+      }
+    }
+    return table.instruction_list[i].second;
+  }
+
+  static SliceLookup lookup_slice(const OpcodeTable& table, const CellSlice& cs) {
+    unsigned opcode;
+    unsigned bits;
+    auto instr = table.lookup_instr(cs, opcode, bits);
+    return {instr, opcode, bits};
+  }
+
+  static std::size_t interval_count(const OpcodeTable& table) {
+    return table.instruction_list.size();
+  }
+};
+
+}  // namespace vm
 
 std::string run_vm(td::Ref<vm::Cell> cell) {
   vm::init_vm().ensure();
@@ -63,7 +109,7 @@ std::string run_vm(td::Ref<vm::Cell> cell) {
   return logger.res;  // must be a copy
 }
 
-td::Ref<vm::Cell> to_cell(const unsigned char *buff, int bits) {
+td::Ref<vm::Cell> to_cell(const unsigned char* buff, int bits) {
   return vm::CellBuilder().store_bits(buff, bits, 0).finalize();
 }
 void test_run_vm(td::Ref<vm::Cell> code) {
@@ -86,6 +132,109 @@ void test_run_vm_raw(td::Slice code64) {
     code.resize(127);
   }
   test_run_vm(vm::CellBuilder().store_bytes(code).finalize());
+}
+
+namespace {
+
+void assert_opcode_table_matches_legacy_exhaustively(const vm::OpcodeTable& table) {
+  ASSERT_TRUE(table.is_final());
+  ASSERT_TRUE(vm::OpcodeTableTestAccess::interval_count(table) != 0);
+  for (unsigned opcode = 0; opcode < vm::top_opcode; ++opcode) {
+    auto fast = vm::OpcodeTableTestAccess::lookup_fast(table, opcode);
+    auto legacy = vm::OpcodeTableTestAccess::lookup_legacy(table, opcode);
+    if (fast != legacy) {
+      LOG(FATAL) << "opcode prefix lookup mismatch at 24-bit opcode " << opcode;
+    }
+  }
+}
+
+const vm::OpcodeTable* get_adversarial_opcode_table() {
+  static const auto* table = [] {
+    auto* result = new vm::OpcodeTable{"ADVERSARIAL TEST CODEPAGE", static_cast<vm::Codepage>(0x6ffd)};
+    constexpr std::pair<unsigned, unsigned> ranges[] = {
+        {0x000000, 0x000001},       {0x000007, 0x00000a}, {0x000ffd, 0x000fff}, {0x000fff, 0x001000},
+        {0x001000, 0x001001},       {0x001001, 0x001003}, {0x0017ff, 0x001801}, {0x001ffe, 0x002002},
+        {0x002002, 0x002003},       {0x123000, 0x123001}, {0x123001, 0x123002}, {0x1237ff, 0x123801},
+        {0x123ffe, 0x124002},       {0x7ffffe, 0x800002}, {0xffeffe, 0xfff002}, {0xfffffe, 0xffffff},
+        {0xffffff, vm::top_opcode},
+    };
+    for (const auto& [begin, end] : ranges) {
+      result->insert(new vm::OpcodeInstrDummy{begin, end});
+    }
+    ASSERT_EQ(result->finalize(), result);
+    ASSERT_EQ(result->finalize(), result);
+    return result;
+  }();
+  return table;
+}
+
+const vm::OpcodeTable* get_empty_opcode_table() {
+  static const auto* table = [] {
+    auto* result = new vm::OpcodeTable{"EMPTY TEST CODEPAGE", static_cast<vm::Codepage>(0x6ffc)};
+    ASSERT_EQ(result->finalize(), result);
+    return result;
+  }();
+  return table;
+}
+
+void assert_truncated_opcode_lookup(const vm::OpcodeTable& table, unsigned bits, unsigned pattern) {
+  ASSERT_TRUE(bits <= vm::max_opcode_bits);
+  ASSERT_TRUE(pattern < (1U << bits));
+  unsigned opcode = pattern << (vm::max_opcode_bits - bits);
+  std::array<unsigned char, 3> bytes{
+      static_cast<unsigned char>(opcode >> 16),
+      static_cast<unsigned char>(opcode >> 8),
+      static_cast<unsigned char>(opcode),
+  };
+  vm::CellSlice cs{vm::NoVm{}, to_cell(bytes.data(), static_cast<int>(bits))};
+  auto observed = vm::OpcodeTableTestAccess::lookup_slice(table, cs);
+  ASSERT_EQ(observed.bits, bits);
+  ASSERT_EQ(observed.opcode, opcode);
+  ASSERT_EQ(observed.instr, vm::OpcodeTableTestAccess::lookup_legacy(table, opcode));
+}
+
+}  // namespace
+
+TEST(VM, opcode_table_prefix_index_matches_legacy_cp0_exhaustively) {
+  const auto* cp0 = vm::init_op_cp0();
+  ASSERT_TRUE(cp0 != nullptr);
+  assert_opcode_table_matches_legacy_exhaustively(*cp0);
+}
+
+TEST(VM, opcode_table_prefix_index_handles_adversarial_and_empty_tables) {
+  const auto* adversarial = get_adversarial_opcode_table();
+  assert_opcode_table_matches_legacy_exhaustively(*adversarial);
+
+  const auto* empty = get_empty_opcode_table();
+  ASSERT_EQ(vm::OpcodeTableTestAccess::interval_count(*empty), 1u);
+  constexpr unsigned probes[] = {0, 1, 0x000fff, 0x001000, 0x7fffff, 0x800000, 0xffefff, 0xfff000, 0xfffffe, 0xffffff};
+  for (unsigned opcode : probes) {
+    ASSERT_EQ(vm::OpcodeTableTestAccess::lookup_fast(*empty, opcode),
+              vm::OpcodeTableTestAccess::lookup_legacy(*empty, opcode));
+  }
+}
+
+TEST(VM, opcode_table_prefix_index_preserves_truncated_slice_lookup) {
+  const auto& cp0 = *vm::init_op_cp0();
+
+  // Exhaust every bit pattern through the prefix width, including the empty slice.
+  for (unsigned bits = 0; bits <= 12; ++bits) {
+    for (unsigned pattern = 0; pattern < (1U << bits); ++pattern) {
+      assert_truncated_opcode_lookup(cp0, bits, pattern);
+    }
+  }
+
+  // For longer slices, exercise both ends of every 12-bit prefix. Full 24-bit
+  // opcode selection is already exhaustive in the test above.
+  for (unsigned bits = 13; bits <= vm::max_opcode_bits; ++bits) {
+    unsigned suffix_bits = bits - 12;
+    unsigned suffix_mask = (1U << suffix_bits) - 1;
+    for (unsigned prefix = 0; prefix < (1U << 12); ++prefix) {
+      unsigned pattern = prefix << suffix_bits;
+      assert_truncated_opcode_lookup(cp0, bits, pattern);
+      assert_truncated_opcode_lookup(cp0, bits, pattern | suffix_mask);
+    }
+  }
 }
 
 TEST(VM, simple) {
