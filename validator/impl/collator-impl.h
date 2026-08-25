@@ -370,12 +370,13 @@ class Collator final : public td::actor::Actor {
                                 td::optional<block::MsgMetadata>& msg_metadata);
   bool enqueue_message(block::NewOutMsg msg, td::RefInt256 fwd_fees_remaining, StdSmcAddress src_addr,
                        bool defer = false);
-  bool enqueue_transit_message(Ref<vm::Cell> msg, Ref<vm::Cell> old_msg_env, ton::AccountIdPrefixFull prev_prefix,
-                               ton::AccountIdPrefixFull cur_prefix, ton::AccountIdPrefixFull dest_prefix,
-                               td::RefInt256 fwd_fee_remaining, td::optional<block::MsgMetadata> msg_metadata,
-                               td::optional<LogicalTime> emitted_lt, bool from_dispatch_queue);
+  bool enqueue_transit_message(Ref<vm::Cell> msg, const td::Bits256& msg_hash, Ref<vm::Cell> old_msg_env,
+                               ton::AccountIdPrefixFull prev_prefix, ton::AccountIdPrefixFull cur_prefix,
+                               ton::AccountIdPrefixFull dest_prefix, td::RefInt256 fwd_fee_remaining,
+                               td::optional<block::MsgMetadata> msg_metadata, td::optional<LogicalTime> emitted_lt,
+                               bool from_dispatch_queue);
   bool delete_out_msg_queue_msg(td::ConstBitPtr key);
-  bool insert_in_msg(Ref<vm::Cell> in_msg);
+  bool insert_in_msg(Ref<vm::Cell> in_msg, td::ConstBitPtr msg_hash = td::ConstBitPtr{nullptr});
   bool flush_in_msg_descriptors();
   bool insert_out_msg(Ref<vm::Cell> out_msg);
   bool insert_out_msg(Ref<vm::Cell> out_msg, td::ConstBitPtr msg_hash);
