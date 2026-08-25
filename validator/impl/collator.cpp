@@ -3308,6 +3308,14 @@ Ref<vm::Cell> Collator::create_ordinary_transaction(Ref<vm::Cell> msg_root,
   if (!block::tlb::t_MsgAddressInt.extract_std_address(dest, wc, addr) || wc != workchain()) {
     return {};
   }
+  return create_ordinary_transaction_to(std::move(msg_root), std::move(msg_metadata), addr, external, after_lt,
+                                        is_special_tx);
+}
+
+Ref<vm::Cell> Collator::create_ordinary_transaction_to(Ref<vm::Cell> msg_root,
+                                                       td::optional<block::MsgMetadata> msg_metadata,
+                                                       const ton::StdSmcAddress& addr, bool external,
+                                                       LogicalTime after_lt, bool is_special_tx) {
   LOG(DEBUG) << "inbound message to our smart contract " << addr.to_hex();
   auto acc_res = make_account(addr.cbits(), true);
   if (acc_res.is_error()) {
@@ -3673,7 +3681,14 @@ int Collator::process_one_new_message(block::NewOutMsg msg, bool enqueue_only, R
     return -1;
   }
   // 1. create a Transaction processing this Message
-  auto trans_root = create_ordinary_transaction(msg.msg, msg.metadata, msg.lt, is_special != nullptr);
+  WorkchainId dest_wc;
+  StdSmcAddress dest_addr;
+  if (!block::tlb::t_MsgAddressInt.extract_std_address(dest, dest_wc, dest_addr) || dest_wc != workchain()) {
+    fatal_error("cannot extract destination of an internal message to be processed");
+    return -1;
+  }
+  auto trans_root =
+      create_ordinary_transaction_to(msg.msg, msg.metadata, dest_addr, false, msg.lt, is_special != nullptr);
   if (trans_root.is_null()) {
     fatal_error("cannot create transaction for re-processing output message");
     return -1;
@@ -4040,7 +4055,12 @@ bool Collator::process_inbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalT
   // process the message by an ordinary transaction similarly to process_one_new_message()
   //
   // 8. create a Transaction processing this Message
-  auto trans_root = create_ordinary_transaction(env.msg, env.metadata, 0);
+  WorkchainId dest_wc;
+  StdSmcAddress dest_addr;
+  if (!block::tlb::t_MsgAddressInt.extract_std_address(info.dest, dest_wc, dest_addr) || dest_wc != workchain()) {
+    return fatal_error("cannot extract destination of an inbound internal message");
+  }
+  auto trans_root = create_ordinary_transaction_to(env.msg, env.metadata, dest_addr, false, 0);
   if (trans_root.is_null()) {
     return fatal_error("cannot create transaction for processing inbound message");
   }
