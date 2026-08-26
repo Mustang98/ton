@@ -29,6 +29,7 @@
 #include "block/transaction.h"
 #include "common/global-version.h"
 #include "interfaces/validator-manager.h"
+#include "td/utils/HashMap.h"
 #include "vm/cells.h"
 #include "vm/dict.h"
 
@@ -244,6 +245,18 @@ class ValidateQuery : public td::actor::Actor {
   block::tlb::InMsgDescr t_InMsgDescr{0};
   block::tlb::OutMsgDescr t_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict_, out_msg_dict_, account_blocks_dict_;
+  struct ValidatedTransactionTlbCost {
+    // Keep the exact parsed occurrence alive. Replay may consume the scalar
+    // cost only for this occurrence and an equal regenerated root hash.
+    Ref<vm::Cell> root;
+    int ops{0};
+  };
+  struct ValidatedTransactionTlbCosts {
+    td::HashMap<vm::CellHash, ValidatedTransactionTlbCost> generated;
+    td::HashMap<vm::CellHash, ValidatedTransactionTlbCost> handwritten;
+  };
+  std::unique_ptr<ValidatedTransactionTlbCosts> transaction_tlb_costs_building_;
+  std::shared_ptr<const ValidatedTransactionTlbCosts> transaction_tlb_costs_;
   enum class Stage0WorkerFailureKind { None, FatalVmError, RejectCellCreate, RejectCellWrite, RejectVmVirtError };
   struct Stage0WorkerFailure {
     Stage0WorkerFailureKind kind{Stage0WorkerFailureKind::None};
@@ -251,6 +264,7 @@ class ValidateQuery : public td::actor::Actor {
   };
   struct GeneratedBlockTlbResult {
     bool valid{false};
+    std::unique_ptr<ValidatedTransactionTlbCosts> transaction_tlb_costs;
     Stage0WorkerFailure failure;
     td::RealCpuTimer::Time work_time;
   };
@@ -477,6 +491,7 @@ class ValidateQuery : public td::actor::Actor {
     bool scan_account_libraries(Ref<vm::Cell> orig_libs, Ref<vm::Cell> final_libs, const td::Bits256& addr);
 
     const ValidateQuery& vq_;
+    std::shared_ptr<const ValidatedTransactionTlbCosts> transaction_tlb_costs_;
     td::actor::ActorId<ValidateQuery> vq_id_;
     StdSmcAddress address_;
     Ref<vm::CellSlice> acc_tr_;
