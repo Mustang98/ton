@@ -233,6 +233,12 @@ struct AugmentationCheckData : vm::dict::AugmentationData {
   bool eval_empty(vm::CellBuilder& cb) const override {
     return extra_type.null_value(cb);
   }
+  // Runs only the narrow handwritten checks whose exact certificates are
+  // consumed later. This hook is called solely by the augmentation-only
+  // replay after the same concrete root passed generated schema validation.
+  virtual bool validate_value_dependencies(int*, vm::CellSlice) const {
+    return true;
+  }
 };
 
 struct HashmapAug final : TLB_Complex {
@@ -243,6 +249,8 @@ struct HashmapAug final : TLB_Complex {
   bool skip(vm::CellSlice& cs) const override;
   bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override;
   bool extract_extra(vm::CellSlice& cs) const;
+  bool validate_augmentations_only_skip(int* ops, vm::CellSlice& cs) const;
+  bool validate_augmentations_only_ref(int* ops, Ref<vm::Cell> root) const;
 };
 
 struct HashmapAugNode final : TLB_Complex {
@@ -253,6 +261,7 @@ struct HashmapAugNode final : TLB_Complex {
   }
   bool skip(vm::CellSlice& cs) const override;
   bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override;
+  bool validate_augmentations_only_skip(int* ops, vm::CellSlice& cs) const;
   int get_tag(const vm::CellSlice& cs) const override {
     return n > 0 ? ahmn_fork : n;
   }
@@ -266,6 +275,17 @@ struct HashmapAugE final : TLB_Complex {
   bool skip(vm::CellSlice& cs) const override;
   bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override;
   bool extract_extra(vm::CellSlice& cs) const;
+  // These routines do not replace schema validation. They are sound only for
+  // an exact retained Cell occurrence which has already passed the generated
+  // HashmapAugE schema validator.
+  bool validate_augmentations_only(int* ops, const vm::CellSlice& cs) const;
+  bool validate_augmentations_only_upto(int ops, const vm::CellSlice& cs) const {
+    return validate_augmentations_only(&ops, cs);
+  }
+  bool validate_augmentations_only_ref(int* ops, Ref<vm::Cell> root) const;
+  bool validate_augmentations_only_ref(int ops, Ref<vm::Cell> root) const {
+    return validate_augmentations_only_ref(&ops, std::move(root));
+  }
   int get_tag(const vm::CellSlice& cs) const override {
     return (int)cs.prefetch_ulong(1);
   }
@@ -754,6 +774,7 @@ struct Aug_AccountTransactions final : AugmentationCheckData {
   Aug_AccountTransactions() : AugmentationCheckData(t_Ref_Transaction, t_CurrencyCollection) {
   }
   bool eval_leaf(vm::CellBuilder& cb, vm::CellSlice& cs) const override;
+  bool validate_value_dependencies(int* ops, vm::CellSlice value_cs) const override;
 };
 
 extern const Aug_AccountTransactions aug_AccountTransactions;
@@ -774,6 +795,7 @@ extern const RefTo<HashUpdate> t_Ref_HashUpdate;
 struct AccountBlock final : TLB_Complex {
   bool skip(vm::CellSlice& cs) const override;
   bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override;
+  bool validate_augmentations_only(int* ops, vm::CellSlice cs) const;
   bool get_total_fees(vm::CellSlice&& cs, block::CurrencyCollection& total_fees) const;
 };
 
@@ -783,6 +805,7 @@ struct Aug_ShardAccountBlocks final : AugmentationCheckData {
   Aug_ShardAccountBlocks() : AugmentationCheckData(t_AccountBlock, t_CurrencyCollection) {
   }
   bool eval_leaf(vm::CellBuilder& cb, vm::CellSlice& cs) const override;
+  bool validate_value_dependencies(int* ops, vm::CellSlice value_cs) const override;
 };
 
 extern const Aug_ShardAccountBlocks aug_ShardAccountBlocks;
@@ -821,6 +844,8 @@ struct InMsg final : TLB_Complex {
     return (int)cs.prefetch_ulong(5) - 0b00100 + 8;
   }
   bool get_import_fees(vm::CellBuilder& cb, vm::CellSlice& cs, int global_version) const;
+  bool validate_transaction_dependencies(int* ops, vm::CellSlice cs) const;
+  bool validate_transaction_dependencies_ref(int* ops, Ref<vm::Cell> root) const;
 };
 
 extern const InMsg t_InMsg;
@@ -852,6 +877,7 @@ struct OutMsg final : TLB_Complex {
   }
   bool get_export_value(vm::CellBuilder& cb, vm::CellSlice& cs, int global_version) const;
   bool get_emitted_lt(vm::CellSlice& cs, unsigned long long& emitted_lt) const;
+  bool validate_transaction_dependencies(int* ops, vm::CellSlice cs) const;
 };
 
 extern const OutMsg t_OutMsg;
@@ -864,6 +890,9 @@ struct Aug_InMsgDescr final : AugmentationCheckData {
   }
   bool eval_leaf(vm::CellBuilder& cb, vm::CellSlice& cs) const override {
     return t_InMsg.get_import_fees(cb, cs, global_version);
+  }
+  bool validate_value_dependencies(int* ops, vm::CellSlice value_cs) const override {
+    return t_InMsg.validate_transaction_dependencies(ops, std::move(value_cs));
   }
   int global_version;
 };
@@ -891,6 +920,9 @@ struct Aug_OutMsgDescr final : AugmentationCheckData {
   }
   bool eval_leaf(vm::CellBuilder& cb, vm::CellSlice& cs) const override {
     return t_OutMsg.get_export_value(cb, cs, global_version);
+  }
+  bool validate_value_dependencies(int* ops, vm::CellSlice value_cs) const override {
+    return t_OutMsg.validate_transaction_dependencies(ops, std::move(value_cs));
   }
   int global_version;
 };

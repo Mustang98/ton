@@ -1191,6 +1191,49 @@ bool HashmapAugNode::validate_skip(int* ops, vm::CellSlice& cs, bool weak) const
          aug.check_fork(cs_extra, cs_left, cs_right);
 }
 
+bool HashmapAugNode::validate_augmentations_only_skip(int* ops, vm::CellSlice& cs) const {
+  if (n < 0) {
+    return false;
+  }
+  if (!n) {
+    // The generated validator has already checked the schemas of both fields
+    // for this exact cell. Slice them without repeating those recursive
+    // checks, retain the exact handwritten Transaction certificates needed by
+    // later serialization, and replay the leaf augmentation equation.
+    vm::CellSlice cs_extra{cs};
+    if (!aug.extra_type.skip(cs) || !cs_extra.cut_tail(cs)) {
+      return false;
+    }
+    vm::CellSlice cs_value{cs};
+    if (!aug.value_type.skip(cs) || !cs_value.cut_tail(cs)) {
+      return false;
+    }
+    return aug.validate_value_dependencies(ops, cs_value) && aug.check_leaf(cs_extra, cs_value);
+  }
+  if (!cs.have_refs(2)) {
+    return false;
+  }
+  auto left = cs.prefetch_ref(0);
+  auto right = cs.prefetch_ref(1);
+  HashmapAug branch_type{n - 1, aug};
+  if (!branch_type.validate_augmentations_only_ref(ops, left) ||
+      !branch_type.validate_augmentations_only_ref(ops, right) || !cs.advance_refs(2)) {
+    return false;
+  }
+  bool left_special = false, right_special = false;
+  auto cs_left = load_cell_slice_special(std::move(left), left_special);
+  auto cs_right = load_cell_slice_special(std::move(right), right_special);
+  if (left_special || right_special || !cs_left.is_valid() || !cs_right.is_valid()) {
+    return false;
+  }
+  vm::CellSlice cs_extra{cs};
+  if (!aug.extra_type.skip(cs) || !cs_extra.cut_tail(cs)) {
+    return false;
+  }
+  return branch_type.extract_extra(cs_left) && branch_type.extract_extra(cs_right) &&
+         aug.check_fork(cs_extra, cs_left, cs_right);
+}
+
 bool HashmapAug::skip(vm::CellSlice& cs) const {
   int l;
   return HmLabel{n}.skip(cs, l) && HashmapAugNode{n - l, aug}.skip(cs);
@@ -1199,6 +1242,23 @@ bool HashmapAug::skip(vm::CellSlice& cs) const {
 bool HashmapAug::validate_skip(int* ops, vm::CellSlice& cs, bool weak) const {
   int l;
   return HmLabel{n}.validate_skip(cs, weak, l) && HashmapAugNode{n - l, aug}.validate_skip(ops, cs, weak);
+}
+
+bool HashmapAug::validate_augmentations_only_skip(int* ops, vm::CellSlice& cs) const {
+  int l;
+  return HmLabel{n}.skip(cs, l) && HashmapAugNode{n - l, aug}.validate_augmentations_only_skip(ops, cs);
+}
+
+bool HashmapAug::validate_augmentations_only_ref(int* ops, Ref<vm::Cell> root) const {
+  if (root.is_null() || (ops && *ops <= 0)) {
+    return false;
+  }
+  if (ops) {
+    --*ops;
+  }
+  bool special = false;
+  auto cs = load_cell_slice_special(std::move(root), special);
+  return !special && cs.is_valid() && validate_augmentations_only_skip(ops, cs) && cs.empty_ext();
 }
 
 bool HashmapAug::extract_extra(vm::CellSlice& cs) const {
@@ -1225,6 +1285,44 @@ bool HashmapAugE::validate_skip(int* ops, vm::CellSlice& cs, bool weak) const {
       break;
   }
   return false;
+}
+
+bool HashmapAugE::validate_augmentations_only(int* ops, const vm::CellSlice& input) const {
+  vm::CellSlice cs{input};
+  Ref<vm::CellSlice> extra;
+  switch (get_tag(cs)) {
+    case ahme_empty:
+      return cs.advance(1) && (extra = root_type.aug.extra_type.fetch(cs)).not_null() && cs.empty_ext() &&
+             root_type.aug.check_empty(extra.unique_write());
+    case ahme_root: {
+      if (!cs.advance(1)) {
+        return false;
+      }
+      auto root = cs.prefetch_ref();
+      if (!root_type.validate_augmentations_only_ref(ops, root) || !cs.advance_refs(1)) {
+        return false;
+      }
+      bool special = false;
+      auto cs_root = load_cell_slice_special(std::move(root), special);
+      if (special || !cs_root.is_valid() || (extra = root_type.aug.extra_type.fetch(cs)).is_null() || !cs.empty_ext()) {
+        return false;
+      }
+      return root_type.extract_extra(cs_root) && extra->contents_equal(cs_root);
+    }
+  }
+  return false;
+}
+
+bool HashmapAugE::validate_augmentations_only_ref(int* ops, Ref<vm::Cell> root) const {
+  if (root.is_null() || (ops && *ops <= 0)) {
+    return false;
+  }
+  if (ops) {
+    --*ops;
+  }
+  bool special = false;
+  auto cs = load_cell_slice_special(std::move(root), special);
+  return !special && cs.is_valid() && validate_augmentations_only(ops, cs);
 }
 
 bool HashmapAugE::skip(vm::CellSlice& cs) const {
@@ -1706,6 +1804,14 @@ bool Aug_AccountTransactions::eval_leaf(vm::CellBuilder& cb, vm::CellSlice& cs) 
          total_fees.store(cb);
 }
 
+bool Aug_AccountTransactions::validate_value_dependencies(int* ops, vm::CellSlice value_cs) const {
+  // Preserve the exact handwritten Transaction validation/cost certificate
+  // produced by the old full HashmapAug pass. Later Transaction::serialize
+  // consumes this certificate, so generated Transaction costs are not a safe
+  // substitute here.
+  return t_Ref_Transaction.validate_skip(ops, value_cs) && value_cs.empty_ext();
+}
+
 const Aug_AccountTransactions aug_AccountTransactions;
 const HashmapAug t_AccountTransactions{64, aug_AccountTransactions};
 
@@ -1726,6 +1832,14 @@ bool AccountBlock::validate_skip(int* ops, vm::CellSlice& cs, bool weak) const {
          && t_Ref_HashUpdate.validate_skip(ops, cs, weak);  // state_update:^(HASH_UPDATE Account)
 }
 
+bool AccountBlock::validate_augmentations_only(int* ops, vm::CellSlice cs) const {
+  // AccountTransactions is inline in AccountBlock. Its root node and every
+  // descendant leaf/fork augmentation must be replayed before the enclosing
+  // ShardAccountBlocks leaf equation is checked.
+  return cs.fetch_ulong(4) == 5 && cs.advance(256) && t_AccountTransactions.validate_augmentations_only_skip(ops, cs) &&
+         cs.advance_refs(1) && cs.empty_ext();
+}
+
 bool AccountBlock::get_total_fees(vm::CellSlice&& cs, block::CurrencyCollection& total_fees) const {
   return cs.advance(4 + 256)                         // acc_trans#5 account_addr:bits256
          && t_AccountTransactions.extract_extra(cs)  // transactions:(HashmapAug 64 ^Transaction Grams)
@@ -1737,6 +1851,10 @@ const AccountBlock t_AccountBlock;
 bool Aug_ShardAccountBlocks::eval_leaf(vm::CellBuilder& cb, vm::CellSlice& cs) const {
   block::CurrencyCollection total_fees;
   return t_AccountBlock.get_total_fees(std::move(cs), total_fees) && total_fees.store(cb);
+}
+
+bool Aug_ShardAccountBlocks::validate_value_dependencies(int* ops, vm::CellSlice value_cs) const {
+  return t_AccountBlock.validate_augmentations_only(ops, std::move(value_cs));
 }
 
 const Aug_ShardAccountBlocks aug_ShardAccountBlocks;
@@ -1857,6 +1975,37 @@ bool InMsg::validate_skip(int* ops, vm::CellSlice& cs, bool weak) const {
              && t_Ref_MsgEnvelope.validate_skip(ops, cs, weak);  // out_msg:^MsgEnvelope
   }
   return false;
+}
+
+bool InMsg::validate_transaction_dependencies(int* ops, vm::CellSlice cs) const {
+  int tag = get_tag(cs);
+  switch (tag) {
+    case msg_import_ext:
+    case msg_import_ihr:
+    case msg_import_imm:
+    case msg_import_fin:
+    case msg_import_deferred_fin:
+      return cs.advance(tag == msg_import_deferred_fin ? 5 : 3) && cs.advance_refs(1) &&
+             t_Ref_Transaction.validate_skip(ops, cs);
+    case msg_import_tr:
+    case msg_discard_fin:
+    case msg_discard_tr:
+    case msg_import_deferred_tr:
+      return true;
+  }
+  return false;
+}
+
+bool InMsg::validate_transaction_dependencies_ref(int* ops, Ref<vm::Cell> root) const {
+  if (root.is_null() || (ops && *ops <= 0)) {
+    return false;
+  }
+  if (ops) {
+    --*ops;
+  }
+  bool special = false;
+  auto cs = load_cell_slice_special(std::move(root), special);
+  return !special && cs.is_valid() && validate_transaction_dependencies(ops, std::move(cs));
 }
 
 static td::RefInt256 get_ihr_fee(const CommonMsgInfo::Record_int_msg_info& info, int global_version) {
@@ -2042,6 +2191,30 @@ bool OutMsg::validate_skip(int* ops, vm::CellSlice& cs, bool weak) const {
       return cs.advance(5)                                      // msg_export_deferred_tr$10101
              && t_Ref_MsgEnvelope.validate_skip(ops, cs, weak)  // out_msg:^MsgEnvelope
              && RefTo<InMsg>{}.validate_skip(ops, cs, weak);    // imported:^InMsg
+  }
+  return false;
+}
+
+bool OutMsg::validate_transaction_dependencies(int* ops, vm::CellSlice cs) const {
+  int tag = get_tag(cs);
+  switch (tag) {
+    case msg_export_ext:
+    case msg_export_new:
+    case msg_export_new_defer:
+      return cs.advance(tag == msg_export_new_defer ? 5 : 3) && cs.advance_refs(1) &&
+             t_Ref_Transaction.validate_skip(ops, cs);
+    case msg_export_imm:
+      return cs.advance(3) && cs.advance_refs(1) && t_Ref_Transaction.validate_skip(ops, cs) &&
+             t_InMsg.validate_transaction_dependencies_ref(ops, cs.fetch_ref());
+    case msg_export_tr:
+    case msg_export_deq_imm:
+    case msg_export_tr_req:
+    case msg_export_deferred_tr:
+      return cs.advance(tag == msg_export_deferred_tr ? 5 : 3) && cs.advance_refs(1) &&
+             t_InMsg.validate_transaction_dependencies_ref(ops, cs.fetch_ref());
+    case msg_export_deq:
+    case msg_export_deq_short:
+      return true;
   }
   return false;
 }

@@ -65,9 +65,16 @@ using namespace std::literals::string_literals;
 namespace {
 
 template <class CostMap>
-tlb::TLB::ValidateCache make_transaction_tlb_cost_collector(const tlb::TLB* target, CostMap& costs) {
+tlb::TLB::ValidateCache make_transaction_tlb_cost_collector(
+    const tlb::TLB* target, CostMap& costs,
+    detail::GeneratedAugmentationCertificate* augmentation_certificate = nullptr) {
   return tlb::TLB::ValidateCache(
-      [target, costs = &costs](const tlb::TLB* type, const Ref<vm::Cell>& cell, int* ops, bool weak) {
+      [target, costs = &costs, augmentation_certificate](const tlb::TLB* type, const Ref<vm::Cell>& cell, int* ops,
+                                                         bool weak) {
+        if (augmentation_certificate != nullptr && augmentation_certificate->is_target(type) && !weak &&
+            ops != nullptr) {
+          return tlb::TLB::ValidateCache::Action::ValidateAndRecord;
+        }
         if (type != target || weak || ops == nullptr) {
           return tlb::TLB::ValidateCache::Action::Validate;
         }
@@ -76,11 +83,16 @@ tlb::TLB::ValidateCache make_transaction_tlb_cost_collector(const tlb::TLB* targ
         return costs->find(cell->get_hash()) == costs->end() ? tlb::TLB::ValidateCache::Action::ValidateAndRecord
                                                              : tlb::TLB::ValidateCache::Action::Skip;
       },
-      [target, costs = &costs](const tlb::TLB* type, const Ref<vm::Cell>& cell, std::optional<int> ops_used,
-                               bool weak) {
-        CHECK(type == target && !weak && ops_used.has_value() && *ops_used > 0);
-        auto [it, inserted] = costs->emplace(cell->get_hash(), typename CostMap::mapped_type{cell, *ops_used});
-        CHECK(inserted);
+      [target, costs = &costs, augmentation_certificate](const tlb::TLB* type, const Ref<vm::Cell>& cell,
+                                                         std::optional<int> ops_used, bool weak) {
+        CHECK(!weak && ops_used.has_value() && *ops_used > 0);
+        if (type == target) {
+          auto [it, inserted] = costs->emplace(cell->get_hash(), typename CostMap::mapped_type{cell, *ops_used});
+          CHECK(inserted);
+        } else {
+          CHECK(augmentation_certificate != nullptr && augmentation_certificate->is_target(type));
+          augmentation_certificate->record(type, cell);
+        }
       });
 }
 
@@ -1533,8 +1545,8 @@ td::actor::Task<ValidateQuery::GeneratedBlockTlbResult> ValidateQuery::validate_
   td::RealCpuTimer timer;
   try {
     result.transaction_tlb_costs = std::make_unique<ValidatedTransactionTlbCosts>();
-    auto tlb_cache =
-        make_transaction_tlb_cost_collector(&block::gen::t_Transaction, result.transaction_tlb_costs->generated);
+    auto tlb_cache = make_transaction_tlb_cost_collector(
+        &block::gen::t_Transaction, result.transaction_tlb_costs->generated, &result.augmentation_certificate);
     tlb::TLB::ValidateCache::Guard guard(&tlb_cache);
     result.valid = block::gen::t_Block.validate_ref(10000000, block_root);
   } catch (vm::VmError& err) {
@@ -1682,6 +1694,7 @@ bool ValidateQuery::consume_parallel_stage0_results() {
   CHECK(transaction_tlb_costs_ == nullptr);
   CHECK(generated.transaction_tlb_costs != nullptr);
   transaction_tlb_costs_building_ = std::move(generated.transaction_tlb_costs);
+  generated_augmentation_certificate_ = std::move(generated.augmentation_certificate);
   if (!compute_prev_state()) {
     return fatal_error(-666, "cannot compute previous state");
   }
@@ -3168,37 +3181,39 @@ bool ValidateQuery::unpack_block_data() {
   if (!(tlb::unpack_cell(block_root_, blk) && tlb::unpack_cell(blk.extra, extra))) {
     return reject_query("cannot unpack Block header");
   }
-  auto inmsg_cs = vm::load_cell_slice_ref(std::move(extra.in_msg_descr));
-  auto outmsg_cs = vm::load_cell_slice_ref(std::move(extra.out_msg_descr));
+  auto in_msg_descr_root = std::move(extra.in_msg_descr);
+  auto out_msg_descr_root = std::move(extra.out_msg_descr);
+  auto shard_account_blocks_root = std::move(extra.account_blocks);
+  auto inmsg_cs = vm::load_cell_slice_ref(in_msg_descr_root);
+  auto outmsg_cs = vm::load_cell_slice_ref(out_msg_descr_root);
   // run some hand-written checks from block::tlb::
   // (automatic tests from block::gen:: have been already run for the entire block)
   t_InMsgDescr.aug.global_version = global_version_;
   t_OutMsgDescr.aug.global_version = global_version_;
-  if (!t_InMsgDescr.validate_upto(10000000, *inmsg_cs)) {
+  // Preflight all roots before replaying any of them. A missing, duplicate, or
+  // different concrete occurrence routes the complete ordered pass through
+  // the legacy validators, even when the replacement has the same hash.
+  const bool use_augmentation_replay =
+      generated_augmentation_certificate_.matches(in_msg_descr_root, out_msg_descr_root, shard_account_blocks_root);
+  if (!(use_augmentation_replay ? t_InMsgDescr.dict_type.validate_augmentations_only_upto(10000000, *inmsg_cs)
+                                : t_InMsgDescr.validate_upto(10000000, *inmsg_cs))) {
     return reject_query("InMsgDescr of the new block failed to pass handwritten validity tests");
   }
-  if (!t_OutMsgDescr.validate_upto(10000000, *outmsg_cs)) {
+  if (!(use_augmentation_replay ? t_OutMsgDescr.dict_type.validate_augmentations_only_upto(10000000, *outmsg_cs)
+                                : t_OutMsgDescr.validate_upto(10000000, *outmsg_cs))) {
     return reject_query("OutMsgDescr of the new block failed to pass handwritten validity tests");
   }
-  if (!block::tlb::t_ShardAccountBlocks.validate_ref(10000000, extra.account_blocks)) {
+  if (!(use_augmentation_replay
+            ? block::tlb::t_ShardAccountBlocks.validate_augmentations_only_ref(10000000, shard_account_blocks_root)
+            : block::tlb::t_ShardAccountBlocks.validate_ref(10000000, shard_account_blocks_root))) {
     return reject_query("ShardAccountBlocks of the new block failed to pass handwritten validity tests");
   }
   in_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(inmsg_cs), 256, t_InMsgDescr.aug);
   out_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(outmsg_cs), 256, t_OutMsgDescr.aug);
   account_blocks_dict_ = std::make_unique<vm::AugmentedDictionary>(
-      vm::load_cell_slice_ref(std::move(extra.account_blocks)), 256, block::tlb::aug_ShardAccountBlocks);
-  LOG(DEBUG) << "validating InMsgDescr";
-  if (!in_msg_dict_->validate_all()) {
-    return reject_query("InMsgDescr dictionary is invalid");
-  }
-  LOG(DEBUG) << "validating OutMsgDescr";
-  if (!out_msg_dict_->validate_all()) {
-    return reject_query("OutMsgDescr dictionary is invalid");
-  }
-  LOG(DEBUG) << "validating ShardAccountBlocks";
-  if (!account_blocks_dict_->validate_all()) {
-    return reject_query("ShardAccountBlocks dictionary is invalid");
-  }
+      vm::load_cell_slice_ref(std::move(shard_account_blocks_root)), 256, block::tlb::aug_ShardAccountBlocks);
+  // Generated schema validation plus either the exact augmentation replay or
+  // the complete legacy pass has checked all labels, values, and extras.
   return unpack_precheck_value_flow(std::move(blk.value_flow));
 }
 
@@ -7914,14 +7929,16 @@ bool ValidateQuery::try_validate() {
         CHECK(transaction_tlb_costs_building_ == nullptr);
         CHECK(transaction_tlb_costs_ == nullptr);
         auto transaction_tlb_costs = std::make_unique<ValidatedTransactionTlbCosts>();
-        auto tlb_cache =
-            make_transaction_tlb_cost_collector(&block::gen::t_Transaction, transaction_tlb_costs->generated);
+        detail::GeneratedAugmentationCertificate augmentation_certificate;
+        auto tlb_cache = make_transaction_tlb_cost_collector(
+            &block::gen::t_Transaction, transaction_tlb_costs->generated, &augmentation_certificate);
         tlb::TLB::ValidateCache::Guard guard(&tlb_cache);
         if (!block::gen::t_Block.validate_ref(10000000, block_root_)) {
           return reject_query("block "s + id_.to_str() + " failed to pass automated validity checks");
         }
         // Publish only after the complete generated Block check succeeds.
         transaction_tlb_costs_building_ = std::move(transaction_tlb_costs);
+        generated_augmentation_certificate_ = std::move(augmentation_certificate);
       }
       {
         td::ScopedRealCpuTimer timer{stats_.work_time.unpack_state};

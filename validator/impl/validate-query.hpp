@@ -28,6 +28,7 @@
 #include "block/signature-set.h"
 #include "block/transaction.h"
 #include "common/global-version.h"
+#include "impl/augmentation-replay.h"
 #include "interfaces/validator-manager.h"
 #include "td/utils/HashMap.h"
 #include "vm/cells.h"
@@ -245,6 +246,7 @@ class ValidateQuery : public td::actor::Actor {
   block::tlb::InMsgDescr t_InMsgDescr{0};
   block::tlb::OutMsgDescr t_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict_, out_msg_dict_, account_blocks_dict_;
+  detail::GeneratedAugmentationCertificate generated_augmentation_certificate_;
   struct ValidatedTransactionTlbCost {
     // Keep the exact parsed occurrence alive. Replay may consume the scalar
     // cost only for this occurrence and an equal regenerated root hash.
@@ -265,6 +267,7 @@ class ValidateQuery : public td::actor::Actor {
   struct GeneratedBlockTlbResult {
     bool valid{false};
     std::unique_ptr<ValidatedTransactionTlbCosts> transaction_tlb_costs;
+    detail::GeneratedAugmentationCertificate augmentation_certificate;
     Stage0WorkerFailure failure;
     td::RealCpuTimer::Time work_time;
   };
