@@ -66,8 +66,8 @@ Ref<DataCell> CellBuilder::finalize_copy(bool special, DataCell::HashHint hash_h
 }
 
 td::Result<Ref<DataCell>> CellBuilder::finalize_novm_nothrow(bool special, DataCell::HashHint hash_hint) {
-  auto res = DataCell::create_consume(td::Slice{data, Cell::max_bytes}, size(),
-                                      td::mutable_span(refs.data(), size_refs()), special, std::move(hash_hint));
+  auto res = DataCell::create(td::Slice{data, Cell::max_bytes}, size(), td::mutable_span(refs.data(), size_refs()),
+                              special, std::move(hash_hint));
   bits = refs_cnt = 0;
   return res;
 }
@@ -97,29 +97,6 @@ Ref<DataCell> CellBuilder::finalize(bool special, DataCell::HashHint hash_hint) 
   return cell;
 }
 
-Ref<DataCell> CellBuilder::create_data_cell(td::Slice data, int bit_length, td::MutableSpan<Ref<Cell>> refs,
-                                            bool special, DataCell::HashHint hash_hint) {
-  auto* vm_state_interface = VmStateInterface::get();
-  if (vm_state_interface) {
-    vm_state_interface->register_cell_create();
-  }
-  auto res = DataCell::create_consume(data, bit_length, refs, special, std::move(hash_hint));
-  if (res.is_error()) {
-    LOG(DEBUG) << res.error();
-    throw CellWriteError{};
-  }
-  auto cell = res.move_as_ok();
-  CHECK(cell.not_null());
-  if (vm_state_interface) {
-    vm_state_interface->register_new_cell(cell);
-    if (cell.is_null()) {
-      LOG(DEBUG) << "cannot register new data cell";
-      throw CellWriteError{};
-    }
-  }
-  return cell;
-}
-
 Ref<Cell> CellBuilder::create_pruned_branch(Ref<Cell> cell, td::uint32 new_level, td::uint32 virt_level) {
   if (cell->is_loaded() && cell->get_level() <= virt_level && !cell->is_virtualized()) {
     CellSlice cs(NoVm{}, cell);
@@ -136,35 +113,20 @@ Ref<DataCell> CellBuilder::do_create_pruned_branch(Ref<Cell> cell, td::uint32 ne
   if (new_level < level + 1) {
     throw CellWriteError();
   }
-  unsigned char data[Cell::max_bytes];
-  std::size_t size = 0;
-  auto append_bytes = [&](td::Slice bytes) {
-    if (bytes.size() > sizeof(data) - size) {
-      throw CellCreateError{};
-    }
-    std::memcpy(data + size, bytes.data(), bytes.size());
-    size += bytes.size();
-  };
-  const std::array<unsigned char, 2> header{
-      static_cast<td::uint8>(Cell::SpecialType::PrunnedBranch),
-      static_cast<td::uint8>(level_mask.apply_or(Cell::LevelMask::one_level(new_level)).get_mask())};
-  append_bytes(td::Slice{header.data(), header.size()});
+  CellBuilder cb;
+  cb.store_long(static_cast<td::uint8>(Cell::SpecialType::PrunnedBranch), 8);
+  cb.store_long(level_mask.apply_or(Cell::LevelMask::one_level(new_level)).get_mask(), 8);
   for (td::uint32 i = 0; i <= level; i++) {
     if (level_mask.is_significant(i)) {
-      auto hash = cell->get_hash(i);
-      append_bytes(hash.as_slice());
+      cb.store_bytes(cell->get_hash(i).as_slice());
     }
   }
   for (td::uint32 i = 0; i <= level; i++) {
     if (level_mask.is_significant(i)) {
-      if (Cell::depth_bytes > sizeof(data) - size) {
-        throw CellCreateError{};
-      }
-      DataCell::store_depth(data + size, cell->get_depth(i));
-      size += Cell::depth_bytes;
+      cb.store_long(cell->get_depth(i), 16);
     }
   }
-  return create_data_cell(td::Slice{data, size}, static_cast<int>(size * 8), {}, true);
+  return cb.finalize(true);
 }
 
 Ref<DataCell> CellBuilder::create_merkle_proof(Ref<Cell> cell_proof) {
