@@ -2508,3 +2508,304 @@ TEST(VM, augmented_dictionary_multiset_mutates_virtualized_proof_paths) {
   ASSERT_TRUE(virtualized.multiset(virtual_updates));
   ASSERT_EQ(full.get_root_cell()->get_hash(), virtualized.get_root_cell()->get_hash());
 }
+
+namespace {
+
+class ReferenceMerkleProofBuilder {
+ public:
+  explicit ReferenceMerkleProofBuilder(vm::MerkleProof::IsPrunnedFunction is_prunned)
+      : is_prunned_(std::move(is_prunned)) {
+  }
+
+  td::Ref<vm::Cell> create(td::Ref<vm::Cell> root) {
+    return dfs(root, root->get_level());
+  }
+
+ private:
+  using Key = std::pair<vm::CellHash, unsigned>;
+  td::HashMap<Key, td::Ref<vm::Cell>> cells_;
+  vm::MerkleProof::IsPrunnedFunction is_prunned_;
+
+  td::Ref<vm::Cell> dfs(td::Ref<vm::Cell> cell, unsigned merkle_depth) {
+    Key key{cell->get_hash(), merkle_depth};
+    if (auto found = cells_.find(key); found != cells_.end()) {
+      return found->second;
+    }
+    if (is_prunned_(cell)) {
+      auto result = vm::CellBuilder::create_pruned_branch(cell, merkle_depth + 1);
+      cells_.emplace(key, result);
+      return result;
+    }
+    vm::CellSlice slice{vm::NoVm{}, cell};
+    auto child_merkle_depth = slice.child_merkle_depth(merkle_depth);
+    vm::CellBuilder builder;
+    builder.store_bits(slice.fetch_bits(slice.size()));
+    for (unsigned i = 0; i < slice.size_refs(); ++i) {
+      builder.store_ref(dfs(slice.prefetch_ref(i), child_merkle_depth));
+    }
+    auto hash_hint = [&](unsigned level, const vm::Cell::LevelMask&, vm::CellHash& hash) {
+      if (level <= merkle_depth) {
+        hash = cell->get_hash(level);
+        return true;
+      }
+      return false;
+    };
+    auto result = builder.finalize(slice.is_special(), std::move(hash_hint));
+    cells_.emplace(key, result);
+    return result;
+  }
+};
+
+class MerkleProofCreateCounter final : public vm::VmStateInterface {
+ public:
+  void register_cell_create() override {
+    ++creates;
+  }
+  void register_new_cell(td::Ref<vm::DataCell>&) override {
+    ++registrations;
+  }
+
+  std::size_t creates{0};
+  std::size_t registrations{0};
+};
+
+struct MerkleProofObservation {
+  td::Ref<vm::Cell> root;
+  td::BufferSlice boc;
+  std::size_t creates;
+  std::size_t registrations;
+};
+
+MerkleProofObservation observe_merkle_proof(const td::Ref<vm::Cell>& source,
+                                            const vm::MerkleProof::IsPrunnedFunction& is_prunned, bool direct) {
+  MerkleProofCreateCounter counter;
+  td::Ref<vm::Cell> root;
+  {
+    vm::VmStateInterface::Guard guard{&counter};
+    root = direct ? vm::MerkleProof::generate_raw(source, is_prunned).move_as_ok()
+                  : ReferenceMerkleProofBuilder(is_prunned).create(source);
+  }
+  return {root, vm::std_boc_serialize(root, 31).move_as_ok(), counter.creates, counter.registrations};
+}
+
+void assert_same_merkle_proof(const MerkleProofObservation& expected, const MerkleProofObservation& actual) {
+  ASSERT_EQ(expected.root->get_level_mask(), actual.root->get_level_mask());
+  for (unsigned level = 0; level <= vm::Cell::max_level; ++level) {
+    ASSERT_EQ(expected.root->get_hash(level), actual.root->get_hash(level));
+    ASSERT_EQ(expected.root->get_depth(level), actual.root->get_depth(level));
+  }
+  ASSERT_TRUE(expected.boc.as_slice() == actual.boc.as_slice());
+  ASSERT_EQ(expected.creates, actual.creates);
+  ASSERT_EQ(expected.registrations, actual.registrations);
+}
+
+struct RandomMerkleProofCase {
+  td::Ref<vm::Cell> root;
+  td::HashSet<vm::CellHash> prunned_hashes;
+};
+
+RandomMerkleProofCase make_merkle_proof_case(td::uint32 seed) {
+  std::mt19937 random{seed};
+  std::array<unsigned char, vm::Cell::max_bytes> data{};
+  auto make_leaf = [&](unsigned bits) {
+    for (auto& byte : data) {
+      byte = static_cast<unsigned char>(random());
+    }
+    return vm::CellBuilder{}.store_bits(data.data(), bits).finalize_novm();
+  };
+
+  auto equal_a = make_leaf(1 + random() % 127);
+  vm::CellSlice equal_slice{vm::NoVm{}, equal_a};
+  auto equal_b = vm::CellBuilder{}.store_bits(equal_slice.fetch_bits(equal_slice.size())).finalize_novm();
+  ASSERT_TRUE(equal_a.get() != equal_b.get());
+  ASSERT_EQ(equal_a->get_hash(), equal_b->get_hash());
+  auto alias = vm::CellBuilder{}.store_long(random(), 32).store_ref(equal_a).store_ref(equal_b).finalize_novm();
+  auto prunned_source = vm::CellBuilder{}.store_long(random(), 32).store_ref(make_leaf(73)).finalize_novm();
+  auto prunned = vm::CellBuilder::do_create_pruned_branch(prunned_source, 1);
+  auto merkle = vm::CellBuilder::create_merkle_proof(alias);
+
+  std::vector<td::Ref<vm::Cell>> nodes{equal_a, equal_b, alias, prunned_source};
+  for (unsigned i = 0; i < 24; ++i) {
+    for (auto& byte : data) {
+      byte = static_cast<unsigned char>(random());
+    }
+    vm::CellBuilder builder;
+    builder.store_bits(data.data(), 1 + random() % 257);
+    auto refs = std::min<unsigned>(random() % 5, static_cast<unsigned>(nodes.size()));
+    for (unsigned j = 0; j < refs; ++j) {
+      builder.store_ref(nodes[random() % nodes.size()]);
+    }
+    nodes.push_back(builder.finalize_novm());
+  }
+  td::Ref<vm::Cell> root = vm::CellBuilder{}
+                               .store_long(seed, 32)
+                               .store_ref(alias)
+                               .store_ref(prunned)
+                               .store_ref(merkle)
+                               .store_ref(nodes.back())
+                               .finalize_novm();
+  td::HashSet<vm::CellHash> prunned_hashes;
+  prunned_hashes.insert((seed & 1 ? equal_a : alias)->get_hash());
+  if (seed & 2) {
+    root = root->virtualize(0);
+  }
+  return {std::move(root), std::move(prunned_hashes)};
+}
+
+class FailingMerkleProofCell final : public vm::Cell {
+ private:
+  struct PrivateTag {};
+
+ public:
+  static td::Ref<vm::Cell> create(td::Ref<vm::DataCell> identity, std::shared_ptr<unsigned> loads) {
+    return td::Ref<FailingMerkleProofCell>{true, std::move(identity), std::move(loads), PrivateTag{}};
+  }
+
+  FailingMerkleProofCell(td::Ref<vm::DataCell> identity, std::shared_ptr<unsigned> loads, PrivateTag)
+      : identity_(std::move(identity)), loads_(std::move(loads)) {
+  }
+
+  td::Status set_data_cell(td::Ref<vm::DataCell>&&) const override {
+    return td::Status::Error("failing Merkle proof test cell");
+  }
+  td::Result<LoadedCell> load_cell() const override {
+    ++*loads_;
+    return td::Status::Error("failing Merkle proof test cell");
+  }
+  bool is_virtualized() const override {
+    return false;
+  }
+  vm::CellUsageTree::NodePtr get_tree_node() const override {
+    return {};
+  }
+  bool is_loaded() const override {
+    return true;
+  }
+  LevelMask get_level_mask() const override {
+    return identity_->get_level_mask();
+  }
+
+ protected:
+  const Hash do_get_hash(td::uint32 level) const override {
+    return identity_->get_hash(level);
+  }
+  td::uint16 do_get_depth(td::uint32 level) const override {
+    return identity_->get_depth(level);
+  }
+
+ private:
+  td::Ref<vm::DataCell> identity_;
+  std::shared_ptr<unsigned> loads_;
+};
+
+}  // namespace
+
+TEST(VM, merkle_proof_direct_build_matches_reference_bytes_hashes_and_accounting) {
+  for (td::uint32 seed = 1; seed <= 24; ++seed) {
+    auto test_case = make_merkle_proof_case(seed * 0x9e3779b9U);
+    auto is_prunned = [&hashes = test_case.prunned_hashes](const td::Ref<vm::Cell>& cell) {
+      return hashes.count(cell->get_hash()) != 0;
+    };
+    auto expected = observe_merkle_proof(test_case.root, is_prunned, false);
+    auto actual = observe_merkle_proof(test_case.root, is_prunned, true);
+    assert_same_merkle_proof(expected, actual);
+  }
+}
+
+TEST(VM, merkle_proof_hash_predicate_preserves_usage_and_virtual_context) {
+  auto equal_a = vm::CellBuilder{}.store_long(0x1234, 16).finalize_novm();
+  auto equal_b = vm::CellBuilder{}.store_long(0x1234, 16).finalize_novm();
+  auto kept = vm::CellBuilder{}.store_ref(equal_a).store_ref(equal_b).finalize_novm();
+  auto prunned_leaf = vm::CellBuilder{}.store_long(0x55, 8).finalize_novm();
+  auto prunned_fork = vm::CellBuilder{}.store_ref(equal_a).finalize_novm();
+  auto inner = vm::CellBuilder{}
+                   .store_long(0xabcdef, 24)
+                   .store_ref(kept)
+                   .store_ref(prunned_leaf)
+                   .store_ref(prunned_fork)
+                   .finalize_novm();
+  auto root = vm::CellBuilder{}.store_ref(vm::CellBuilder::create_merkle_proof(inner)).finalize_novm();
+  td::HashSet<vm::CellHash> prunned{prunned_leaf->get_hash(), prunned_fork->get_hash()};
+
+  struct Observation {
+    td::BufferSlice boc;
+    std::vector<vm::CellHash> loads;
+    std::vector<bool> loaded;
+  };
+  auto observe = [&](bool hash_only) {
+    auto tree = std::make_shared<vm::CellUsageTree>();
+    Observation result;
+    tree->set_cell_load_callback(
+        [&](const vm::LoadedCell& loaded) { result.loads.push_back(loaded.data_cell->get_hash()); });
+    auto usage_root = vm::UsageCell::create(root->virtualize(0), tree->root_ptr());
+    td::Ref<vm::Cell> proof;
+    if (hash_only) {
+      proof = vm::MerkleProof::generate_by_hash(std::move(usage_root), [&](const vm::Cell::Hash& hash) {
+                return prunned.count(hash) != 0;
+              }).move_as_ok();
+    } else {
+      proof = vm::MerkleProof::generate(std::move(usage_root), [&](const td::Ref<vm::Cell>& cell) {
+                return prunned.count(cell->get_hash()) != 0;
+              }).move_as_ok();
+    }
+    result.boc = vm::std_boc_serialize(proof, 31).move_as_ok();
+    auto root_id = tree->root_id();
+    result.loaded.push_back(tree->is_loaded(root_id));
+    result.loaded.push_back(tree->is_loaded(tree->get_child(root_id, 0)));
+    return result;
+  };
+
+  auto generic = observe(false);
+  auto by_hash = observe(true);
+  ASSERT_TRUE(generic.boc.as_slice() == by_hash.boc.as_slice());
+  ASSERT_TRUE(generic.loads == by_hash.loads);
+  ASSERT_TRUE(generic.loaded == by_hash.loaded);
+}
+
+TEST(VM, merkle_proof_hash_predicate_matches_malformed_pruned_boundary) {
+  struct Observation {
+    vm::CellHash hash;
+    td::uint16 depth;
+    std::vector<bool> loaded;
+    unsigned failed_loads;
+  };
+  auto observe = [&](bool hash_only) {
+    auto failed_loads = std::make_shared<unsigned>();
+    auto identity = vm::CellBuilder{}.store_long(0x77, 8).finalize_novm();
+    auto failing = FailingMerkleProofCell::create(identity, failed_loads);
+    auto root = vm::CellBuilder{}.store_long(0x88, 8).store_ref(failing).finalize_novm();
+    auto failing_hash = failing->get_hash();
+    auto tree = std::make_shared<vm::CellUsageTree>();
+    auto usage_root = vm::UsageCell::create(root, tree->root_ptr());
+    td::Ref<vm::Cell> proof;
+    if (hash_only) {
+      proof = vm::MerkleProof::generate_raw_by_hash(std::move(usage_root), [&](const vm::Cell::Hash& hash) {
+                return hash == failing_hash;
+              }).move_as_ok();
+    } else {
+      proof = ReferenceMerkleProofBuilder([&](const td::Ref<vm::Cell>& cell) {
+                return cell->get_hash() == failing_hash;
+              }).create(std::move(usage_root));
+    }
+    auto root_id = tree->root_id();
+    auto child_id = tree->get_child(root_id, 0);
+    return Observation{proof->get_hash(),
+                       proof->get_depth(),
+                       {tree->is_loaded(root_id), child_id != 0 && tree->is_loaded(child_id)},
+                       *failed_loads};
+  };
+
+  auto generic = observe(false);
+  auto by_hash = observe(true);
+  ASSERT_EQ(generic.hash, by_hash.hash);
+  ASSERT_EQ(generic.depth, by_hash.depth);
+  ASSERT_TRUE(generic.loaded == by_hash.loaded);
+  ASSERT_EQ(generic.failed_loads, by_hash.failed_loads);
+  ASSERT_EQ(by_hash.failed_loads, 1u);
+
+  auto null_generic = vm::MerkleProof::generate({}, [](const td::Ref<vm::Cell>&) { return false; });
+  auto null_by_hash = vm::MerkleProof::generate_by_hash({}, [](const vm::Cell::Hash&) { return false; });
+  ASSERT_TRUE(null_generic.is_error());
+  ASSERT_TRUE(null_by_hash.is_error());
+  ASSERT_TRUE(null_generic.error().message() == null_by_hash.error().message());
+}

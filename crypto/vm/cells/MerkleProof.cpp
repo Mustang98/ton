@@ -16,7 +16,9 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <array>
 #include <map>
+#include <vector>
 
 #include "td/utils/HashMap.h"
 #include "td/utils/HashSet.h"
@@ -32,17 +34,20 @@ class MerkleProofImpl {
  public:
   explicit MerkleProofImpl(MerkleProof::IsPrunnedFunction is_prunned) : is_prunned_(std::move(is_prunned)) {
   }
+  explicit MerkleProofImpl(MerkleProof::IsHashPrunnedFunction is_prunned) : is_hash_prunned_(std::move(is_prunned)) {
+  }
   explicit MerkleProofImpl(CellUsageTree *usage_tree) : usage_tree_(usage_tree) {
   }
 
   td::Result<Ref<Cell>> create_from(Ref<Cell> cell) {
-    if (!is_prunned_) {
+    if (!is_prunned_ && !is_hash_prunned_) {
       CHECK(usage_tree_);
       dfs_usage_tree(cell, usage_tree_->root_id());
-      is_prunned_ = [this](const Ref<Cell> &cell) { return visited_cells_.count(cell->get_hash()) == 0; };
+      is_hash_prunned_ = [this](const Cell::Hash &hash) { return visited_cells_.count(hash) == 0; };
     }
     try {
-      return dfs(cell, cell->get_level());
+      auto merkle_depth = cell->get_level();
+      return dfs(std::move(cell), merkle_depth, {});
     } catch (CellBuilder::CellWriteError &) {
       return td::Status::Error("failed to generate Merkle proof: cell write error");
     } catch (CellBuilder::CellCreateError &) {
@@ -52,45 +57,87 @@ class MerkleProofImpl {
 
  private:
   using Key = std::pair<Cell::Hash, unsigned>;
-  td::HashMap<Key, Ref<Cell>> cells_;
+  // The output is known only after its children have been built. Keep a stable
+  // vector slot in the map so a first visit does not need a second map probe.
+  td::HashMap<Key, std::size_t> cell_slots_;
+  std::vector<Ref<Cell>> cells_;
   td::HashSet<Cell::Hash> visited_cells_;
   CellUsageTree *usage_tree_{nullptr};
   MerkleProof::IsPrunnedFunction is_prunned_;
+  MerkleProof::IsHashPrunnedFunction is_hash_prunned_;
 
-  void dfs_usage_tree(Ref<Cell> cell, CellUsageTree::NodeId node_id) {
+  static void apply_tree_context(CellUsageTree::NodePtr tree_node, Cell::LoadedCell &loaded) {
+    if (!tree_node.empty() && tree_node.on_load(loaded)) {
+      CHECK(loaded.tree_node.empty());
+      loaded.tree_node = std::move(tree_node);
+    }
+  }
+
+  void dfs_usage_tree(Ref<Cell> cell, CellUsageTree::NodeId node_id, CellUsageTree::NodePtr tree_node = {}) {
     if (!usage_tree_->is_loaded(node_id)) {
       return;
     }
     visited_cells_.insert(cell->get_hash());
-    CellSlice cs(NoVm(), cell);
-    for (unsigned i = 0; i < cs.size_refs(); i++) {
-      dfs_usage_tree(cs.prefetch_ref(i), usage_tree_->get_child(node_id, i));
+    auto r_loaded = cell->load_cell();
+    if (r_loaded.is_error()) {
+      // CellSlice(NoVm, cell), used by the legacy traversal, silently becomes
+      // empty on a failed load and therefore has no children to visit.
+      return;
+    }
+    auto loaded = r_loaded.move_as_ok();
+    apply_tree_context(std::move(tree_node), loaded);
+    auto data_cell = std::move(loaded.data_cell);
+    auto loaded_tree_node = std::move(loaded.tree_node);
+    bool merkle = data_cell->special_type() == Cell::SpecialType::MerkleProof ||
+                  data_cell->special_type() == Cell::SpecialType::MerkleUpdate;
+    auto child_effective_level = merkle ? loaded.effective_level + 1 : loaded.effective_level;
+    for (unsigned i = 0; i < data_cell->get_refs_cnt(); i++) {
+      auto child = data_cell->get_ref(i);
+      auto *child_ptr = child.get();
+      child = child_ptr->virtualize_ref(std::move(child), child_effective_level);
+      auto child_tree_node = loaded_tree_node.empty() ? CellUsageTree::NodePtr{} : loaded_tree_node.create_child(i);
+      dfs_usage_tree(std::move(child), usage_tree_->get_child(node_id, i), std::move(child_tree_node));
     }
   }
 
-  Ref<Cell> dfs(Ref<Cell> cell, unsigned merkle_depth) {
-    CHECK(cell.not_null());
-    Key key{cell->get_hash(), merkle_depth};
-    {
-      auto it = cells_.find(key);
-      if (it != cells_.end()) {
-        CHECK(it->second.not_null());
-        return it->second;
+  Ref<Cell> create_pruned_branch(Ref<Cell> cell, unsigned merkle_depth, CellUsageTree::NodePtr tree_node) {
+    if (tree_node.empty()) {
+      return CellBuilder::create_pruned_branch(std::move(cell), merkle_depth + 1);
+    }
+    // Preserve create_pruned_branch's loaded-leaf shortcut and the UsageCell
+    // load callback without allocating a wrapper on the common non-leaf path.
+    if (cell->is_loaded() && !cell->is_virtualized()) {
+      auto return_tree_node = tree_node;
+      auto r_loaded = cell->load_cell();
+      if (r_loaded.is_error()) {
+        return UsageCell::create(std::move(cell), std::move(return_tree_node));
+      }
+      auto loaded = r_loaded.move_as_ok();
+      apply_tree_context(std::move(tree_node), loaded);
+      if (loaded.data_cell->size_refs() == 0) {
+        return UsageCell::create(std::move(cell), std::move(return_tree_node));
       }
     }
+    return CellBuilder::do_create_pruned_branch(std::move(cell), merkle_depth + 1);
+  }
 
-    if (is_prunned_(cell)) {
-      auto res = CellBuilder::create_pruned_branch(cell, merkle_depth + 1);
-      CHECK(res.not_null());
-      cells_.emplace(key, res);
-      return res;
+  Ref<Cell> dfs(Ref<Cell> cell, unsigned merkle_depth, CellUsageTree::NodePtr tree_node) {
+    CHECK(cell.not_null());
+    Key key{cell->get_hash(), merkle_depth};
+    auto [it, inserted] = cell_slots_.emplace(key, cells_.size());
+    if (!inserted) {
+      CHECK(cells_[it->second].not_null());
+      return cells_[it->second];
     }
-    CellSlice cs(NoVm(), cell);
-    int children_merkle_depth = cs.child_merkle_depth(merkle_depth);
-    CellBuilder cb;
-    cb.store_bits(cs.fetch_bits(cs.size()));
-    for (unsigned i = 0; i < cs.size_refs(); i++) {
-      cb.store_ref(dfs(cs.prefetch_ref(i), children_merkle_depth));
+    auto slot = it->second;
+    cells_.emplace_back();
+
+    bool is_prunned = is_hash_prunned_ ? is_hash_prunned_(key.first) : is_prunned_(cell);
+    if (is_prunned) {
+      auto res = create_pruned_branch(std::move(cell), merkle_depth, std::move(tree_node));
+      CHECK(res.not_null());
+      cells_[slot] = res;
+      return res;
     }
     auto hash_hint = [&](unsigned level, const Cell::LevelMask &, CellHash &hash) {
       if (level <= merkle_depth) {
@@ -99,16 +146,47 @@ class MerkleProofImpl {
       }
       return false;
     };
-    auto res = cb.finalize(cs.is_special(), std::move(hash_hint));
+    auto loaded = cell->load_cell().move_as_ok();
+    apply_tree_context(std::move(tree_node), loaded);
+    auto data_cell = std::move(loaded.data_cell);
+    auto loaded_tree_node = std::move(loaded.tree_node);
+    auto bits = data_cell->get_bits();
+    auto refs_count = data_cell->get_refs_cnt();
+    bool merkle = data_cell->special_type() == Cell::SpecialType::MerkleProof ||
+                  data_cell->special_type() == Cell::SpecialType::MerkleUpdate;
+    int children_merkle_depth = merkle ? merkle_depth + 1 : merkle_depth;
+    auto child_effective_level = merkle ? loaded.effective_level + 1 : loaded.effective_level;
+    std::array<Ref<Cell>, Cell::max_refs> refs;
+    for (unsigned i = 0; i < refs_count; i++) {
+      auto child = data_cell->get_ref(i);
+      auto *child_ptr = child.get();
+      child = child_ptr->virtualize_ref(std::move(child), child_effective_level);
+      auto child_tree_node = loaded_tree_node.empty() ? CellUsageTree::NodePtr{} : loaded_tree_node.create_child(i);
+      if (is_hash_prunned_) {
+        refs[i] = dfs(std::move(child), children_merkle_depth, std::move(child_tree_node));
+      } else {
+        if (!child_tree_node.empty()) {
+          child = UsageCell::create(std::move(child), std::move(child_tree_node));
+        }
+        refs[i] = dfs(std::move(child), children_merkle_depth, {});
+      }
+    }
+    auto res = CellBuilder::create_data_cell(td::Slice{data_cell->get_data(), (bits + 7) / 8}, bits,
+                                             td::mutable_span(refs.data(), refs_count), data_cell->is_special(),
+                                             std::move(hash_hint));
     CHECK(res.not_null());
-    cells_.emplace(key, res);
+    cells_[slot] = res;
     return res;
   }
 };
 }  // namespace detail
 
 td::Result<Ref<Cell>> MerkleProof::generate_raw(Ref<Cell> cell, IsPrunnedFunction is_prunned) {
-  return detail::MerkleProofImpl(is_prunned).create_from(cell);
+  return detail::MerkleProofImpl(std::move(is_prunned)).create_from(std::move(cell));
+}
+
+td::Result<Ref<Cell>> MerkleProof::generate_raw_by_hash(Ref<Cell> cell, IsHashPrunnedFunction is_prunned) {
+  return detail::MerkleProofImpl(std::move(is_prunned)).create_from(std::move(cell));
 }
 
 td::Result<Ref<Cell>> MerkleProof::generate_raw(Ref<Cell> cell, CellUsageTree *usage_tree) {
@@ -116,7 +194,8 @@ td::Result<Ref<Cell>> MerkleProof::generate_raw(Ref<Cell> cell, CellUsageTree *u
 }
 
 Ref<Cell> MerkleProof::virtualize_raw(Ref<Cell> cell, td::uint32 effective_level) {
-  return cell->virtualize(effective_level);
+  auto *cell_ptr = cell.get();
+  return cell_ptr->virtualize_ref(std::move(cell), effective_level);
 }
 
 td::Result<Ref<Cell>> MerkleProof::generate(Ref<Cell> cell, IsPrunnedFunction is_prunned) {
@@ -126,7 +205,18 @@ td::Result<Ref<Cell>> MerkleProof::generate(Ref<Cell> cell, IsPrunnedFunction is
   if (cell->get_level() != 0) {
     return td::Status::Error("failed to generate Merkle proof: level is not 0");
   }
-  TRY_RESULT(raw, generate_raw(std::move(cell), is_prunned));
+  TRY_RESULT(raw, generate_raw(std::move(cell), std::move(is_prunned)));
+  return CellBuilder::create_merkle_proof(std::move(raw));
+}
+
+td::Result<Ref<Cell>> MerkleProof::generate_by_hash(Ref<Cell> cell, IsHashPrunnedFunction is_prunned) {
+  if (cell.is_null()) {
+    return td::Status::Error("failed to generate Merkle proof: cell is null");
+  }
+  if (cell->get_level() != 0) {
+    return td::Status::Error("failed to generate Merkle proof: level is not 0");
+  }
+  TRY_RESULT(raw, generate_raw_by_hash(std::move(cell), std::move(is_prunned)));
   return CellBuilder::create_merkle_proof(std::move(raw));
 }
 
@@ -157,7 +247,8 @@ static td::Result<Ref<Cell>> unpack_proof(Ref<Cell> cell) {
 
 td::Result<Ref<Cell>> MerkleProof::virtualize(Ref<Cell> cell) {
   TRY_RESULT(unpacked_cell, unpack_proof(std::move(cell)));
-  return unpacked_cell->virtualize(0);
+  auto *cell_ptr = unpacked_cell.get();
+  return cell_ptr->virtualize_ref(std::move(unpacked_cell), 0);
 }
 
 class MerkleProofCombineFast {
