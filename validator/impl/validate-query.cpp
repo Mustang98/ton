@@ -3212,8 +3212,22 @@ bool ValidateQuery::unpack_block_data() {
   out_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(outmsg_cs), 256, t_OutMsgDescr.aug);
   account_blocks_dict_ = std::make_unique<vm::AugmentedDictionary>(
       vm::load_cell_slice_ref(std::move(shard_account_blocks_root)), 256, block::tlb::aug_ShardAccountBlocks);
-  // Generated schema validation plus either the exact augmentation replay or
-  // the complete legacy pass has checked all labels, values, and extras.
+  if (!use_augmentation_replay) {
+    // Preserve the complete legacy fallback, including its validation and
+    // error order. Only an exact, complete certificate can skip this pass.
+    LOG(DEBUG) << "validating InMsgDescr";
+    if (!in_msg_dict_->validate_all()) {
+      return reject_query("InMsgDescr dictionary is invalid");
+    }
+    LOG(DEBUG) << "validating OutMsgDescr";
+    if (!out_msg_dict_->validate_all()) {
+      return reject_query("OutMsgDescr dictionary is invalid");
+    }
+    LOG(DEBUG) << "validating ShardAccountBlocks";
+    if (!account_blocks_dict_->validate_all()) {
+      return reject_query("ShardAccountBlocks dictionary is invalid");
+    }
+  }
   return unpack_precheck_value_flow(std::move(blk.value_flow));
 }
 
