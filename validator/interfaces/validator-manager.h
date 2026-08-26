@@ -112,9 +112,6 @@ struct CollationStats {
   std::string time_stats;
 
   td::uint32 transactions = 0;
-  // Number of committed generated-Transaction checks reused by the Collator's
-  // final whole-block validity pass.
-  td::uint32 transaction_tlb_reuse_hits = 0;
   std::vector<BlockIdExt> shard_configuration;
   td::uint32 ext_msgs_total = 0;
   td::uint32 ext_msgs_filtered = 0;

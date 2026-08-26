@@ -20,7 +20,6 @@
 #include <functional>
 #include <iostream>
 #include <map>
-#include <optional>
 
 #include "vm/cellslice.h"
 
@@ -271,37 +270,15 @@ class TLB {
 
   class ValidateCache : public td::Context<ValidateCache> {
    public:
-    // Skip means that lookup has established validity and, when ops is not
-    // null, has already charged the operation budget. ValidateAndRecord asks
-    // validate_ref_internal() to report the cost only after full success.
-    enum class Action { Validate, ValidateAndRecord, Skip };
-    using Lookup = std::function<Action(const TLB*, const td::Ref<vm::Cell>&, int*, bool)>;
-    using OnValidated = std::function<void(const TLB*, const td::Ref<vm::Cell>&, std::optional<int>, bool)>;
-
-    ValidateCache(Lookup lookup, OnValidated on_validated = {})
-        : lookup_(std::move(lookup)), on_validated_(std::move(on_validated)) {
-    }
-    ValidateCache(std::function<bool(const TLB*, const td::Ref<vm::Cell>&)> lookup)
-        : lookup_([lookup = std::move(lookup)](const TLB* type, const td::Ref<vm::Cell>& cell, int*, bool) {
-          return lookup(type, cell) ? Action::Validate : Action::Skip;
-        }) {
-    }
-    Action lookup(const TLB* type, const td::Ref<vm::Cell>& cell, int* ops, bool weak) {
-      return lookup_(type, cell, ops, weak);
+    ValidateCache(std::function<bool(const TLB*, const td::Ref<vm::Cell>&)> f) : f_(std::move(f)) {
     }
     bool operator()(const TLB* type, const td::Ref<vm::Cell>& cell) {
-      return lookup(type, cell, nullptr, false) != Action::Skip;
-    }
-    void on_validated(const TLB* type, const td::Ref<vm::Cell>& cell, std::optional<int> ops_used, bool weak) {
-      if (on_validated_) {
-        on_validated_(type, cell, ops_used, weak);
-      }
+      return f_(type, cell);
     }
     static ValidateCache create_for_type(const TLB* type);
 
    private:
-    Lookup lookup_;
-    OnValidated on_validated_;
+    std::function<bool(const TLB*, const td::Ref<vm::Cell>&)> f_;
   };
 
  protected:

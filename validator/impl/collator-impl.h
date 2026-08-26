@@ -392,7 +392,6 @@ class Collator final : public td::actor::Actor {
   bool update_min_mc_seqno(ton::BlockSeqno some_mc_seqno);
   bool process_account_storage_dict(block::Account& account);
   bool combine_account_transactions();
-  void remember_committed_transaction_tlb(const block::transaction::Transaction& trans);
   bool update_public_libraries();
   bool update_account_public_libraries(Ref<vm::Cell> orig_libs, Ref<vm::Cell> final_libs, const td::Bits256& addr);
   bool add_public_library(td::ConstBitPtr key, td::ConstBitPtr addr, Ref<vm::Cell> library);
@@ -441,13 +440,6 @@ class Collator final : public td::actor::Actor {
   void finalize_stats();
 
   AccountStorageDict* current_tx_storage_dict_ = nullptr;
-
-  // Scalar certificate for generated Transaction checks completed before
-  // commit. It is used only when every transaction serialized into the block
-  // is covered.
-  td::uint64 committed_transaction_tlb_ops_{0};
-  td::uint64 committed_transaction_tlb_count_{0};
-  bool committed_transaction_tlb_certificate_complete_{false};
 
   void on_cell_loaded(const vm::LoadedCell& cell);
   void set_current_tx_storage_dict(const block::Account& account);
