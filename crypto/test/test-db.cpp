@@ -3881,6 +3881,67 @@ TEST(TonDb, DoNotMakeListsPrunned) {
   ASSERT_TRUE(!virtualized_proof->is_virtualized());
 }
 
+class StorageStatHashProbe final : public vm::Cell {
+ public:
+  static td::Ref<vm::Cell> create(td::Ref<vm::Cell> cell, std::shared_ptr<std::size_t> hash_calls) {
+    return td::Ref<StorageStatHashProbe>{true, std::move(cell), std::move(hash_calls)};
+  }
+
+  StorageStatHashProbe(td::Ref<vm::Cell> cell, std::shared_ptr<std::size_t> hash_calls)
+      : cell_(std::move(cell)), hash_calls_(std::move(hash_calls)) {
+  }
+
+  td::Status set_data_cell(td::Ref<vm::DataCell> &&data_cell) const override {
+    return cell_->set_data_cell(std::move(data_cell));
+  }
+
+  td::Result<vm::LoadedCell> load_cell() const override {
+    return cell_->load_cell();
+  }
+
+  bool is_virtualized() const override {
+    return cell_->is_virtualized();
+  }
+
+  vm::CellUsageTree::NodePtr get_tree_node() const override {
+    return cell_->get_tree_node();
+  }
+
+  bool is_loaded() const override {
+    return cell_->is_loaded();
+  }
+
+  LevelMask get_level_mask() const override {
+    return cell_->get_level_mask();
+  }
+
+ private:
+  td::uint16 do_get_depth(td::uint32 level) const override {
+    return cell_->get_depth(level);
+  }
+
+  const Hash do_get_hash(td::uint32 level) const override {
+    ++*hash_calls_;
+    return cell_->get_hash(level);
+  }
+
+  td::Ref<vm::Cell> cell_;
+  std::shared_ptr<std::size_t> hash_calls_;
+};
+
+TEST(TonDb, NewCellStorageStatCachesHashPerVisit) {
+  auto cell = vm::CellBuilder{}.store_long(0x42, 8).finalize_novm();
+  vm::NewCellStorageStat parent;
+  auto expected = parent.tentative_add_cell(cell);
+
+  auto hash_calls = std::make_shared<std::size_t>(0);
+  auto probe = StorageStatHashProbe::create(std::move(cell), hash_calls);
+  auto actual = parent.tentative_add_cell(std::move(probe));
+
+  ASSERT_TRUE(actual == expected);
+  ASSERT_EQ(*hash_calls, 1u);
+}
+
 TEST(TonDb, CellStat) {
   td::Random::Xorshift128plus rnd(123);
   bool with_prunned_branches = true;

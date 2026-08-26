@@ -1219,9 +1219,19 @@ void NewCellStorageStat::dfs(Ref<Cell> cell, bool need_stat, bool need_proof_sta
     // FIXME: save error flag?
     return;
   }
+  Cell::Hash hash;
+  bool has_hash = false;
+  auto get_hash = [&]() -> const Cell::Hash& {
+    if (!has_hash) {
+      hash = cell->get_hash();
+      has_hash = true;
+    }
+    return hash;
+  };
   if (need_stat) {
     stat_.internal_refs++;
-    if ((parent_ && parent_->seen_.count(cell->get_hash()) != 0) || !seen_.insert(cell->get_hash()).second) {
+    const auto& cell_hash = get_hash();
+    if ((parent_ && parent_->seen_.count(cell_hash) != 0) || !seen_.insert(cell_hash).second) {
       need_stat = false;
     } else {
       stat_.cells++;
@@ -1235,8 +1245,8 @@ void NewCellStorageStat::dfs(Ref<Cell> cell, bool need_stat, bool need_proof_sta
       need_proof_stat = false;
     } else {
       proof_stat_.internal_refs++;
-      if ((parent_ && parent_->proof_seen_.count(cell->get_hash()) != 0) ||
-          !proof_seen_.insert(cell->get_hash()).second) {
+      const auto& cell_hash = get_hash();
+      if ((parent_ && parent_->proof_seen_.count(cell_hash) != 0) || !proof_seen_.insert(cell_hash).second) {
         need_proof_stat = false;
       } else {
         proof_stat_.cells++;
