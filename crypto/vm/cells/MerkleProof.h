@@ -28,13 +28,10 @@ namespace vm {
 class MerkleProof {
  public:
   using IsPrunnedFunction = std::function<bool(const Ref<Cell> &)>;
-  using IsHashPrunnedFunction = std::function<bool(const Cell::Hash &)>;
 
   // works with proofs wrapped in MerkleProof special cell
   // cells must have zero level
   static td::Result<Ref<Cell>> generate(Ref<Cell> cell, IsPrunnedFunction is_prunned);
-  // Hash-only variant avoids materializing UsageCell wrappers solely for the pruning predicate.
-  static td::Result<Ref<Cell>> generate_by_hash(Ref<Cell> cell, IsHashPrunnedFunction is_prunned);
   static td::Result<Ref<Cell>> generate(Ref<Cell> cell, CellUsageTree *usage_tree);
 
   // cell must have zero level and must be a MerkleProof
@@ -46,7 +43,6 @@ class MerkleProof {
   // works with unwrapped proofs
   // works fine with cell of non-zero level, but this is not supported (yet?) in MerkeProof special cell
   static td::Result<Ref<Cell>> generate_raw(Ref<Cell> cell, IsPrunnedFunction is_prunned);
-  static td::Result<Ref<Cell>> generate_raw_by_hash(Ref<Cell> cell, IsHashPrunnedFunction is_prunned);
   static td::Result<Ref<Cell>> generate_raw(Ref<Cell> cell, CellUsageTree *usage_tree);
   static Ref<Cell> virtualize_raw(Ref<Cell> cell, td::uint32 effective_level);
   static td::Result<Ref<Cell>> combine_raw(Ref<Cell> a, Ref<Cell> b);

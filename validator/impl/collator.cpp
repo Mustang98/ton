@@ -6368,8 +6368,8 @@ bool Collator::create_collated_data() {
     }
 
     state_usage_tree_->set_use_mark_for_is_loaded(false);
-    auto r_state_proof = vm::MerkleProof::generate_by_hash(
-        prev_state_root_, [&](const vm::Cell::Hash& hash) { return !collated_data_stat.is_loaded(hash); });
+    auto r_state_proof = vm::MerkleProof::generate(
+        prev_state_root_, [&](const Ref<vm::Cell>& c) { return !collated_data_stat.is_loaded(c->get_hash()); });
     if (r_state_proof.is_error()) {
       return fatal_error("cannot generate Merkle proof for previous state");
     }
@@ -6394,8 +6394,8 @@ bool Collator::create_collated_data() {
       // This was already generated in "3. Previous state proof"
       continue;
     }
-    auto r_proof = vm::MerkleProof::generate_by_hash(
-        mpb.original_root(), [&](const vm::Cell::Hash& hash) { return !collated_data_stat.is_loaded(hash); });
+    auto r_proof = vm::MerkleProof::generate(
+        mpb.original_root(), [&](const Ref<vm::Cell>& c) { return !collated_data_stat.is_loaded(c->get_hash()); });
     if (r_proof.is_error()) {
       return fatal_error("cannot generate Merkle proof for neighbor");
     }
@@ -6419,8 +6419,8 @@ bool Collator::create_collated_data() {
     if (!dict.add_to_collated_data) {
       continue;
     }
-    auto r_proof = vm::MerkleProof::generate_by_hash(
-        dict.mpb.original_root(), [&](const vm::Cell::Hash& hash) { return !collated_data_stat.is_loaded(hash); });
+    auto r_proof = vm::MerkleProof::generate(
+        dict.mpb.original_root(), [&](const Ref<vm::Cell>& c) { return !collated_data_stat.is_loaded(c->get_hash()); });
     if (r_proof.is_error()) {
       return fatal_error("cannot generate Merkle proof for neighbor");
     }
