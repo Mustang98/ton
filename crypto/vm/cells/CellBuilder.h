@@ -180,6 +180,10 @@ class CellBuilder : public td::CntObject {
   Ref<DataCell> finalize(bool special = false, DataCell::HashHint hash_hint = {});
   Ref<DataCell> finalize_novm(bool special = false, DataCell::HashHint hash_hint = {});
   td::Result<Ref<DataCell>> finalize_novm_nothrow(bool special = false, DataCell::HashHint hash_hint = {});
+  // Constructs directly from caller-owned data and references while preserving finalize()'s VM accounting and
+  // exception contract.  The reference span is consumed on success and unchanged if DataCell validation fails.
+  static Ref<DataCell> create_data_cell(td::Slice data, int bit_length, td::MutableSpan<Ref<Cell>> refs,
+                                        bool special = false, DataCell::HashHint hash_hint = {});
   bool finalize_to(Ref<Cell>& res, bool special = false, DataCell::HashHint hash_hint = {}) {
     return (res = finalize(special, std::move(hash_hint))).not_null();
   }

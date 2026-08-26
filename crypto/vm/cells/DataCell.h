@@ -43,6 +43,10 @@ class DataCell final : public Cell {
 
   static td::Result<Ref<DataCell>> create(td::Slice data, int bit_length, td::Span<Ref<Cell>> refs, bool is_special,
                                           HashHint hash_hint = {});
+  // Consuming variant for destructive builders.  Child references are only moved after validation, hashing,
+  // allocation, and initialization have succeeded, so an error leaves the caller's span unchanged.
+  static td::Result<Ref<DataCell>> create_consume(td::Slice data, int bit_length, td::MutableSpan<Ref<Cell>> refs,
+                                                  bool is_special, HashHint hash_hint = {});
 
   static void store_depth(td::uint8* dest, td::uint16 depth) {
     td::bitstring::bits_store_long(dest, depth, depth_bits);
@@ -176,6 +180,8 @@ class DataCell final : public Cell {
 
   DataCell(int bit_length, size_t refs_cnt, Cell::SpecialType type, LevelMask level_mask, bool allocated_in_arena,
            bool virtualized);
+  static td::Result<Ref<DataCell>> create_impl(td::Slice data, int bit_length, td::Span<Ref<Cell>> refs,
+                                               Ref<Cell>* refs_to_move, bool is_special, HashHint hash_hint);
 
   const detail::LevelInfo* level_info() const {
     return reinterpret_cast<const detail::LevelInfo*>(trailer_);

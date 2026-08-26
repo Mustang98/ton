@@ -355,6 +355,16 @@ thread_local bool DataCell::use_arena = false;
 
 td::Result<Ref<DataCell>> DataCell::create(td::Slice data, int bit_length, td::Span<Ref<Cell>> refs, bool is_special,
                                            HashHint hash_hint) {
+  return create_impl(data, bit_length, refs, nullptr, is_special, std::move(hash_hint));
+}
+
+td::Result<Ref<DataCell>> DataCell::create_consume(td::Slice data, int bit_length, td::MutableSpan<Ref<Cell>> refs,
+                                                   bool is_special, HashHint hash_hint) {
+  return create_impl(data, bit_length, refs, refs.data(), is_special, std::move(hash_hint));
+}
+
+td::Result<Ref<DataCell>> DataCell::create_impl(td::Slice data, int bit_length, td::Span<Ref<Cell>> refs,
+                                                Ref<Cell>* refs_to_move, bool is_special, HashHint hash_hint) {
   CHECK(bit_length >= 0 && data.size() * 8 >= static_cast<size_t>(bit_length));
   if (refs.size() > CellTraits::max_refs) {
     return td::Status::Error("Too many references");
@@ -395,7 +405,11 @@ td::Result<Ref<DataCell>> DataCell::create(td::Slice data, int bit_length, td::S
   }
 
   for (int i = 0; i < cell.refs_cnt_; ++i) {
-    new (cell.ref_storage_at(i)) Ref<Cell>(refs[i]);
+    if (refs_to_move) {
+      new (cell.ref_storage_at(i)) Ref<Cell>(std::move(refs_to_move[i]));
+    } else {
+      new (cell.ref_storage_at(i)) Ref<Cell>(refs[i]);
+    }
   }
 
   return Ref{allocated_cell, Ref<DataCell>::acquire_t{}};
