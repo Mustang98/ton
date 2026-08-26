@@ -127,8 +127,20 @@ bool TupleT::validate_skip(int* ops, vm::CellSlice& cs, bool weak) const {
 
 bool TLB::validate_ref_internal(int* ops, Ref<vm::Cell> cell_ref, bool weak) const {
   auto cache = ValidateCache::get();
-  if (cache && !(*cache)(this, cell_ref)) {
-    return true;
+  auto cache_action = ValidateCache::Action::Validate;
+  Ref<vm::Cell> cell_to_record;
+  int initial_ops = 0;
+  if (cache) {
+    cache_action = cache->lookup(this, cell_ref, ops, weak);
+    if (cache_action == ValidateCache::Action::Skip) {
+      return true;
+    }
+    if (cache_action == ValidateCache::Action::ValidateAndRecord) {
+      cell_to_record = cell_ref;
+      if (ops) {
+        initial_ops = *ops;
+      }
+    }
   }
   if (ops) {
     if (*ops <= 0) {
@@ -138,13 +150,22 @@ bool TLB::validate_ref_internal(int* ops, Ref<vm::Cell> cell_ref, bool weak) con
   }
   bool is_special;
   auto cs = load_cell_slice_special(std::move(cell_ref), is_special);
+  bool valid;
   if (cs.special_type() == vm::Cell::SpecialType::PrunnedBranch && weak) {
-    return true;
+    valid = true;
+  } else if (always_special() != is_special) {
+    valid = false;
+  } else {
+    valid = validate_skip(ops, cs, weak) && cs.empty_ext();
   }
-  if (always_special() != is_special) {
-    return false;
+  if (valid && cache_action == ValidateCache::Action::ValidateAndRecord) {
+    std::optional<int> ops_used;
+    if (ops) {
+      ops_used = initial_ops - *ops;
+    }
+    cache->on_validated(this, cell_to_record, ops_used, weak);
   }
-  return validate_skip(ops, cs, weak) && cs.empty_ext();
+  return valid;
 }
 
 bool TLB::print_skip(PrettyPrinter& pp, vm::CellSlice& cs) const {

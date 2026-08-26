@@ -3831,7 +3831,8 @@ bool Transaction::serialize(const SerializeConfig& cfg) {
 
   // Limit is 4096 cells: validate_ref does not check bodies and StateInit of messages,
   // and the number of EC is limited to 2 per message.
-  if (!block::gen::t_Transaction.validate_ref(4096, root)) {
+  int generated_tlb_ops = 4096;
+  if (!block::gen::t_Transaction.validate_ref(&generated_tlb_ops, root)) {
     LOG(ERROR) << "newly-generated transaction failed to pass automated validation:";
     FLOG(INFO) {
       vm::load_cell_slice(root).print_rec(sb);
@@ -3840,6 +3841,8 @@ bool Transaction::serialize(const SerializeConfig& cfg) {
     root.clear();
     return false;
   }
+  generated_tlb_validation_ops = 4096 - generated_tlb_ops;
+  CHECK(generated_tlb_validation_ops > 0);
   if (!block::tlb::t_Transaction.validate_ref(4096, root)) {
     LOG(ERROR) << "newly-generated transaction failed to pass hand-written validation:";
     FLOG(INFO) {
