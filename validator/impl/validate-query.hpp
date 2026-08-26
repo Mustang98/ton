@@ -273,6 +273,13 @@ class ValidateQuery : public td::actor::Actor {
   };
   std::unique_ptr<ValidatedTransactionTlbCosts> transaction_tlb_costs_building_;
   std::shared_ptr<const ValidatedTransactionTlbCosts> transaction_tlb_costs_;
+  struct TransactionRefIndexEntry {
+    StdSmcAddress account;
+    LogicalTime lt{0};
+    Bits256 hash;
+  };
+  std::vector<TransactionRefIndexEntry> transaction_ref_index_;
+  bool transaction_ref_index_available_{false};
   enum class Stage0WorkerFailureKind { None, FatalVmError, RejectCellCreate, RejectCellWrite, RejectVmVirtError };
   struct Stage0WorkerFailure {
     Stage0WorkerFailureKind kind{Stage0WorkerFailureKind::None};
@@ -447,6 +454,7 @@ class ValidateQuery : public td::actor::Actor {
                                 unsigned& prev_trans_lt_len, ton::Bits256& acc_state_hash);
   bool precheck_one_account_block(td::ConstBitPtr acc_id, Ref<vm::CellSlice> acc_blk);
   bool precheck_account_transactions();
+  void finalize_transaction_ref_index();
   Ref<vm::Cell> lookup_transaction(const ton::StdSmcAddress& addr, ton::LogicalTime lt) const;
   bool is_valid_transaction_ref(Ref<vm::Cell> trans_ref) const;
   bool precheck_one_message_queue_update(td::ConstBitPtr out_msg_id, Ref<vm::CellSlice> old_value,
