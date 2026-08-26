@@ -3483,6 +3483,15 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
     return reject_query("(HASH_UPDATE Account) from the AccountBlock of "s + acc_id.to_hex(256) +
                         " has incorrect new hash");
   }
+  auto account = StdSmcAddress{acc_id};
+  if (!prechecked_account_updates_.empty() && !(prechecked_account_updates_.back().account < account)) {
+    prechecked_account_updates_ordered_ = false;
+  }
+  // Retain the exact post-augmentation cursors. Their UsageCell/VirtualCell
+  // context is part of the certificate and must not be reconstructed by hash.
+  prechecked_account_updates_.push_back(PrecheckedAccountUpdate{std::move(account), std::move(acc_blk.transactions),
+                                                                std::move(hash_upd), std::move(old_value),
+                                                                std::move(new_value)});
   return true;
 }
 
@@ -3493,9 +3502,22 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
  */
 bool ValidateQuery::precheck_account_updates() {
   LOG(INFO) << "pre-checking all Account updates between the old and the new state";
+  prechecked_account_updates_.clear();
+  prechecked_account_blocks_root_.clear();
+  prechecked_old_accounts_root_.clear();
+  prechecked_new_accounts_root_.clear();
+  prechecked_account_update_pos_ = 0;
+  prechecked_account_updates_ordered_ = true;
+  prechecked_account_update_replay_enabled_ = false;
   try {
     REJECT_UNLESS(ps_.account_dict_);
     REJECT_UNLESS(ns_.account_dict_);
+    REJECT_UNLESS(account_blocks_dict_);
+    // Publish these exact occurrences only after the complete ordered scan
+    // succeeds. Pointer identity deliberately rejects same-hash wrappers.
+    auto account_blocks_root = account_blocks_dict_->get_root_cell();
+    auto old_accounts_root = ps_.account_dict_->get_root_cell();
+    auto new_accounts_root = ns_.account_dict_->get_root_cell();
     if (!ps_.account_dict_->scan_diff_stack(
             *ns_.account_dict_,
             [this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra,
@@ -3505,6 +3527,13 @@ bool ValidateQuery::precheck_account_updates() {
             },
             2 /* check augmentation of changed nodes in the new dict */)) {
       return reject_query("invalid ShardAccounts dictionary in the new state");
+    }
+    if (prechecked_account_updates_ordered_) {
+      prechecked_account_blocks_root_ = std::move(account_blocks_root);
+      prechecked_old_accounts_root_ = std::move(old_accounts_root);
+      prechecked_new_accounts_root_ = std::move(new_accounts_root);
+    } else {
+      prechecked_account_updates_.clear();
     }
   } catch (vm::VmError& err) {
     return reject_query("invalid ShardAccount dictionary difference between the old and the new state: "s +
@@ -3607,19 +3636,45 @@ bool ValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Ref<vm::C
                         " not belonging to the block's shard " + shard_.to_str());
   }
   REJECT_UNLESS(acc_blk_root.not_null());
-  block::gen::AccountBlock::Record acc_blk;
+  Ref<vm::CellSlice> transactions;
   block::gen::HASH_UPDATE::Record hash_upd;
-  if (!(tlb::csr_unpack(acc_blk_root, acc_blk) &&
-        tlb::type_unpack_cell(std::move(acc_blk.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd))) {
-    return reject_query("cannot extract (HASH_UPDATE Account) from the AccountBlock of "s + acc_id.to_hex(256));
-  }
-  if (acc_blk.account_addr != acc_id) {
-    return reject_query("AccountBlock of account "s + acc_id.to_hex(256) + " appears to belong to another account " +
-                        acc_blk.account_addr.to_hex());
-  }
   block::tlb::ShardAccount::Record old_state, new_state;
-  if (!(old_state.unpack(ps_.account_dict_->lookup(acc_id, 256)) &&
-        new_state.unpack(ns_.account_dict_->lookup(acc_id, 256)))) {
+  Ref<vm::CellSlice> old_state_root, new_state_root;
+  auto account = StdSmcAddress{acc_id};
+  PrecheckedAccountUpdate* cached = nullptr;
+  if (prechecked_account_update_replay_enabled_ &&
+      prechecked_account_update_pos_ < prechecked_account_updates_.size()) {
+    auto& candidate = prechecked_account_updates_[prechecked_account_update_pos_];
+    if (candidate.account == account) {
+      cached = &candidate;
+      ++prechecked_account_update_pos_;
+    } else if (candidate.account < account) {
+      // A cached changed account was not observed at its expected position.
+      // Disable the zipper before doing any optimized work for this leaf.
+      prechecked_account_update_replay_enabled_ = false;
+    }
+  }
+  if (cached != nullptr) {
+    transactions = std::move(cached->transactions);
+    hash_upd = std::move(cached->state_update);
+    // Move the exact retained cursors, including their UsageCell context.
+    old_state_root = std::move(cached->old_state);
+    new_state_root = std::move(cached->new_state);
+  } else {
+    block::gen::AccountBlock::Record acc_blk;
+    if (!(tlb::csr_unpack(acc_blk_root, acc_blk) &&
+          tlb::type_unpack_cell(std::move(acc_blk.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd))) {
+      return reject_query("cannot extract (HASH_UPDATE Account) from the AccountBlock of "s + acc_id.to_hex(256));
+    }
+    if (acc_blk.account_addr != acc_id) {
+      return reject_query("AccountBlock of account "s + acc_id.to_hex(256) + " appears to belong to another account " +
+                          acc_blk.account_addr.to_hex());
+    }
+    old_state_root = ps_.account_dict_->lookup(acc_id, 256);
+    new_state_root = ns_.account_dict_->lookup(acc_id, 256);
+    transactions = std::move(acc_blk.transactions);
+  }
+  if (!(old_state.unpack(std::move(old_state_root)) && new_state.unpack(std::move(new_state_root)))) {
     return reject_query("cannot extract Account from the ShardAccount of "s + acc_id.to_hex(256));
   }
   if (hash_upd.old_hash != old_state.account->get_hash().bits()) {
@@ -3634,7 +3689,7 @@ bool ValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Ref<vm::C
   unsigned last_trans_lt_len = 1;
   ton::Bits256 acc_state_hash = hash_upd.old_hash;
   try {
-    vm::AugmentedDictionary trans_dict{vm::DictNonEmpty(), std::move(acc_blk.transactions), 64,
+    vm::AugmentedDictionary trans_dict{vm::DictNonEmpty(), std::move(transactions), 64,
                                        block::tlb::aug_AccountTransactions};
     td::BitArray<64> min_trans, max_trans;
     if (trans_dict.get_minmax_key(min_trans).is_null() || trans_dict.get_minmax_key(max_trans, true).is_null()) {
@@ -3681,6 +3736,15 @@ bool ValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Ref<vm::C
  */
 bool ValidateQuery::precheck_account_transactions() {
   LOG(INFO) << "pre-checking all AccountBlocks, and all transactions of all accounts";
+  prechecked_account_update_pos_ = 0;
+  auto account_blocks_root = account_blocks_dict_ ? account_blocks_dict_->get_root_cell() : Ref<vm::Cell>{};
+  auto old_accounts_root = ps_.account_dict_ ? ps_.account_dict_->get_root_cell() : Ref<vm::Cell>{};
+  auto new_accounts_root = ns_.account_dict_ ? ns_.account_dict_->get_root_cell() : Ref<vm::Cell>{};
+  prechecked_account_update_replay_enabled_ = prechecked_account_updates_ordered_ && account_blocks_dict_ &&
+                                              ps_.account_dict_ && ns_.account_dict_ &&
+                                              prechecked_account_blocks_root_.get() == account_blocks_root.get() &&
+                                              prechecked_old_accounts_root_.get() == old_accounts_root.get() &&
+                                              prechecked_new_accounts_root_.get() == new_accounts_root.get();
   try {
     REJECT_UNLESS(account_blocks_dict_);
     if (!account_blocks_dict_->validate_check_extra(

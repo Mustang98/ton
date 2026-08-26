@@ -247,6 +247,20 @@ class ValidateQuery : public td::actor::Actor {
   block::tlb::OutMsgDescr t_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict_, out_msg_dict_, account_blocks_dict_;
   detail::GeneratedAugmentationCertificate generated_augmentation_certificate_;
+  struct PrecheckedAccountUpdate {
+    StdSmcAddress account;
+    Ref<vm::CellSlice> transactions;
+    block::gen::HASH_UPDATE::Record state_update;
+    Ref<vm::CellSlice> old_state;
+    Ref<vm::CellSlice> new_state;
+  };
+  std::vector<PrecheckedAccountUpdate> prechecked_account_updates_;
+  Ref<vm::Cell> prechecked_account_blocks_root_;
+  Ref<vm::Cell> prechecked_old_accounts_root_;
+  Ref<vm::Cell> prechecked_new_accounts_root_;
+  std::size_t prechecked_account_update_pos_{0};
+  bool prechecked_account_updates_ordered_{false};
+  bool prechecked_account_update_replay_enabled_{false};
   struct ValidatedTransactionTlbCost {
     // Keep the exact parsed occurrence alive. Replay may consume the scalar
     // cost only for this occurrence and an equal regenerated root hash.
