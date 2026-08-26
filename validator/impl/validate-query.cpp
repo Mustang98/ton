@@ -16,7 +16,6 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
-#include <algorithm>
 #include <cmath>
 #include <ctime>
 #include <exception>
@@ -3605,8 +3604,7 @@ bool ValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton::Logica
   }
   prev_trans_lt = trans_lt;
   prev_trans_lt_len = lt_len;
-  Bits256 trans_hash{trans_root->get_hash().bits()};
-  prev_trans_hash = trans_hash;
+  prev_trans_hash = trans_root->get_hash().bits();
   acc_state_hash = hash_upd.new_hash;
   unsigned c = 0;
   vm::Dictionary out_msgs{trans.r1.out_msgs, 15};
@@ -3619,10 +3617,6 @@ bool ValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton::Logica
                                   << " has invalid indices in the out_msg dictionary (keys 0 .. "
                                   << trans.outmsg_cnt - 1 << " expected)");
   }
-  // Both enclosing dictionary traversals are ascending, so successful
-  // captures are already ordered by {account, lt}. finalize_transaction_ref_index()
-  // verifies that invariant before enabling the shortcut.
-  transaction_ref_index_.push_back(TransactionRefIndexEntry{StdSmcAddress{acc_id}, trans_lt, std::move(trans_hash)});
   return true;
 }
 
@@ -3742,8 +3736,6 @@ bool ValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Ref<vm::C
  */
 bool ValidateQuery::precheck_account_transactions() {
   LOG(INFO) << "pre-checking all AccountBlocks, and all transactions of all accounts";
-  transaction_ref_index_.clear();
-  transaction_ref_index_available_ = false;
   prechecked_account_update_pos_ = 0;
   auto account_blocks_root = account_blocks_dict_ ? account_blocks_dict_->get_root_cell() : Ref<vm::Cell>{};
   auto old_accounts_root = ps_.account_dict_ ? ps_.account_dict_->get_root_cell() : Ref<vm::Cell>{};
@@ -3764,25 +3756,10 @@ bool ValidateQuery::precheck_account_transactions() {
             })) {
       return reject_query("invalid ShardAccountBlock dictionary in the new block "s + id_.to_str());
     }
-    finalize_transaction_ref_index();
   } catch (vm::VmError& err) {
     return reject_query("invalid ShardAccountBlocks dictionary: "s + err.get_msg());
   }
   return true;
-}
-
-void ValidateQuery::finalize_transaction_ref_index() {
-  // Do not sort: the order itself certifies that capture covered the same
-  // canonical ascending traversal used by the validated dictionaries. A
-  // future traversal change or duplicate key leaves the legacy lookup active.
-  for (std::size_t i = 1; i < transaction_ref_index_.size(); ++i) {
-    const auto& previous = transaction_ref_index_[i - 1];
-    const auto& current = transaction_ref_index_[i];
-    if (!(previous.account < current.account || (previous.account == current.account && previous.lt < current.lt))) {
-      return;
-    }
-  }
-  transaction_ref_index_available_ = true;
 }
 
 /**
@@ -3816,20 +3793,6 @@ bool ValidateQuery::is_valid_transaction_ref(Ref<vm::Cell> trans_ref) const {
   if (!block::get_transaction_id(trans_ref, addr, lt)) {
     LOG(DEBUG) << "cannot parse transaction header";
     return false;
-  }
-  if (transaction_ref_index_available_) {
-    Bits256 hash{trans_ref->get_hash().bits()};
-    const auto key = std::pair{addr, lt};
-    auto it = std::lower_bound(
-        transaction_ref_index_.begin(), transaction_ref_index_.end(), key,
-        [](const TransactionRefIndexEntry& entry, const std::pair<StdSmcAddress, LogicalTime>& value) {
-          return entry.account < value.first || (entry.account == value.first && entry.lt < value.second);
-        });
-    if (it != transaction_ref_index_.end() && it->account == addr && it->lt == lt && it->hash == hash) {
-      return true;
-    }
-    // Preserve the exact legacy dictionary lookup and hash comparison for a
-    // missing/mismatched entry and whenever capture could not be certified.
   }
   auto trans = lookup_transaction(addr, lt);
   if (trans.is_null()) {
