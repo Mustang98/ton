@@ -85,13 +85,100 @@ struct CommittedState {
 struct ParentVmState;
 
 class VmState final : public VmStateInterface {
-  Ref<CellSlice> code;
+  // CP0 is a closed dispatch table. While the VM owns the only cursor reference,
+  // retain that ownership without repeating Ref::write() for every opcode. Any
+  // observable escape, continuation transfer, or custom dispatch restores the
+  // ordinary Ref/COW behavior before the cursor can be retained elsewhere.
+  class CodeCursor {
+    mutable Ref<CellSlice> shared_;
+    mutable CellSlice* exclusive_{nullptr};
+
+    void promote() const {
+      if (exclusive_) {
+        shared_ = Ref<CellSlice>{exclusive_, typename Ref<CellSlice>::acquire_t{}};
+        exclusive_ = nullptr;
+      }
+    }
+
+    void release_exclusive() {
+      if (exclusive_) {
+        Ref<CellSlice> owner{exclusive_, typename Ref<CellSlice>::acquire_t{}};
+        exclusive_ = nullptr;
+      }
+    }
+
+   public:
+    CodeCursor() = default;
+    explicit CodeCursor(Ref<CellSlice> code) : shared_(std::move(code)) {
+    }
+    CodeCursor(const CodeCursor&) = delete;
+    CodeCursor& operator=(const CodeCursor&) = delete;
+    CodeCursor(CodeCursor&& other) noexcept : shared_(std::move(other.shared_)), exclusive_(other.exclusive_) {
+      other.exclusive_ = nullptr;
+    }
+    CodeCursor& operator=(CodeCursor&& other) noexcept {
+      if (this != &other) {
+        clear();
+        shared_ = std::move(other.shared_);
+        exclusive_ = other.exclusive_;
+        other.exclusive_ = nullptr;
+      }
+      return *this;
+    }
+    ~CodeCursor() {
+      release_exclusive();
+    }
+
+    void set(Ref<CellSlice> code) {
+      clear();
+      shared_ = std::move(code);
+    }
+    void clear() {
+      release_exclusive();
+      shared_.clear();
+    }
+    bool is_null() const {
+      return exclusive_ == nullptr && shared_.is_null();
+    }
+    bool not_null() const {
+      return !is_null();
+    }
+    const CellSlice& read() const {
+      return exclusive_ ? *exclusive_ : *shared_;
+    }
+    Ref<CellSlice> share() const {
+      promote();
+      return shared_;
+    }
+    Ref<CellSlice> take() {
+      if (exclusive_) {
+        auto* ptr = exclusive_;
+        exclusive_ = nullptr;
+        return Ref<CellSlice>{ptr, typename Ref<CellSlice>::acquire_t{}};
+      }
+      return std::move(shared_);
+    }
+    CellSlice& write_exclusive() {
+      if (!exclusive_) {
+        shared_.write();
+        exclusive_ = shared_.release();
+      }
+      return *exclusive_;
+    }
+    CellSlice& write_shared() {
+      promote();
+      return shared_.write();
+    }
+  };
+
+  CodeCursor code;
   Ref<Stack> stack;
   ControlRegs cr;
   CommittedState cstate;
   int cp;
   long long steps{0};
   const DispatchTable* dispatch;
+  bool dispatch_is_builtin_cp0_{false};
   Ref<QuitCont> quit0, quit1;
   VmLog log;
   GasLimits gas;
@@ -335,11 +422,11 @@ class VmState final : public VmStateInterface {
     }
   }
   void set_code(Ref<CellSlice> _code, int _cp) {
-    code = std::move(_code);
+    code.set(std::move(_code));
     force_cp(_cp);
   }
   Ref<CellSlice> get_code() const {
-    return code;
+    return code.share();
   }
   void push_code() {
     get_stack().push_cellslice(get_code());

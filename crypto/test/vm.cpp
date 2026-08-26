@@ -40,6 +40,7 @@
 #include "vm/cells/UsageCell.h"
 #include "vm/cp0.h"
 #include "vm/dict.h"
+#include "vm/dispatch.h"
 #include "vm/vm.h"
 
 static_assert(std::is_copy_constructible<vm::CellSlice>::value);
@@ -168,6 +169,251 @@ void test_run_vm_raw(td::Slice code64) {
     code.resize(127);
   }
   test_run_vm(vm::CellBuilder().store_bytes(code).finalize());
+}
+
+namespace {
+
+td::Ref<vm::CellSlice> make_code_slice(td::Slice bytes) {
+  return vm::load_cell_slice_ref(vm::CellBuilder{}.store_bytes(bytes).finalize());
+}
+
+class CodeCursorAliasingDispatch final : public vm::DispatchTable {
+ public:
+  static constexpr int codepage = 0x6ffe;
+
+  int dispatch(vm::VmState* state, vm::CellSlice& cursor) const override {
+    switch (phase_++) {
+      case 0: {
+        first_cursor_ = &cursor;
+        getter_alias_ = state->get_code();
+        raw_alias_ = td::Ref<vm::CellSlice>{&cursor};
+        state->push_code();
+        pushed_alias_ = state->get_stack().pop_cellslice();
+        aliases_match_ = getter_alias_.get() == first_cursor_ && raw_alias_.get() == first_cursor_ &&
+                         pushed_alias_.get() == first_cursor_;
+        if (!cursor.advance(8)) {
+          return -1;
+        }
+        same_instruction_visible_ = getter_alias_->cur_pos() == cursor.cur_pos() &&
+                                    raw_alias_->cur_pos() == cursor.cur_pos() &&
+                                    pushed_alias_->cur_pos() == cursor.cur_pos();
+        const unsigned char target_byte = 0;
+        auto target = make_code_slice(td::Slice{&target_byte, 1});
+        return state->call(td::Ref<vm::OrdCont>{true, std::move(target), codepage});
+      }
+      case 1:
+        if (!cursor.advance(8)) {
+          return -1;
+        }
+        return state->ret();
+      case 2:
+        resumed_cursor_ = &cursor;
+        detached_on_next_step_ = resumed_cursor_ != first_cursor_;
+        if (!cursor.advance(8)) {
+          return -1;
+        }
+        return 1;
+      default:
+        return -1;
+    }
+  }
+
+  std::string dump_instr(vm::CellSlice&) const override {
+    return "CODE_CURSOR_ALIASING";
+  }
+  int instr_len(const vm::CellSlice&) const override {
+    return 8;
+  }
+  vm::DispatchTable* finalize() override {
+    return this;
+  }
+  bool is_final() const override {
+    return true;
+  }
+
+  void reset() {
+    phase_ = 0;
+    first_cursor_ = nullptr;
+    resumed_cursor_ = nullptr;
+    getter_alias_.clear();
+    raw_alias_.clear();
+    pushed_alias_.clear();
+    aliases_match_ = false;
+    same_instruction_visible_ = false;
+    detached_on_next_step_ = false;
+  }
+
+  bool aliases_match() const {
+    return aliases_match_;
+  }
+  bool same_instruction_visible() const {
+    return same_instruction_visible_;
+  }
+  bool detached_on_next_step() const {
+    return detached_on_next_step_;
+  }
+  const vm::CellSlice* first_cursor() const {
+    return first_cursor_;
+  }
+  const td::Ref<vm::CellSlice>& getter_alias() const {
+    return getter_alias_;
+  }
+  const td::Ref<vm::CellSlice>& raw_alias() const {
+    return raw_alias_;
+  }
+  const td::Ref<vm::CellSlice>& pushed_alias() const {
+    return pushed_alias_;
+  }
+
+ private:
+  mutable int phase_{0};
+  mutable vm::CellSlice* first_cursor_{nullptr};
+  mutable vm::CellSlice* resumed_cursor_{nullptr};
+  mutable td::Ref<vm::CellSlice> getter_alias_;
+  mutable td::Ref<vm::CellSlice> raw_alias_;
+  mutable td::Ref<vm::CellSlice> pushed_alias_;
+  mutable bool aliases_match_{false};
+  mutable bool same_instruction_visible_{false};
+  mutable bool detached_on_next_step_{false};
+};
+
+}  // namespace
+
+TEST(VM, code_cursor_builtin_aliases_detach_on_next_step) {
+  vm::init_vm().ensure();
+  const unsigned char code_bytes[] = {0x00, 0x00};  // NOP; NOP
+  auto code = make_code_slice(td::Slice{code_bytes, sizeof(code_bytes)});
+  const auto* original_cursor = code.get();
+  vm::VmState state{std::move(code), 0, td::Ref<vm::Stack>{true}, vm::GasLimits{1000}};
+
+  auto first_alias = state.get_code();
+  auto second_alias = state.get_code();
+  ASSERT_EQ(first_alias.get(), original_cursor);
+  ASSERT_EQ(second_alias.get(), original_cursor);
+
+  auto caller_copy = first_alias;
+  ASSERT_TRUE(caller_copy.write().advance(8));
+  ASSERT_TRUE(caller_copy.get() != original_cursor);
+  ASSERT_EQ(state.get_code()->cur_pos(), 0u);
+
+  first_alias.clear();
+  second_alias.clear();
+  ASSERT_EQ(state.step(), 0);
+  auto snapshot = state.get_code();
+  ASSERT_EQ(snapshot.get(), original_cursor);
+  ASSERT_EQ(snapshot->cur_pos(), 8u);
+
+  ASSERT_EQ(state.step(), 0);
+  auto current = state.get_code();
+  ASSERT_TRUE(current.get() != snapshot.get());
+  ASSERT_EQ(snapshot->cur_pos(), 8u);
+  ASSERT_EQ(current->cur_pos(), 16u);
+}
+
+TEST(VM, code_cursor_custom_dispatch_preserves_live_alias_and_continuation_identity) {
+  vm::init_vm().ensure();
+  static CodeCursorAliasingDispatch dispatch;
+  static const bool registered =
+      dispatch.register_table(static_cast<vm::Codepage>(CodeCursorAliasingDispatch::codepage));
+  ASSERT_TRUE(registered);
+  dispatch.reset();
+
+  const unsigned char code_bytes[] = {0x00, 0x00};
+  auto code = make_code_slice(td::Slice{code_bytes, sizeof(code_bytes)});
+  vm::VmState state{std::move(code), 0, td::Ref<vm::Stack>{true}, vm::GasLimits{1000}};
+  state.force_cp(CodeCursorAliasingDispatch::codepage);
+
+  ASSERT_EQ(state.step(), 0);
+  ASSERT_TRUE(dispatch.aliases_match());
+  ASSERT_TRUE(dispatch.same_instruction_visible());
+  ASSERT_EQ(dispatch.getter_alias()->cur_pos(), 8u);
+  ASSERT_EQ(dispatch.raw_alias()->cur_pos(), 8u);
+  ASSERT_EQ(dispatch.pushed_alias()->cur_pos(), 8u);
+
+  ASSERT_EQ(state.step(), 0);
+  auto resumed = state.get_code();
+  ASSERT_EQ(resumed.get(), dispatch.first_cursor());
+  ASSERT_EQ(resumed->cur_pos(), 8u);
+
+  ASSERT_EQ(state.step(), 1);
+  ASSERT_TRUE(dispatch.detached_on_next_step());
+  auto current = state.get_code();
+  ASSERT_TRUE(current.get() != dispatch.first_cursor());
+  ASSERT_EQ(current->cur_pos(), 16u);
+  ASSERT_EQ(dispatch.getter_alias()->cur_pos(), 8u);
+  ASSERT_EQ(dispatch.raw_alias()->cur_pos(), 8u);
+  ASSERT_EQ(dispatch.pushed_alias()->cur_pos(), 8u);
+}
+
+TEST(VM, code_cursor_same_c3_and_set_code_error_order) {
+  vm::init_vm().ensure();
+  const unsigned char code_bytes[] = {0x00, 0x00};
+  auto code = make_code_slice(td::Slice{code_bytes, sizeof(code_bytes)});
+  const auto* initial_cursor = code.get();
+  vm::VmState state{std::move(code), 0, td::Ref<vm::Stack>{true}, vm::GasLimits{1000}, 1};
+
+  ASSERT_EQ(state.step(), 0);
+  ASSERT_EQ(state.get_code()->cur_pos(), 8u);
+  ASSERT_EQ(state.jump(state.get_c3()), 0);
+  auto restarted = state.get_code();
+  ASSERT_EQ(restarted.get(), initial_cursor);
+  ASSERT_EQ(restarted->cur_pos(), 0u);
+
+  const unsigned char replacement_byte = 0x00;
+  auto replacement = make_code_slice(td::Slice{&replacement_byte, 1});
+  const auto* replacement_cursor = replacement.get();
+  bool threw = false;
+  try {
+    state.set_code(std::move(replacement), 0x6ffd);
+  } catch (const vm::VmError&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
+  ASSERT_EQ(state.get_cp(), 0);
+  ASSERT_EQ(state.get_code().get(), replacement_cursor);
+
+  vm::VmState empty_state{td::Ref<vm::CellSlice>{}, 0, td::Ref<vm::Stack>{true}, vm::GasLimits{1000}};
+  vm::VmState invalid_state{td::Ref<vm::CellSlice>{true}, 0, td::Ref<vm::Stack>{true}, vm::GasLimits{1000}};
+  ASSERT_TRUE(empty_state.get_code().is_null());
+  ASSERT_TRUE(invalid_state.get_code().not_null());
+}
+
+TEST(VM, code_cursor_builtin_exception_releases_exclusive_owner) {
+  vm::init_vm().ensure();
+  const unsigned char code_byte = 0x30;  // DROP with an empty stack
+  vm::VmState state{make_code_slice(td::Slice{&code_byte, 1}), 0, td::Ref<vm::Stack>{true}, vm::GasLimits{1000}};
+
+  ASSERT_EQ(state.run(), ~static_cast<int>(vm::Excno::stk_und));
+  ASSERT_TRUE(state.get_code().is_null());
+  ASSERT_EQ(state.gas_consumed(), 68);
+  ASSERT_EQ(state.get_steps_count(), 2);
+}
+
+TEST(VM, code_cursor_out_of_gas_preserves_advanced_cursor) {
+  vm::init_vm().ensure();
+  const unsigned char code_bytes[] = {0x00, 0x00};  // NOP; NOP
+  vm::VmState state{make_code_slice(td::Slice{code_bytes, sizeof(code_bytes)}), 0, td::Ref<vm::Stack>{true},
+                    vm::GasLimits{17}};
+
+  ASSERT_EQ(state.run(), static_cast<int>(vm::Excno::out_of_gas));
+  auto cursor = state.get_code();
+  ASSERT_TRUE(cursor.not_null());
+  ASSERT_EQ(cursor->cur_pos(), 8u);
+  ASSERT_EQ(state.gas_consumed(), 18);
+  ASSERT_EQ(state.get_steps_count(), 2);
+}
+
+TEST(VM, code_cursor_vm_move_transfers_exclusive_owner) {
+  vm::init_vm().ensure();
+  const unsigned char code_bytes[] = {0x00, 0x00};  // NOP; NOP
+  vm::VmState source{make_code_slice(td::Slice{code_bytes, sizeof(code_bytes)}), 0, td::Ref<vm::Stack>{true},
+                     vm::GasLimits{1000}};
+  ASSERT_EQ(source.step(), 0);
+
+  vm::VmState moved{std::move(source)};
+  ASSERT_EQ(moved.get_code()->cur_pos(), 8u);
+  ASSERT_EQ(moved.step(), 0);
+  ASSERT_EQ(moved.get_code()->cur_pos(), 16u);
 }
 
 TEST(VM, cell_slice_move_preserves_state_and_ownership) {

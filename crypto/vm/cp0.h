@@ -22,7 +22,9 @@
 namespace vm {
 
 class OpcodeTable;
+class DispatchTable;
 
 const OpcodeTable* init_op_cp0(bool debug_enabled = false);
+bool is_op_cp0(const DispatchTable* dispatch);
 
 }  // namespace vm

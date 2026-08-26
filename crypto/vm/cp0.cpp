@@ -16,6 +16,8 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <atomic>
+
 #include "arithops.h"
 #include "cellops.h"
 #include "contops.h"
@@ -29,8 +31,11 @@
 
 namespace vm {
 
-const OpcodeTable* init_op_cp0(bool enable_debug) {
-  set_debug_enabled(enable_debug);
+namespace {
+
+std::atomic<const OpcodeTable*> op_cp0_instance{nullptr};
+
+const OpcodeTable* get_op_cp0() {
   static const OpcodeTable* static_op_cp0 = [] {
     auto op_cp0 = new OpcodeTable("TEST CODEPAGE", Codepage::test_cp);
     register_stack_ops(*op_cp0);         // stackops.cpp
@@ -42,10 +47,24 @@ const OpcodeTable* init_op_cp0(bool enable_debug) {
     register_ton_ops(*op_cp0);           // tonops.cpp
     register_debug_ops(*op_cp0);         // debugops.cpp
     register_codepage_ops(*op_cp0);      // contops.cpp
-    op_cp0->finalize()->register_table(Codepage::test_cp);
+    op_cp0->finalize();
+    op_cp0_instance.store(op_cp0, std::memory_order_release);
+    op_cp0->register_table(Codepage::test_cp);
     return op_cp0;
   }();
   return static_op_cp0;
+}
+
+}  // namespace
+
+const OpcodeTable* init_op_cp0(bool enable_debug) {
+  set_debug_enabled(enable_debug);
+  return get_op_cp0();
+}
+
+bool is_op_cp0(const DispatchTable* dispatch) {
+  auto* instance = op_cp0_instance.load(std::memory_order_acquire);
+  return instance != nullptr && dispatch == instance;
 }
 
 }  // namespace vm
