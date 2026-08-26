@@ -19,6 +19,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -303,11 +304,39 @@ class ValidateQuery : public td::actor::Actor {
     // wrapper and its traversal context, alive through per-account replay.
     Ref<vm::Cell> root;
     Ref<vm::Cell> in_message;
+    std::size_t out_messages_begin{0};
+    std::size_t out_messages_end{0};
     // transaction.state_update has been consumed into state_update below.
     block::gen::Transaction::Record transaction;
     block::gen::HASH_UPDATE::Record state_update;
   };
-  using PrecheckedTransactionPlan = std::vector<PrecheckedTransactionRecord>;
+  struct PrecheckedTransactionPlan {
+    using value_type = PrecheckedTransactionRecord;
+
+    std::vector<PrecheckedTransactionRecord> records;
+    // Exact output-message occurrences are flattened to keep each record small
+    // while preserving the Usage/Virtual wrapper selected during precheck.
+    std::vector<Ref<vm::Cell>> out_messages;
+    td::HashMap<const vm::Cell*, std::size_t, std::hash<const vm::Cell*>> exact_root_index;
+
+    std::size_t size() const {
+      return records.size();
+    }
+    const value_type& operator[](std::size_t index) const {
+      return records[index];
+    }
+    value_type& operator[](std::size_t index) {
+      return records[index];
+    }
+    void clear() {
+      records.clear();
+      out_messages.clear();
+      exact_root_index.clear();
+    }
+    void push_back(value_type value) {
+      records.push_back(std::move(value));
+    }
+  };
   PrecheckedTransactionPlan prechecked_transaction_plan_building_;
   std::shared_ptr<const PrecheckedTransactionPlan> prechecked_transaction_plan_;
   std::size_t transaction_record_handoff_pos_{0};
@@ -465,6 +494,11 @@ class ValidateQuery : public td::actor::Actor {
   bool precheck_account_transactions();
   Ref<vm::Cell> lookup_transaction(const ton::StdSmcAddress& addr, ton::LogicalTime lt) const;
   bool is_valid_transaction_ref(Ref<vm::Cell> trans_ref) const;
+  const PrecheckedTransactionRecord* lookup_prechecked_transaction(const Ref<vm::Cell>& trans_ref) const;
+  bool prechecked_transaction_has_in_msg(const PrecheckedTransactionRecord& transaction,
+                                         const Ref<vm::Cell>& msg) const;
+  bool prechecked_transaction_has_out_msg(const PrecheckedTransactionRecord& transaction,
+                                          const Ref<vm::Cell>& msg) const;
   bool precheck_one_message_queue_update(td::ConstBitPtr out_msg_id, Ref<vm::CellSlice> old_value,
                                          Ref<vm::CellSlice> new_value);
   bool precheck_message_queue_update();

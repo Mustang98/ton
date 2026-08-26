@@ -23,6 +23,43 @@
 
 namespace ton::validator::detail {
 
+template <class Entries, class ExactRootIndex, class RootRef>
+const typename Entries::value_type* find_exact_transaction_root(const Entries& entries,
+                                                                const ExactRootIndex& exact_root_index,
+                                                                const RootRef& root) {
+  if (root.is_null()) {
+    return nullptr;
+  }
+  auto it = exact_root_index.find(root.get());
+  if (it == exact_root_index.end() || it->second >= entries.size()) {
+    return nullptr;
+  }
+  const auto& entry = entries[it->second];
+  // A same-hash Usage/Virtual/Snap wrapper is not the occurrence that was
+  // checked. Only the retained concrete transaction root can certify reuse.
+  return entry.root.get() == root.get() ? &entry : nullptr;
+}
+
+template <class Entry, class FlatMessages>
+const typename FlatMessages::value_type* find_prechecked_transaction_out_message(const Entry& entry,
+                                                                                 const FlatMessages& messages,
+                                                                                 LogicalTime created_lt) {
+  if (entry.out_messages_end < entry.out_messages_begin || entry.out_messages_end > messages.size()) {
+    return nullptr;
+  }
+  const auto outmsg_count = entry.out_messages_end - entry.out_messages_begin;
+  // Mirror block::is_transaction_out_msg's uint64 arithmetic, including
+  // wraparound for malformed near-UINT64_MAX logical times.
+  if (created_lt <= entry.lt || created_lt > entry.lt + outmsg_count) {
+    return nullptr;
+  }
+  const auto offset = created_lt - entry.lt - 1;
+  if (offset >= outmsg_count) {
+    return nullptr;
+  }
+  return &messages[entry.out_messages_begin + offset];
+}
+
 template <class Entries>
 bool transaction_record_plan_is_strictly_ordered(const Entries& entries) {
   for (std::size_t i = 0; i < entries.size(); ++i) {

@@ -15,7 +15,9 @@
     along with TON Blockchain Library.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <limits>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -32,6 +34,8 @@ struct Record {
   ton::StdSmcAddress account;
   ton::LogicalTime lt{0};
   td::Ref<vm::Cell> root;
+  std::size_t out_messages_begin{0};
+  std::size_t out_messages_end{0};
 };
 
 using Plan = std::vector<Record>;
@@ -152,6 +156,46 @@ TEST(TransactionRecordHandoff, ReplayRequiresExactAddressLtAndConcreteRoot) {
       !ton::validator::detail::prechecked_transaction_matches_current_occurrence(&record, address, 10, same_hash.root));
   ASSERT_TRUE(!ton::validator::detail::prechecked_transaction_matches_current_occurrence<Record>(nullptr, address, 10,
                                                                                                  first.root));
+}
+
+TEST(TransactionRecordHandoff, MembershipReuseRequiresExactRootAndValidOutputRange) {
+  auto concrete = vm::CellBuilder{}.store_long(5, 3).finalize();
+  auto exact = wrap_with_usage(concrete);
+  auto same_hash = wrap_with_usage(concrete);
+  auto output0 = vm::CellBuilder{}.store_long(1, 2).finalize();
+  auto output1 = vm::CellBuilder{}.store_long(2, 2).finalize();
+  ASSERT_EQ(exact.root->get_hash(), same_hash.root->get_hash());
+  ASSERT_TRUE(exact.root.get() != same_hash.root.get());
+
+  Plan records{{make_address(1), 100, exact.root, 0, 2}};
+  std::unordered_map<const vm::Cell*, std::size_t> exact_root_index{{exact.root.get(), 0}};
+  const auto* hit = ton::validator::detail::find_exact_transaction_root(records, exact_root_index, exact.root);
+  ASSERT_TRUE(hit == &records[0]);
+  // Same hash is insufficient: this path must fall back so the current Usage
+  // occurrence, dictionary lookups, and parser failures remain authoritative.
+  ASSERT_TRUE(ton::validator::detail::find_exact_transaction_root(records, exact_root_index, same_hash.root) ==
+              nullptr);
+  td::Ref<vm::Cell> null_root;
+  ASSERT_TRUE(ton::validator::detail::find_exact_transaction_root(records, exact_root_index, null_root) == nullptr);
+
+  std::vector<td::Ref<vm::Cell>> outputs{output0, output1};
+  const auto* first = ton::validator::detail::find_prechecked_transaction_out_message(records[0], outputs, 101);
+  const auto* second = ton::validator::detail::find_prechecked_transaction_out_message(records[0], outputs, 102);
+  ASSERT_TRUE(first != nullptr && first->get() == output0.get());
+  ASSERT_TRUE(second != nullptr && second->get() == output1.get());
+  ASSERT_TRUE(ton::validator::detail::find_prechecked_transaction_out_message(records[0], outputs, 100) == nullptr);
+  ASSERT_TRUE(ton::validator::detail::find_prechecked_transaction_out_message(records[0], outputs, 103) == nullptr);
+
+  exact_root_index[exact.root.get()] = records.size();
+  ASSERT_TRUE(ton::validator::detail::find_exact_transaction_root(records, exact_root_index, exact.root) == nullptr);
+  records[0].out_messages_end = outputs.size() + 1;
+  ASSERT_TRUE(ton::validator::detail::find_prechecked_transaction_out_message(records[0], outputs, 101) == nullptr);
+
+  // Preserve the unsigned wrap behavior of block::is_transaction_out_msg.
+  records[0].lt = std::numeric_limits<ton::LogicalTime>::max() - 1;
+  records[0].out_messages_end = 2;
+  ASSERT_TRUE(ton::validator::detail::find_prechecked_transaction_out_message(
+                  records[0], outputs, std::numeric_limits<ton::LogicalTime>::max()) == nullptr);
 }
 
 TEST(TransactionRecordHandoff, SharedPlanKeepsExactUsageOccurrencesAliveAcrossActorMoves) {

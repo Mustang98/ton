@@ -3612,10 +3612,17 @@ bool ValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton::Logica
   // wrapper even when its representation hash is unchanged.
   auto in_message = trans.r1.in_msg->prefetch_ref();
   unsigned c = 0;
+  const auto out_messages_begin = prechecked_transaction_plan_building_.out_messages.size();
   vm::Dictionary out_msgs{trans.r1.out_msgs, 15};
   if (!out_msgs.check_for_each([&](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
         REJECT_UNLESS(key_len == 15);
-        return key.get_uint(15) == c++;
+        if (key.get_uint(15) != c) {
+          return false;
+        }
+        prechecked_transaction_plan_building_.out_messages.push_back(value.not_null() ? value->prefetch_ref()
+                                                                                      : Ref<vm::Cell>{});
+        ++c;
+        return true;
       }) ||
       c != (unsigned)trans.outmsg_cnt) {
     return reject_query(PSTRING() << "transaction " << trans_lt << " of " << acc_id.to_hex(256)
@@ -3625,9 +3632,9 @@ bool ValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton::Logica
   // The enclosing AccountBlocks and AccountTransactions dictionaries are
   // traversed in ascending order. Publication below verifies that assumption;
   // any future ordering change simply leaves the legacy unpack path active.
-  prechecked_transaction_plan_building_.push_back(
-      PrecheckedTransactionRecord{StdSmcAddress{acc_id}, trans_lt, std::move(trans_root), std::move(in_message),
-                                  std::move(trans), std::move(hash_upd)});
+  prechecked_transaction_plan_building_.push_back(PrecheckedTransactionRecord{
+      StdSmcAddress{acc_id}, trans_lt, std::move(trans_root), std::move(in_message), out_messages_begin,
+      prechecked_transaction_plan_building_.out_messages.size(), std::move(trans), std::move(hash_upd)});
   return true;
 }
 
@@ -3771,6 +3778,39 @@ bool ValidateQuery::precheck_account_transactions() {
       return reject_query("invalid ShardAccountBlock dictionary in the new block "s + id_.to_str());
     }
     if (detail::transaction_record_plan_is_strictly_ordered(prechecked_transaction_plan_building_)) {
+      // Build the pointer index only after the complete ordered traversal.
+      // Any malformed range or duplicate concrete root disables D while the
+      // independent parsed-record replay from C remains available.
+      auto& plan = prechecked_transaction_plan_building_;
+      decltype(plan.exact_root_index) exact_root_index;
+      exact_root_index.reserve(plan.size());
+      std::size_t expected_out_messages_begin = 0;
+      bool membership_complete = true;
+      for (std::size_t i = 0; i < plan.size(); ++i) {
+        const auto& record = plan[i];
+        if (record.out_messages_begin != expected_out_messages_begin ||
+            record.out_messages_end < record.out_messages_begin || record.out_messages_end > plan.out_messages.size() ||
+            record.out_messages_end - record.out_messages_begin !=
+                static_cast<std::size_t>(record.transaction.outmsg_cnt) ||
+            !exact_root_index.emplace(record.root.get(), i).second) {
+          membership_complete = false;
+          break;
+        }
+        for (std::size_t j = record.out_messages_begin; j < record.out_messages_end; ++j) {
+          if (plan.out_messages[j].is_null()) {
+            membership_complete = false;
+            break;
+          }
+        }
+        if (!membership_complete) {
+          break;
+        }
+        expected_out_messages_begin = record.out_messages_end;
+      }
+      membership_complete = membership_complete && expected_out_messages_begin == plan.out_messages.size();
+      if (membership_complete) {
+        plan.exact_root_index = std::move(exact_root_index);
+      }
       prechecked_transaction_plan_ =
           std::make_shared<PrecheckedTransactionPlan>(std::move(prechecked_transaction_plan_building_));
     }
@@ -3796,6 +3836,36 @@ Ref<vm::Cell> ValidateQuery::lookup_transaction(const ton::StdSmcAddress& addr, 
   vm::AugmentedDictionary trans_dict{vm::DictNonEmpty(), std::move(ab_rec.transactions), 64,
                                      block::tlb::aug_AccountTransactions};
   return trans_dict.lookup_ref(td::BitArray<64>{(long long)lt});
+}
+
+const ValidateQuery::PrecheckedTransactionRecord* ValidateQuery::lookup_prechecked_transaction(
+    const Ref<vm::Cell>& trans_ref) const {
+  if (prechecked_transaction_plan_ == nullptr) {
+    return nullptr;
+  }
+  return detail::find_exact_transaction_root(*prechecked_transaction_plan_,
+                                             prechecked_transaction_plan_->exact_root_index, trans_ref);
+}
+
+bool ValidateQuery::prechecked_transaction_has_in_msg(const PrecheckedTransactionRecord& transaction,
+                                                      const Ref<vm::Cell>& msg) const {
+  return transaction.in_message.not_null() == msg.not_null() &&
+         (transaction.in_message.is_null() || transaction.in_message->get_hash() == msg->get_hash());
+}
+
+bool ValidateQuery::prechecked_transaction_has_out_msg(const PrecheckedTransactionRecord& transaction,
+                                                       const Ref<vm::Cell>& msg) const {
+  if (prechecked_transaction_plan_ == nullptr || msg.is_null()) {
+    return false;
+  }
+  vm::CellSlice cs;
+  unsigned long long created_lt;
+  if (!(cs.load_ord(msg) && block::tlb::t_CommonMsgInfo.get_created_lt(cs, created_lt))) {
+    return false;
+  }
+  const auto* out_message = detail::find_prechecked_transaction_out_message(
+      transaction, prechecked_transaction_plan_->out_messages, created_lt);
+  return out_message != nullptr && out_message->not_null() && (*out_message)->get_hash() == msg->get_hash();
 }
 
 /**
@@ -4635,18 +4705,30 @@ bool ValidateQuery::check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg)
 
   if (transaction.not_null()) {
     // check that the transaction reference is valid, and that it points to a Transaction which indeed processes this input message
-    if (!is_valid_transaction_ref(transaction)) {
-      return reject_query(
-          "InMsg corresponding to inbound message with key "s + key.to_hex(256) +
-          " contains an invalid Transaction reference (transaction not in the block's transaction list)");
-    }
-    if (!block::is_transaction_in_msg(transaction, msg)) {
-      return reject_query("InMsg corresponding to inbound message with key "s + key.to_hex(256) +
-                          " refers to transaction that does not process this inbound message");
-    }
     ton::StdSmcAddress trans_addr;
     ton::LogicalTime trans_lt;
-    REJECT_UNLESS(block::get_transaction_id(transaction, trans_addr, trans_lt));
+    const auto* prechecked_transaction = lookup_prechecked_transaction(transaction);
+    if (prechecked_transaction != nullptr) {
+      trans_addr = prechecked_transaction->account;
+      trans_lt = prechecked_transaction->lt;
+      if (!prechecked_transaction_has_in_msg(*prechecked_transaction, msg)) {
+        return reject_query("InMsg corresponding to inbound message with key "s + key.to_hex(256) +
+                            " refers to transaction that does not process this inbound message");
+      }
+    } else {
+      // A non-identical root, including a same-hash wrapper, takes the complete
+      // legacy parser and dictionary-membership path in the original order.
+      if (!is_valid_transaction_ref(transaction)) {
+        return reject_query(
+            "InMsg corresponding to inbound message with key "s + key.to_hex(256) +
+            " contains an invalid Transaction reference (transaction not in the block's transaction list)");
+      }
+      if (!block::is_transaction_in_msg(transaction, msg)) {
+        return reject_query("InMsg corresponding to inbound message with key "s + key.to_hex(256) +
+                            " refers to transaction that does not process this inbound message");
+      }
+      REJECT_UNLESS(block::get_transaction_id(transaction, trans_addr, trans_lt));
+    }
     if (dest_addr != trans_addr) {
       FLOG(INFO) {
         block::gen::t_InMsg.print(sb, in_msg);
@@ -5208,18 +5290,30 @@ bool ValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_ms
 
   if (transaction.not_null()) {
     // check that the transaction reference is valid, and that it points to a Transaction which indeed creates this outbound internal message
-    if (!is_valid_transaction_ref(transaction)) {
-      return reject_query(
-          "OutMsg corresponding to outbound message with key "s + key.to_hex(256) +
-          " contains an invalid Transaction reference (transaction not in the block's transaction list)");
-    }
-    if (!block::is_transaction_out_msg(transaction, msg)) {
-      return reject_query("OutMsg corresponding to outbound message with key "s + key.to_hex(256) +
-                          " refers to transaction that does not create this outbound message");
-    }
     ton::StdSmcAddress trans_addr;
     ton::LogicalTime trans_lt;
-    REJECT_UNLESS(block::get_transaction_id(transaction, trans_addr, trans_lt));
+    const auto* prechecked_transaction = lookup_prechecked_transaction(transaction);
+    if (prechecked_transaction != nullptr) {
+      trans_addr = prechecked_transaction->account;
+      trans_lt = prechecked_transaction->lt;
+      if (!prechecked_transaction_has_out_msg(*prechecked_transaction, msg)) {
+        return reject_query("OutMsg corresponding to outbound message with key "s + key.to_hex(256) +
+                            " refers to transaction that does not create this outbound message");
+      }
+    } else {
+      // Preserve all parser, lookup, and error-order behavior when the
+      // descriptor does not reference the exact prechecked transaction root.
+      if (!is_valid_transaction_ref(transaction)) {
+        return reject_query(
+            "OutMsg corresponding to outbound message with key "s + key.to_hex(256) +
+            " contains an invalid Transaction reference (transaction not in the block's transaction list)");
+      }
+      if (!block::is_transaction_out_msg(transaction, msg)) {
+        return reject_query("OutMsg corresponding to outbound message with key "s + key.to_hex(256) +
+                            " refers to transaction that does not create this outbound message");
+      }
+      REJECT_UNLESS(block::get_transaction_id(transaction, trans_addr, trans_lt));
+    }
     if (src_addr != trans_addr) {
       FLOG(INFO) {
         block::gen::t_OutMsg.print(sb, out_msg);
