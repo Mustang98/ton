@@ -39,6 +39,7 @@
 #include "fabric.h"
 #include "storage-stat-cache.hpp"
 #include "top-shard-descr.hpp"
+#include "transaction-record-handoff.h"
 #include "validate-query.hpp"
 
 #define REJECT_UNLESS_MSG(condition, msg) \
@@ -3606,6 +3607,10 @@ bool ValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton::Logica
   prev_trans_lt_len = lt_len;
   prev_trans_hash = trans_root->get_hash().bits();
   acc_state_hash = hash_upd.new_hash;
+  // Retain the exact input occurrence before later replay. Calling
+  // prefetch_ref() again through a Usage/Snap cursor may create a distinct
+  // wrapper even when its representation hash is unchanged.
+  auto in_message = trans.r1.in_msg->prefetch_ref();
   unsigned c = 0;
   vm::Dictionary out_msgs{trans.r1.out_msgs, 15};
   if (!out_msgs.check_for_each([&](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
@@ -3617,6 +3622,12 @@ bool ValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton::Logica
                                   << " has invalid indices in the out_msg dictionary (keys 0 .. "
                                   << trans.outmsg_cnt - 1 << " expected)");
   }
+  // The enclosing AccountBlocks and AccountTransactions dictionaries are
+  // traversed in ascending order. Publication below verifies that assumption;
+  // any future ordering change simply leaves the legacy unpack path active.
+  prechecked_transaction_plan_building_.push_back(
+      PrecheckedTransactionRecord{StdSmcAddress{acc_id}, trans_lt, std::move(trans_root), std::move(in_message),
+                                  std::move(trans), std::move(hash_upd)});
   return true;
 }
 
@@ -3736,6 +3747,9 @@ bool ValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Ref<vm::C
  */
 bool ValidateQuery::precheck_account_transactions() {
   LOG(INFO) << "pre-checking all AccountBlocks, and all transactions of all accounts";
+  prechecked_transaction_plan_building_.clear();
+  prechecked_transaction_plan_.reset();
+  transaction_record_handoff_pos_ = 0;
   prechecked_account_update_pos_ = 0;
   auto account_blocks_root = account_blocks_dict_ ? account_blocks_dict_->get_root_cell() : Ref<vm::Cell>{};
   auto old_accounts_root = ps_.account_dict_ ? ps_.account_dict_->get_root_cell() : Ref<vm::Cell>{};
@@ -3755,6 +3769,10 @@ bool ValidateQuery::precheck_account_transactions() {
                                   id_.to_str());
             })) {
       return reject_query("invalid ShardAccountBlock dictionary in the new block "s + id_.to_str());
+    }
+    if (detail::transaction_record_plan_is_strictly_ordered(prechecked_transaction_plan_building_)) {
+      prechecked_transaction_plan_ =
+          std::make_shared<PrecheckedTransactionPlan>(std::move(prechecked_transaction_plan_building_));
     }
   } catch (vm::VmError& err) {
     return reject_query("invalid ShardAccountBlocks dictionary: "s + err.get_msg());
@@ -6072,18 +6090,36 @@ static td::RefInt256 get_ihr_fee(const block::gen::CommonMsgInfo::Record_int_msg
  * @returns True if the transaction is valid, false otherwise.
  */
 bool ValidateQuery::CheckAccountTxs::check_one_transaction(block::Account& account, ton::LogicalTime lt,
-                                                           Ref<vm::Cell> trans_root, bool is_first, bool is_last) {
+                                                           Ref<vm::Cell> trans_root, bool is_first, bool is_last,
+                                                           const PrecheckedTransactionRecord* prechecked) {
   if (vq_.timeout && vq_.timeout.is_in_past()) {
     abort_query(td::Status::Error(ErrorCode::timeout, "timeout"));
     return false;
   }
   LOG(DEBUG) << "checking transaction " << lt << " of account " << account.addr.to_hex();
   const StdSmcAddress& addr = account.addr;
-  block::gen::Transaction::Record trans;
-  block::gen::HASH_UPDATE::Record hash_upd;
-  REJECT_UNLESS(tlb::unpack_cell(trans_root, trans));
-  REJECT_UNLESS(tlb::type_unpack_cell(std::move(trans.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd));
-  auto in_msg_root = trans.r1.in_msg->prefetch_ref();
+  block::gen::Transaction::Record unpacked_trans;
+  block::gen::HASH_UPDATE::Record unpacked_hash_upd;
+  const block::gen::Transaction::Record* trans_ptr = nullptr;
+  const block::gen::HASH_UPDATE::Record* hash_upd_ptr = nullptr;
+  const bool exact_prechecked_occurrence =
+      detail::prechecked_transaction_matches_current_occurrence(prechecked, addr, lt, trans_root);
+  if (exact_prechecked_occurrence) {
+    trans_root = prechecked->root;
+    trans_ptr = &prechecked->transaction;
+    hash_upd_ptr = &prechecked->state_update;
+  } else {
+    // A missing, out-of-order, wrong-address/lt, or merely same-hash record
+    // takes the unchanged parser path for the current concrete leaf.
+    REJECT_UNLESS(tlb::unpack_cell(trans_root, unpacked_trans));
+    REJECT_UNLESS(tlb::type_unpack_cell(std::move(unpacked_trans.state_update), block::gen::t_HASH_UPDATE_Account,
+                                        unpacked_hash_upd));
+    trans_ptr = &unpacked_trans;
+    hash_upd_ptr = &unpacked_hash_upd;
+  }
+  const auto& trans = *trans_ptr;
+  const auto& hash_upd = *hash_upd_ptr;
+  auto in_msg_root = exact_prechecked_occurrence ? prechecked->in_message : trans.r1.in_msg->prefetch_ref();
   bool external{false}, ihr_delivered{false}, need_credit_phase{false};
   // check input message
   block::CurrencyCollection money_imported(0), money_exported(0);
@@ -6696,7 +6732,18 @@ bool ValidateQuery::CheckAccountTxs::try_check() {
             [this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
               REJECT_UNLESS(key_len == 64);
               ton::LogicalTime lt = key.get_uint(64);
-              return check_one_transaction(account, lt, value->prefetch_ref(), lt == min_trans_lt, lt == max_trans_lt);
+              const PrecheckedTransactionRecord* prechecked = nullptr;
+              if (ctx_.transaction_record_handoff) {
+                prechecked = detail::try_take_ordered_transaction(
+                    *ctx_.transaction_record_handoff, ctx_.transaction_record_handoff_available,
+                    ctx_.transaction_record_handoff_pos, ctx_.transaction_record_handoff_end, address_, lt);
+              }
+              // The current traversal remains authoritative. The retained
+              // record is only a certificate candidate and is pointer-gated
+              // inside check_one_transaction().
+              auto trans_root = value->prefetch_ref();
+              return check_one_transaction(account, lt, std::move(trans_root), lt == min_trans_lt, lt == max_trans_lt,
+                                           prechecked);
             })) {
       return reject_query("at least one Transaction of account "s + address_.to_hex() + " is invalid");
     }
@@ -6772,6 +6819,15 @@ ValidateQuery::CheckAccountTxs::Context ValidateQuery::load_check_account_transa
   }
   if (account_expected_defer_all_messages_.contains(address)) {
     ctx.defer_all_messages = true;
+  }
+  if (prechecked_transaction_plan_ != nullptr &&
+      detail::try_take_ordered_transaction_range(*prechecked_transaction_plan_, transaction_record_handoff_pos_,
+                                                 address, ctx.transaction_record_handoff_available,
+                                                 ctx.transaction_record_handoff_pos,
+                                                 ctx.transaction_record_handoff_end)) {
+    // The shared owner makes pointers into this range valid even when the
+    // context moves into an independently scheduled per-account actor.
+    ctx.transaction_record_handoff = prechecked_transaction_plan_;
   }
   return ctx;
 }

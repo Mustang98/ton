@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -295,6 +296,21 @@ class ValidateQuery : public td::actor::Actor {
   };
   std::optional<GeneratedBlockTlbResult> stage0_generated_block_tlb_result_;
   std::optional<StateApplyResult> stage0_state_apply_result_;
+  struct PrecheckedTransactionRecord {
+    StdSmcAddress account;
+    LogicalTime lt{0};
+    // Keep the precise dictionary occurrence, including any Usage/Virtual
+    // wrapper and its traversal context, alive through per-account replay.
+    Ref<vm::Cell> root;
+    Ref<vm::Cell> in_message;
+    // transaction.state_update has been consumed into state_update below.
+    block::gen::Transaction::Record transaction;
+    block::gen::HASH_UPDATE::Record state_update;
+  };
+  using PrecheckedTransactionPlan = std::vector<PrecheckedTransactionRecord>;
+  PrecheckedTransactionPlan prechecked_transaction_plan_building_;
+  std::shared_ptr<const PrecheckedTransactionPlan> prechecked_transaction_plan_;
+  std::size_t transaction_record_handoff_pos_{0};
   block::ValueFlow value_flow_;
   block::CurrencyCollection import_created_, transaction_fees_, total_burned_{0}, fees_burned_{0};
   td::RefInt256 import_fees_;
@@ -478,6 +494,12 @@ class ValidateQuery : public td::actor::Actor {
       block::CurrencyCollection total_burned{0};
       std::vector<std::tuple<Bits256, Bits256, bool>> lib_publishers{};
       bool defer_all_messages = false;
+      // Each parallel checker owns the immutable plan while holding pointers
+      // into its exact ordered account range.
+      std::shared_ptr<const PrecheckedTransactionPlan> transaction_record_handoff{};
+      bool transaction_record_handoff_available = false;
+      std::size_t transaction_record_handoff_pos = 0;
+      std::size_t transaction_record_handoff_end = 0;
       std::vector<std::pair<td::Ref<vm::Cell>, td::uint32>> storage_stat_cache_update{};
       ValidationStats::WorkTimeStats work_time{};
 
@@ -504,7 +526,7 @@ class ValidateQuery : public td::actor::Actor {
     std::unique_ptr<block::Account> make_account_from(td::ConstBitPtr addr, Ref<vm::CellSlice> account);
     std::unique_ptr<block::Account> unpack_account(td::ConstBitPtr addr);
     bool check_one_transaction(block::Account& account, LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first,
-                               bool is_last);
+                               bool is_last, const PrecheckedTransactionRecord* prechecked = nullptr);
     bool scan_account_libraries(Ref<vm::Cell> orig_libs, Ref<vm::Cell> final_libs, const td::Bits256& addr);
 
     const ValidateQuery& vq_;

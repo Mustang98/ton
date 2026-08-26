@@ -17,3 +17,12 @@ target_link_libraries(test-augmentation-replay PRIVATE
 )
 add_test(NAME test-augmentation-replay COMMAND test-augmentation-replay)
 add_dependencies(all-tests test-augmentation-replay)
+
+add_executable(test-transaction-record-handoff transaction-record-handoff-test.cpp)
+target_include_directories(test-transaction-record-handoff PRIVATE ${CMAKE_SOURCE_DIR}/validator/impl)
+target_link_libraries(test-transaction-record-handoff PRIVATE
+    td-test-main
+    ton_crypto
+)
+add_test(NAME test-transaction-record-handoff COMMAND test-transaction-record-handoff)
+add_dependencies(all-tests test-transaction-record-handoff)
