@@ -3173,6 +3173,12 @@ bool ValidateQuery::add_trivial_neighbor() {
  */
 bool ValidateQuery::unpack_block_data() {
   CHECK(transaction_tlb_costs_building_ != nullptr);
+  prechecked_message_descriptor_plan_building_.reset();
+  prechecked_message_descriptor_plan_.reset();
+  in_msg_descr_wrapped_root_.clear();
+  in_msg_descr_inner_root_.clear();
+  out_msg_descr_wrapped_root_.clear();
+  out_msg_descr_inner_root_.clear();
   auto tlb_cache = make_transaction_tlb_cost_collector(&block::tlb::t_Ref_Transaction.ref_type,
                                                        transaction_tlb_costs_building_->handwritten);
   tlb::TLB::ValidateCache::Guard guard(&tlb_cache);
@@ -3211,6 +3217,10 @@ bool ValidateQuery::unpack_block_data() {
   }
   in_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(inmsg_cs), 256, t_InMsgDescr.aug);
   out_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(outmsg_cs), 256, t_OutMsgDescr.aug);
+  in_msg_descr_wrapped_root_ = in_msg_descr_root;
+  in_msg_descr_inner_root_ = in_msg_dict_->get_root_cell();
+  out_msg_descr_wrapped_root_ = out_msg_descr_root;
+  out_msg_descr_inner_root_ = out_msg_dict_->get_root_cell();
   account_blocks_dict_ = std::make_unique<vm::AugmentedDictionary>(
       vm::load_cell_slice_ref(std::move(shard_account_blocks_root)), 256, block::tlb::aug_ShardAccountBlocks);
   if (!use_augmentation_replay) {
@@ -3756,6 +3766,8 @@ bool ValidateQuery::precheck_account_transactions() {
   LOG(INFO) << "pre-checking all AccountBlocks, and all transactions of all accounts";
   prechecked_transaction_plan_building_.clear();
   prechecked_transaction_plan_.reset();
+  prechecked_message_descriptor_plan_building_.reset();
+  prechecked_message_descriptor_plan_.reset();
   transaction_record_handoff_pos_ = 0;
   prechecked_account_update_pos_ = 0;
   auto account_blocks_root = account_blocks_dict_ ? account_blocks_dict_->get_root_cell() : Ref<vm::Cell>{};
@@ -4436,7 +4448,11 @@ bool ValidateQuery::is_special_in_msg(const vm::CellSlice& in_msg) const {
  *
  * @returns True if the inbound message is valid, false otherwise.
  */
-bool ValidateQuery::check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg) {
+bool ValidateQuery::check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg,
+                                 detail::MessageDescriptorLink* descriptor_link) {
+  if (descriptor_link != nullptr) {
+    *descriptor_link = {};
+  }
   LOG(DEBUG) << "checking InMsg with key " << key.to_hex(256);
   REJECT_UNLESS(in_msg.not_null());
   int tag = block::gen::t_InMsg.get_tag(*in_msg);
@@ -4456,6 +4472,13 @@ bool ValidateQuery::check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg)
   ton::AccountIdPrefixFull src_prefix, dest_prefix, cur_prefix, next_prefix;
   td::RefInt256 fwd_fee, orig_fwd_fee;
   bool from_dispatch_queue = false;
+  auto finish = [&] {
+    if (descriptor_link != nullptr && transaction.not_null()) {
+      descriptor_link->transaction = transaction;
+      descriptor_link->message = msg;
+    }
+    return true;
+  };
   // initial checks and unpack
   switch (tag) {
     case block::gen::InMsg::msg_import_ext: {
@@ -4741,7 +4764,7 @@ bool ValidateQuery::check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg)
   }
 
   if (tag == block::gen::InMsg::msg_import_ext) {
-    return true;  // nothing to check more for external messages
+    return finish();  // nothing to check more for external messages
   }
 
   Ref<vm::Cell> out_msg_env;
@@ -4986,7 +5009,7 @@ bool ValidateQuery::check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg)
           " is a reimport record, but the corresponding OutMsg exports a MsgEnvelope with a different hash");
     }
   }
-  return true;
+  return finish();
 }
 
 /**
@@ -4996,18 +5019,49 @@ bool ValidateQuery::check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg)
  */
 bool ValidateQuery::check_in_msg_descr() {
   LOG(INFO) << "checking inbound messages listed in InMsgDescr";
+  prechecked_message_descriptor_plan_building_.reset();
+  prechecked_message_descriptor_plan_.reset();
+  if (prechecked_transaction_plan_ != nullptr && in_msg_dict_ != nullptr && out_msg_dict_ != nullptr &&
+      prechecked_transaction_plan_->exact_root_index.size() == prechecked_transaction_plan_->records.size()) {
+    auto plan = std::make_unique<PrecheckedMessageDescriptorPlan>();
+    plan->roots = detail::MessageDescriptorRoots{in_msg_descr_wrapped_root_, in_msg_descr_inner_root_,
+                                                 out_msg_descr_wrapped_root_, out_msg_descr_inner_root_};
+    plan->transactions = prechecked_transaction_plan_;
+    plan->in_cursors.resize(prechecked_transaction_plan_->records.size());
+    plan->out_cursors.resize(prechecked_transaction_plan_->out_messages.size());
+    prechecked_message_descriptor_plan_building_ = std::move(plan);
+  }
   try {
     REJECT_UNLESS(in_msg_dict_);
-    if (!in_msg_dict_->validate_check_extra(
-            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
-              REJECT_UNLESS(key_len == 256);
-              return check_in_msg(key, std::move(value)) ||
-                     reject_query("invalid InMsg with key (message hash) "s + key.to_hex(256) + " in the new block "s +
-                                  id_.to_str());
-            })) {
+    if (!in_msg_dict_->validate_check_extra([this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra,
+                                                   td::ConstBitPtr key, int key_len) {
+          REJECT_UNLESS(key_len == 256);
+          std::optional<vm::CellSlice> original;
+          if (prechecked_message_descriptor_plan_building_ != nullptr && value.not_null()) {
+            original.emplace(*value);
+          }
+          detail::MessageDescriptorLink link;
+          auto* link_out = prechecked_message_descriptor_plan_building_ != nullptr ? &link : nullptr;
+          if (!check_in_msg(key, std::move(value), link_out)) {
+            return reject_query("invalid InMsg with key (message hash) "s + key.to_hex(256) + " in the new block "s +
+                                id_.to_str());
+          }
+          if (prechecked_message_descriptor_plan_building_ != nullptr && original.has_value() &&
+              !detail::capture_in_message_descriptor_cursor(*prechecked_message_descriptor_plan_building_->transactions,
+                                                            link, std::move(*original),
+                                                            prechecked_message_descriptor_plan_building_->in_cursors)) {
+            prechecked_message_descriptor_plan_building_->capture_valid = false;
+          }
+          return true;
+        })) {
+      prechecked_message_descriptor_plan_building_.reset();
       return reject_query("invalid InMsgDescr dictionary in the new block "s + id_.to_str());
     }
+    if (prechecked_message_descriptor_plan_building_ != nullptr) {
+      prechecked_message_descriptor_plan_building_->in_scan_complete = true;
+    }
   } catch (vm::VmError& err) {
+    prechecked_message_descriptor_plan_building_.reset();
     return reject_query("invalid InMsgDescr dictionary: "s + err.get_msg());
   }
   return true;
@@ -5021,7 +5075,11 @@ bool ValidateQuery::check_in_msg_descr() {
  *
  * @returns True if the outbound message is valid, false otherwise.
  */
-bool ValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_msg) {
+bool ValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_msg,
+                                  detail::MessageDescriptorLink* descriptor_link) {
+  if (descriptor_link != nullptr) {
+    *descriptor_link = {};
+  }
   LOG(DEBUG) << "checking OutMsg with key " << key.to_hex(256);
   REJECT_UNLESS(out_msg.not_null());
   int tag = block::gen::t_OutMsg.get_tag(*out_msg);
@@ -5045,6 +5103,13 @@ bool ValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_ms
   unsigned long long emitted_lt = 0;
   int mode = 0, in_tag = -2;
   bool is_short = false;
+  auto finish = [&] {
+    if (descriptor_link != nullptr && transaction.not_null()) {
+      descriptor_link->transaction = transaction;
+      descriptor_link->message = msg;
+    }
+    return true;
+  };
   // initial checks and unpack
   switch (tag) {
     case block::gen::OutMsg::msg_export_ext: {
@@ -5328,7 +5393,7 @@ bool ValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_ms
   }
 
   if (tag == block::gen::OutMsg::msg_export_ext) {
-    return true;  // nothing to check more for external messages
+    return finish();  // nothing to check more for external messages
   }
 
   // check the OutMsgQueue update effected by this OutMsg
@@ -5657,10 +5722,10 @@ bool ValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_ms
   if (tag == block::gen::OutMsg::msg_export_imm || tag == block::gen::OutMsg::msg_export_deq_imm ||
       tag == block::gen::OutMsg::msg_export_new || tag == block::gen::OutMsg::msg_export_deferred_tr) {
     if (src_wc != workchain()) {
-      return true;
+      return finish();
     }
     if (tag == block::gen::OutMsg::msg_export_imm && is_special_in_msg(vm::load_cell_slice(reimport))) {
-      return true;
+      return finish();
     }
     unsigned long long created_lt;
     auto cs = vm::load_cell_slice(env.msg);
@@ -5672,7 +5737,7 @@ bool ValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_ms
     msg_emitted_lt_.emplace_back(src_addr, created_lt, emitted_lt);
   }
 
-  return true;
+  return finish();
 }
 
 /**
@@ -5684,17 +5749,43 @@ bool ValidateQuery::check_out_msg_descr() {
   LOG(INFO) << "checking outbound messages listed in OutMsgDescr";
   try {
     REJECT_UNLESS(out_msg_dict_);
-    if (!out_msg_dict_->validate_check_extra(
-            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
-              REJECT_UNLESS(key_len == 256);
-              return check_out_msg(key, std::move(value)) ||
-                     reject_query("invalid OutMsg with key "s + key.to_hex(256) + " in the new block "s + id_.to_str());
-            })) {
+    if (!out_msg_dict_->validate_check_extra([this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra,
+                                                    td::ConstBitPtr key, int key_len) {
+          REJECT_UNLESS(key_len == 256);
+          std::optional<vm::CellSlice> original;
+          if (prechecked_message_descriptor_plan_building_ != nullptr && value.not_null()) {
+            original.emplace(*value);
+          }
+          detail::MessageDescriptorLink link;
+          auto* link_out = prechecked_message_descriptor_plan_building_ != nullptr ? &link : nullptr;
+          if (!check_out_msg(key, std::move(value), link_out)) {
+            return reject_query("invalid OutMsg with key "s + key.to_hex(256) + " in the new block "s + id_.to_str());
+          }
+          if (prechecked_message_descriptor_plan_building_ != nullptr && original.has_value() &&
+              !detail::capture_out_message_descriptor_cursor(
+                  *prechecked_message_descriptor_plan_building_->transactions, link, std::move(*original),
+                  prechecked_message_descriptor_plan_building_->out_cursors)) {
+            prechecked_message_descriptor_plan_building_->capture_valid = false;
+          }
+          return true;
+        })) {
+      prechecked_message_descriptor_plan_building_.reset();
       return reject_query("invalid OutMsgDescr dictionary in the new block "s + id_.to_str());
     }
   } catch (vm::VmError& err) {
+    prechecked_message_descriptor_plan_building_.reset();
     return reject_query("invalid OutMsgDescr dictionary: "s + err.get_msg());
   }
+  auto& plan = prechecked_message_descriptor_plan_building_;
+  if (plan != nullptr && plan->capture_valid && plan->in_scan_complete &&
+      plan->transactions.get() == prechecked_transaction_plan_.get() && in_msg_dict_ != nullptr &&
+      out_msg_dict_ != nullptr &&
+      detail::message_descriptor_roots_match(plan->roots, in_msg_descr_wrapped_root_, in_msg_dict_->get_root_cell(),
+                                             out_msg_descr_wrapped_root_, out_msg_dict_->get_root_cell()) &&
+      detail::message_descriptor_cursor_slots_complete(*plan->transactions, plan->in_cursors, plan->out_cursors)) {
+    prechecked_message_descriptor_plan_ = std::shared_ptr<const PrecheckedMessageDescriptorPlan>{std::move(plan)};
+  }
+  prechecked_message_descriptor_plan_building_.reset();
   return true;
 }
 
@@ -6214,6 +6305,18 @@ bool ValidateQuery::CheckAccountTxs::check_one_transaction(block::Account& accou
   const auto& trans = *trans_ptr;
   const auto& hash_upd = *hash_upd_ptr;
   auto in_msg_root = exact_prechecked_occurrence ? prechecked->in_message : trans.r1.in_msg->prefetch_ref();
+  const PrecheckedMessageDescriptorPlan* message_descriptor_plan = nullptr;
+  std::size_t message_descriptor_transaction_index = 0;
+  if (exact_prechecked_occurrence && ctx_.message_descriptor_handoff != nullptr &&
+      ctx_.message_descriptor_handoff->transactions.get() == ctx_.transaction_record_handoff.get() &&
+      detail::preflight_message_descriptor_transaction(*ctx_.message_descriptor_handoff->transactions,
+                                                       ctx_.message_descriptor_handoff->in_cursors,
+                                                       ctx_.message_descriptor_handoff->out_cursors, prechecked,
+                                                       trans_root, in_msg_root, message_descriptor_transaction_index)) {
+    // Preflight the complete input/output range before bypassing even the
+    // first dictionary lookup. A partial sidecar always takes legacy lookup.
+    message_descriptor_plan = ctx_.message_descriptor_handoff.get();
+  }
   bool external{false}, ihr_delivered{false}, need_credit_phase{false};
   // check input message
   block::CurrencyCollection money_imported(0), money_exported(0);
@@ -6223,8 +6326,15 @@ bool ValidateQuery::CheckAccountTxs::check_one_transaction(block::Account& accou
   REJECT_UNLESS(tag >= 0);  // we have already validated the serialization of all Transactions
   td::optional<block::MsgMetadata> in_msg_metadata;
   if (in_msg_root.not_null()) {
-    auto in_descr_cs = vq_.in_msg_dict_->lookup(in_msg_root->get_hash().as_bitslice());
-    if (in_descr_cs.is_null()) {
+    Ref<vm::CellSlice> legacy_in_descr_cs;
+    const vm::CellSlice* in_descr_cs = nullptr;
+    if (message_descriptor_plan != nullptr) {
+      in_descr_cs = &message_descriptor_plan->in_cursors[message_descriptor_transaction_index].value();
+    } else {
+      legacy_in_descr_cs = vq_.in_msg_dict_->lookup(in_msg_root->get_hash().as_bitslice());
+      in_descr_cs = legacy_in_descr_cs.get();
+    }
+    if (in_descr_cs == nullptr) {
       return reject_query(PSTRING() << "inbound message with hash " << in_msg_root->get_hash().to_hex()
                                     << " of transaction " << lt << " of account " << addr.to_hex()
                                     << " does not have a corresponding InMsg record");
@@ -6311,8 +6421,16 @@ bool ValidateQuery::CheckAccountTxs::check_one_transaction(block::Account& accou
   for (int i = 0; i < trans.outmsg_cnt; i++) {
     auto out_msg_root = out_dict.lookup_ref(td::BitArray<15>{i});
     REJECT_UNLESS(out_msg_root.not_null());  // we have pre-checked this
-    auto out_descr_cs = vq_.out_msg_dict_->lookup(out_msg_root->get_hash().as_bitslice());
-    if (out_descr_cs.is_null()) {
+    Ref<vm::CellSlice> legacy_out_descr_cs;
+    const vm::CellSlice* out_descr_cs = nullptr;
+    if (message_descriptor_plan != nullptr) {
+      const auto flat_index = prechecked->out_messages_begin + static_cast<std::size_t>(i);
+      out_descr_cs = &message_descriptor_plan->out_cursors[flat_index].value();
+    } else {
+      legacy_out_descr_cs = vq_.out_msg_dict_->lookup(out_msg_root->get_hash().as_bitslice());
+      out_descr_cs = legacy_out_descr_cs.get();
+    }
+    if (out_descr_cs == nullptr) {
       return reject_query(PSTRING() << "outbound message #" << i + 1 << " with hash "
                                     << out_msg_root->get_hash().to_hex() << " of transaction " << lt << " of account "
                                     << addr.to_hex() << " does not have a corresponding OutMsg record");
@@ -6922,6 +7040,14 @@ ValidateQuery::CheckAccountTxs::Context ValidateQuery::load_check_account_transa
     // The shared owner makes pointers into this range valid even when the
     // context moves into an independently scheduled per-account actor.
     ctx.transaction_record_handoff = prechecked_transaction_plan_;
+    if (prechecked_message_descriptor_plan_ != nullptr &&
+        prechecked_message_descriptor_plan_->transactions.get() == prechecked_transaction_plan_.get() &&
+        in_msg_dict_ != nullptr && out_msg_dict_ != nullptr &&
+        detail::message_descriptor_roots_match(prechecked_message_descriptor_plan_->roots, in_msg_descr_wrapped_root_,
+                                               in_msg_dict_->get_root_cell(), out_msg_descr_wrapped_root_,
+                                               out_msg_dict_->get_root_cell())) {
+      ctx.message_descriptor_handoff = prechecked_message_descriptor_plan_;
+    }
   }
   return ctx;
 }

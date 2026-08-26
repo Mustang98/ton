@@ -38,6 +38,7 @@
 
 #include "block-parse.h"
 #include "fabric.h"
+#include "message-descriptor-handoff.h"
 #include "shard.hpp"
 
 namespace ton {
@@ -248,6 +249,13 @@ class ValidateQuery : public td::actor::Actor {
   block::tlb::InMsgDescr t_InMsgDescr{0};
   block::tlb::OutMsgDescr t_OutMsgDescr{0};
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict_, out_msg_dict_, account_blocks_dict_;
+  // AugmentedDictionary retains only the extracted inner dictionary. Keep
+  // both concrete identity layers so descriptor cursors are never reused
+  // across a same-hash wrapper or replacement dictionary occurrence.
+  Ref<vm::Cell> in_msg_descr_wrapped_root_;
+  Ref<vm::Cell> in_msg_descr_inner_root_;
+  Ref<vm::Cell> out_msg_descr_wrapped_root_;
+  Ref<vm::Cell> out_msg_descr_inner_root_;
   detail::GeneratedAugmentationCertificate generated_augmentation_certificate_;
   struct PrecheckedAccountUpdate {
     StdSmcAddress account;
@@ -339,6 +347,16 @@ class ValidateQuery : public td::actor::Actor {
   };
   PrecheckedTransactionPlan prechecked_transaction_plan_building_;
   std::shared_ptr<const PrecheckedTransactionPlan> prechecked_transaction_plan_;
+  struct PrecheckedMessageDescriptorPlan {
+    detail::MessageDescriptorRoots roots;
+    std::shared_ptr<const PrecheckedTransactionPlan> transactions;
+    std::vector<std::optional<vm::CellSlice>> in_cursors;
+    std::vector<std::optional<vm::CellSlice>> out_cursors;
+    bool capture_valid{true};
+    bool in_scan_complete{false};
+  };
+  std::unique_ptr<PrecheckedMessageDescriptorPlan> prechecked_message_descriptor_plan_building_;
+  std::shared_ptr<const PrecheckedMessageDescriptorPlan> prechecked_message_descriptor_plan_;
   std::size_t transaction_record_handoff_pos_{0};
   block::ValueFlow value_flow_;
   block::CurrencyCollection import_created_, transaction_fees_, total_burned_{0}, fees_burned_{0};
@@ -509,9 +527,11 @@ class ValidateQuery : public td::actor::Actor {
   bool update_min_enqueued_lt_hash(ton::LogicalTime lt, const ton::Bits256& hash);
   bool check_imported_message(Ref<vm::Cell> msg_env);
   bool is_special_in_msg(const vm::CellSlice& in_msg) const;
-  bool check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg);
+  bool check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> in_msg,
+                    detail::MessageDescriptorLink* descriptor_link = nullptr);
   bool check_in_msg_descr();
-  bool check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_msg);
+  bool check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice> out_msg,
+                     detail::MessageDescriptorLink* descriptor_link = nullptr);
   bool check_out_msg_descr();
   bool check_dispatch_queue_update();
   bool check_processed_upto();
@@ -534,6 +554,7 @@ class ValidateQuery : public td::actor::Actor {
       bool transaction_record_handoff_available = false;
       std::size_t transaction_record_handoff_pos = 0;
       std::size_t transaction_record_handoff_end = 0;
+      std::shared_ptr<const PrecheckedMessageDescriptorPlan> message_descriptor_handoff{};
       std::vector<std::pair<td::Ref<vm::Cell>, td::uint32>> storage_stat_cache_update{};
       ValidationStats::WorkTimeStats work_time{};
 

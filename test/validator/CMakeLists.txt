@@ -18,6 +18,15 @@ target_link_libraries(test-augmentation-replay PRIVATE
 add_test(NAME test-augmentation-replay COMMAND test-augmentation-replay)
 add_dependencies(all-tests test-augmentation-replay)
 
+add_executable(test-message-descriptor-handoff message-descriptor-handoff-test.cpp)
+target_link_libraries(test-message-descriptor-handoff PRIVATE
+    td-test-main
+    ton_crypto
+)
+target_include_directories(test-message-descriptor-handoff PRIVATE ${CMAKE_SOURCE_DIR}/validator/impl)
+add_test(NAME test-message-descriptor-handoff COMMAND test-message-descriptor-handoff)
+add_dependencies(all-tests test-message-descriptor-handoff)
+
 add_executable(test-transaction-record-handoff transaction-record-handoff-test.cpp)
 target_include_directories(test-transaction-record-handoff PRIVATE ${CMAKE_SOURCE_DIR}/validator/impl)
 target_link_libraries(test-transaction-record-handoff PRIVATE
