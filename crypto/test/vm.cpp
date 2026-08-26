@@ -22,6 +22,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <random>
 #include <set>
 #include <sstream>
@@ -35,6 +36,7 @@
 #include "td/utils/StringBuilder.h"
 #include "td/utils/base64.h"
 #include "td/utils/tests.h"
+#include "tl/tlblib.hpp"
 #include "vm/boc.h"
 #include "vm/cells/MerkleProof.h"
 #include "vm/cells/UsageCell.h"
@@ -414,6 +416,184 @@ TEST(VM, code_cursor_vm_move_transfers_exclusive_owner) {
   ASSERT_EQ(moved.get_code()->cur_pos(), 8u);
   ASSERT_EQ(moved.step(), 0);
   ASSERT_EQ(moved.get_code()->cur_pos(), 16u);
+}
+
+namespace {
+
+class ValidateCacheRefChainTlb final : public tlb::TLB_Complex {
+ public:
+  bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override {
+    ++validate_calls_;
+    if (!cs.have(2)) {
+      return false;
+    }
+    bool has_next = cs.fetch_ulong(1) != 0;
+    cs.advance(1);
+    return !has_next || validate_skip_ref(ops, cs, weak);
+  }
+
+  int validate_calls() const {
+    return validate_calls_;
+  }
+
+ private:
+  mutable int validate_calls_{0};
+};
+
+class ValidateCacheEnvelopeTlb final : public tlb::TLB_Complex {
+ public:
+  explicit ValidateCacheEnvelopeTlb(const tlb::TLB& payload_type) : payload_type_(payload_type) {
+  }
+
+  bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override {
+    return payload_type_.validate_skip_ref(ops, cs, weak);
+  }
+
+ private:
+  const tlb::TLB& payload_type_;
+};
+
+td::Ref<vm::Cell> make_validate_cache_ref_chain(int length, bool different_leaf = false) {
+  CHECK(length > 0);
+  td::Ref<vm::Cell> next;
+  for (int i = 0; i < length; ++i) {
+    vm::CellBuilder builder;
+    builder.store_long(next.not_null(), 1).store_long(i == 0 && different_leaf, 1);
+    if (next.not_null()) {
+      builder.store_ref(std::move(next));
+    }
+    next = builder.finalize_novm();
+  }
+  return next;
+}
+
+td::Ref<vm::Cell> make_validate_cache_envelope(td::Ref<vm::Cell> payload) {
+  return vm::CellBuilder{}.store_ref(std::move(payload)).finalize_novm();
+}
+
+}  // namespace
+
+TEST(TLB, validate_cache_records_cost_only_after_full_success) {
+  ValidateCacheRefChainTlb type;
+  auto valid = make_validate_cache_ref_chain(3);
+  auto malformed = vm::CellBuilder{}.store_long(1, 1).store_long(0, 1).finalize_novm();
+
+  int callbacks = 0;
+  std::optional<int> recorded_cost;
+  auto expected_hash = valid->get_hash();
+  auto cache = tlb::TLB::ValidateCache(
+      [&type, &expected_hash](const tlb::TLB* observed_type, const td::Ref<vm::Cell>& cell, int*, bool weak) {
+        return observed_type == &type && !weak && cell->get_hash() == expected_hash
+                   ? tlb::TLB::ValidateCache::Action::ValidateAndRecord
+                   : tlb::TLB::ValidateCache::Action::Validate;
+      },
+      [&callbacks, &recorded_cost](const tlb::TLB*, const td::Ref<vm::Cell>&, std::optional<int> ops_used, bool weak) {
+        ASSERT_TRUE(!weak);
+        ++callbacks;
+        recorded_cost = ops_used;
+      });
+  tlb::TLB::ValidateCache::Guard guard(&cache);
+
+  int exact_ops = 3;
+  ASSERT_TRUE(type.validate_ref(&exact_ops, valid));
+  ASSERT_EQ(exact_ops, 0);
+  ASSERT_EQ(callbacks, 1);
+  ASSERT_TRUE(recorded_cost.has_value());
+  ASSERT_EQ(*recorded_cost, 3);
+
+  expected_hash = malformed->get_hash();
+  int malformed_ops = 10;
+  ASSERT_TRUE(!type.validate_ref(&malformed_ops, malformed));
+  ASSERT_EQ(callbacks, 1);
+
+  expected_hash = valid->get_hash();
+  int insufficient_ops = 2;
+  ASSERT_TRUE(!type.validate_ref(&insufficient_ops, valid));
+  ASSERT_EQ(insufficient_ops, 0);
+  ASSERT_EQ(callbacks, 1);
+}
+
+TEST(TLB, validate_cache_legacy_factory_preserves_failure_order) {
+  ValidateCacheRefChainTlb type;
+  auto malformed = vm::CellBuilder{}.store_long(1, 1).store_long(0, 1).finalize_novm();
+  auto cache = tlb::TLB::ValidateCache::create_for_type(&type);
+  tlb::TLB::ValidateCache::Guard guard(&cache);
+
+  int first_ops = 10;
+  ASSERT_TRUE(!type.validate_ref(&first_ops, malformed));
+  ASSERT_EQ(first_ops, 9);
+  int calls = type.validate_calls();
+
+  // Historical create_for_type() inserts before validation. Preserve that
+  // observable ordering even for a failed first visit.
+  int duplicate_ops = 0;
+  ASSERT_TRUE(type.validate_ref(&duplicate_ops, malformed));
+  ASSERT_EQ(duplicate_ops, 0);
+  ASSERT_EQ(type.validate_calls(), calls);
+}
+
+TEST(TLB, validate_cache_scalar_precharge_matches_legacy_budget) {
+  ValidateCacheRefChainTlb payload_type;
+  ValidateCacheEnvelopeTlb transaction_type{payload_type};
+  auto transaction_a = make_validate_cache_envelope(make_validate_cache_ref_chain(3));
+  auto transaction_a_clone = make_validate_cache_envelope(make_validate_cache_ref_chain(3));
+  auto transaction_b = make_validate_cache_envelope(make_validate_cache_ref_chain(5, true));
+  auto block_prefix = make_validate_cache_ref_chain(2, true);
+
+  ASSERT_TRUE(transaction_a.get() != transaction_a_clone.get());
+  ASSERT_EQ(transaction_a->get_hash(), transaction_a_clone->get_hash());
+
+  auto standalone_cost = [&](const td::Ref<vm::Cell>& cell) {
+    int ops = 4096;
+    ASSERT_TRUE(transaction_type.validate_ref(&ops, cell));
+    return 4096 - ops;
+  };
+  int transaction_cost = standalone_cost(transaction_a) + standalone_cost(transaction_b);
+  int prefix_ops = 4096;
+  ASSERT_TRUE(payload_type.validate_ref(&prefix_ops, block_prefix));
+  int prefix_cost = 4096 - prefix_ops;
+  std::array<td::Ref<vm::Cell>, 4> transaction_refs{transaction_a, transaction_a_clone, transaction_b, transaction_a};
+
+  auto validate_legacy = [&](int ops) {
+    auto cache = tlb::TLB::ValidateCache::create_for_type(&transaction_type);
+    tlb::TLB::ValidateCache::Guard guard(&cache);
+    if (!payload_type.validate_ref(&ops, block_prefix)) {
+      return std::pair{false, ops};
+    }
+    for (const auto& cell : transaction_refs) {
+      if (!transaction_type.validate_ref(&ops, cell)) {
+        return std::pair{false, ops};
+      }
+    }
+    return std::pair{true, ops};
+  };
+  auto validate_precharged = [&](int ops) {
+    if (transaction_cost > ops) {
+      return std::pair{false, ops};
+    }
+    ops -= transaction_cost;
+    auto cache =
+        tlb::TLB::ValidateCache{[&transaction_type](const tlb::TLB* type, const td::Ref<vm::Cell>&, int*, bool) {
+          return type == &transaction_type ? tlb::TLB::ValidateCache::Action::Skip
+                                           : tlb::TLB::ValidateCache::Action::Validate;
+        }};
+    tlb::TLB::ValidateCache::Guard guard(&cache);
+    if (!payload_type.validate_ref(&ops, block_prefix)) {
+      return std::pair{false, ops};
+    }
+    for (const auto& cell : transaction_refs) {
+      if (!transaction_type.validate_ref(&ops, cell)) {
+        return std::pair{false, ops};
+      }
+    }
+    return std::pair{true, ops};
+  };
+
+  int exact_budget = transaction_cost + prefix_cost;
+  ASSERT_EQ(validate_precharged(exact_budget), validate_legacy(exact_budget));
+  ASSERT_EQ(validate_precharged(exact_budget + 3), validate_legacy(exact_budget + 3));
+  ASSERT_TRUE(!validate_precharged(exact_budget - 1).first);
+  ASSERT_TRUE(!validate_legacy(exact_budget - 1).first);
 }
 
 TEST(VM, cell_slice_move_preserves_state_and_ownership) {

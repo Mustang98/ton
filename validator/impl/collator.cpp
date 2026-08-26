@@ -3023,10 +3023,12 @@ bool Collator::process_account_storage_dict(block::Account& account) {
  */
 bool Collator::combine_account_transactions() {
   vm::AugmentedDictionary dict{256, block::tlb::aug_ShardAccountBlocks};
+  std::size_t account_transaction_count = 0;
   for (auto& z : accounts) {
     block::Account& acc = *(z.second);
     CHECK(acc.addr == z.first);
     if (!acc.transactions.empty()) {
+      account_transaction_count += acc.transactions.size();
       // have transactions for this account
       vm::CellBuilder cb;
       if (!acc.create_account_block(cb)) {
@@ -3097,6 +3099,8 @@ bool Collator::combine_account_transactions() {
       }
     }
   }
+  committed_transaction_tlb_certificate_complete_ =
+      account_transaction_count == committed_transaction_tlb_count_ && account_transaction_count == stats_.transactions;
   vm::CellBuilder cb;
   if (!(cb.append_cellslice_bool(std::move(dict).extract_root()) && cb.finalize_to(shard_account_blocks_))) {
     return fatal_error("cannot serialize ShardAccountBlocks");
@@ -3251,6 +3255,7 @@ bool Collator::create_ticktock_transaction(const ton::StdSmcAddress& smc_addr, t
     return fatal_error(
         td::Status::Error(-666, std::string{"cannot commit new transaction for smart contract "} + smc_addr.to_hex()));
   }
+  remember_committed_transaction_tlb(*trans);
   if (!update_account_dict_estimation(*trans)) {
     return fatal_error(-666, "cannot update account dict size estimation");
   }
@@ -3358,6 +3363,7 @@ Ref<vm::Cell> Collator::create_ordinary_transaction_to(Ref<vm::Cell> msg_root,
     fatal_error("cannot commit new transaction for smart contract "s + addr.to_hex());
     return {};
   }
+  remember_committed_transaction_tlb(*trans);
   if (!update_account_dict_estimation(*trans)) {
     fatal_error("cannot update account dict size estimation");
     return {};
@@ -3482,6 +3488,16 @@ td::Result<std::unique_ptr<block::transaction::Transaction>> Collator::impl_crea
     }
   }
   return std::move(trans);
+}
+
+void Collator::remember_committed_transaction_tlb(const block::transaction::Transaction& trans) {
+  CHECK(trans.trans_type == block::transaction::Transaction::tr_ord ||
+        trans.trans_type == block::transaction::Transaction::tr_tick ||
+        trans.trans_type == block::transaction::Transaction::tr_tock);
+  CHECK(trans.root.not_null());
+  CHECK(trans.generated_tlb_validation_ops > 0 && trans.generated_tlb_validation_ops <= 4096);
+  committed_transaction_tlb_ops_ += static_cast<td::uint64>(trans.generated_tlb_validation_ops);
+  ++committed_transaction_tlb_count_;
 }
 
 /**
@@ -6219,13 +6235,30 @@ bool Collator::create_block() {
       vm::load_cell_slice(new_block).print_rec(sb);
     };
   }
-  {
+  LOG(INFO) << "verifying new Block";
+  bool block_valid = false;
+  static constexpr int block_tlb_ops_limit = 10000000;
+  if (committed_transaction_tlb_certificate_complete_ &&
+      committed_transaction_tlb_ops_ <= static_cast<td::uint64>(block_tlb_ops_limit)) {
+    int block_tlb_ops = block_tlb_ops_limit - static_cast<int>(committed_transaction_tlb_ops_);
+    auto tlb_cache = tlb::TLB::ValidateCache{[](const tlb::TLB* type, const Ref<vm::Cell>&, int*, bool) {
+      return type == &block::gen::t_Transaction ? tlb::TLB::ValidateCache::Action::Skip
+                                                : tlb::TLB::ValidateCache::Action::Validate;
+    }};
+    tlb::TLB::ValidateCache::Guard guard(&tlb_cache);
+    block_valid = block::gen::t_Block.validate_ref(&block_tlb_ops, new_block);
+    if (block_valid) {
+      CHECK(committed_transaction_tlb_count_ <= std::numeric_limits<td::uint32>::max());
+      stats_.transaction_tlb_reuse_hits = static_cast<td::uint32>(committed_transaction_tlb_count_);
+    }
+  } else {
+    LOG(WARNING) << "Transaction TLB certificate is incomplete; using full whole-block validation";
     auto tlb_cache = tlb::TLB::ValidateCache::create_for_type(&block::gen::t_Transaction);
     tlb::TLB::ValidateCache::Guard guard(&tlb_cache);
-    LOG(INFO) << "verifying new Block";
-    if (!block::gen::t_Block.validate_ref(10000000, new_block)) {
-      return fatal_error("new Block failed to pass automatic validity tests");
-    }
+    block_valid = block::gen::t_Block.validate_ref(block_tlb_ops_limit, new_block);
+  }
+  if (!block_valid) {
+    return fatal_error("new Block failed to pass automatic validity tests");
   }
   LOG(INFO) << "new Block created";
   return true;
