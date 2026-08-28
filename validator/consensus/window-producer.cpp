@@ -43,6 +43,7 @@ td::actor::Task<> produce_window(BusHandle bus_handle, ProduceWindowContext ctx)
           .hard_timeout = slot_start + hard_timeout,
           .prev_block_data = state->block_data(),
           .prev_block_state_roots = state->state(),
+          .recent_block_data = state->recent_block_data(),
       };
       if (bus.shard.is_masterchain()) {
         params.soft_timeout = slot_start + ctx.target_rate;

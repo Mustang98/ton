@@ -106,6 +106,7 @@ class ExtMessageQ : public ExtMessage {
 };
 
 td::Result<td::Bits256> get_ext_in_msg_hash_norm(td::Ref<vm::Cell> ext_in_msg_cell);
+td::Result<std::vector<ExtMessage::Hash>> get_applied_external_messages_hashes(td::Ref<BlockData> block);
 
 class WalletMessageProcessor {
  public:

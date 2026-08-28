@@ -67,6 +67,10 @@ class UsageCell : public Cell {
     return tree_node_;
   }
 
+  Ref<Cell> underlying_cell() const {
+    return cell_;
+  }
+
   bool is_loaded() const override {
     return cell_->is_loaded();
   }

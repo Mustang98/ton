@@ -631,6 +631,75 @@ Ref<CellSlice> DictionaryFixed::lookup(td::ConstBitPtr key, int key_len) {
   return result;
 }
 
+DictionaryReplacementStat DictionaryFixed::estimate_replacement_proof_increment(
+    td::Span<td::ConstBitPtr> sorted_current_keys, td::Span<td::ConstBitPtr> sorted_previous_keys, int key_len) {
+  force_validate();
+  DictionaryReplacementStat stat;
+  if (key_len != get_key_bits() || sorted_current_keys.empty() || is_empty()) {
+    return stat;
+  }
+  auto check_sorted = [key_len](td::Span<td::ConstBitPtr> keys) {
+    for (size_t i = 1; i < keys.size(); ++i) {
+      if (td::bitstring::bits_memcmp(keys[i - 1], keys[i], key_len) >= 0) {
+        throw VmError{Excno::dict_err, "replacement proof keys are not strictly sorted"};
+      }
+    }
+  };
+  check_sorted(sorted_current_keys);
+  check_sorted(sorted_previous_keys);
+  dict_estimate_replacement_proof_increment(get_root_cell(), sorted_current_keys, sorted_previous_keys, 0, key_len,
+                                            stat);
+  return stat;
+}
+
+void DictionaryFixed::dict_estimate_replacement_proof_increment(
+    Ref<Cell> cell, td::Span<td::ConstBitPtr> current_keys, td::Span<td::ConstBitPtr> previous_keys, int key_offset,
+    int remaining_bits, DictionaryReplacementStat& stat) {
+  CHECK(!current_keys.empty());
+  CellSlice raw{NoVm(), cell};
+  ++stat.cells;
+  stat.bits += raw.size();
+  ++stat.internal_refs;
+
+  dict::LabelParser label{std::move(cell), remaining_bits, label_mode()};
+  for (auto key : current_keys) {
+    if (!label.is_prefix_of(key + key_offset, remaining_bits)) {
+      throw VmError{Excno::dict_err, "replacement proof key is absent from dictionary"};
+    }
+  }
+  remaining_bits -= label.l_bits;
+  key_offset += label.l_bits;
+  if (remaining_bits == 0) {
+    label.skip_label();
+    stat.internal_refs += label.remainder->size_refs();
+    return;
+  }
+
+  auto split_at_bit = [key_offset](td::Span<td::ConstBitPtr> keys) {
+    size_t split = 0;
+    while (split < keys.size() && !keys[split][key_offset]) {
+      ++split;
+    }
+    return split;
+  };
+  size_t current_split = split_at_bit(current_keys);
+  size_t previous_split = split_at_bit(previous_keys);
+  --remaining_bits;
+  ++key_offset;
+  for (unsigned branch = 0; branch < 2; ++branch) {
+    auto current = branch == 0 ? current_keys.substr(0, current_split) : current_keys.substr(current_split);
+    auto previous = branch == 0 ? previous_keys.substr(0, previous_split) : previous_keys.substr(previous_split);
+    if (!current.empty()) {
+      dict_estimate_replacement_proof_increment(label.remainder->prefetch_ref(branch), current, previous, key_offset,
+                                                remaining_bits, stat);
+    } else if (!previous.empty()) {
+      ++stat.internal_refs;
+    } else {
+      ++stat.external_refs;
+    }
+  }
+}
+
 Ref<Cell> Dictionary::lookup_ref(td::ConstBitPtr key, int key_len) {
   force_validate();
   if (key_len != get_key_bits() || is_empty()) {

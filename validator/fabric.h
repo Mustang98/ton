@@ -51,6 +51,10 @@ struct CollateParams {
   // Optional deterministic block seed for replay/benchmark tooling. Normal
   // production callers leave it empty and retain the collator's random seed.
   td::optional<td::Bits256> rand_seed = {};
+
+  // Optional exact ancestors of prev, newest first. Consensus producers can use this to avoid
+  // reprocessing messages that are already reflected in the branch-local previous state.
+  std::vector<Ref<BlockData>> recent_block_data = {};
 };
 
 struct ValidateParams {

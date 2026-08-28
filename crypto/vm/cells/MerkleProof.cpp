@@ -16,6 +16,8 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <atomic>
+#include <future>
 #include <map>
 
 #include "td/utils/HashMap.h"
@@ -105,14 +107,164 @@ class MerkleProofImpl {
     return res;
   }
 };
+
+class ParallelMerkleProofImpl {
+ public:
+  ParallelMerkleProofImpl(MerkleProof::IsPrunnedFunction is_prunned, unsigned max_tasks)
+      : is_prunned_(std::move(is_prunned))
+      , remaining_spawns_(std::make_shared<std::atomic<unsigned>>(max_tasks > 0 ? max_tasks - 1 : 0)) {
+  }
+
+  td::Result<Ref<Cell>> create_from(Ref<Cell> cell) {
+    unsigned merkle_depth = cell->get_level();
+    try {
+      return dfs(std::move(cell), merkle_depth, true);
+    } catch (CellBuilder::CellWriteError &) {
+      return td::Status::Error("failed to generate parallel Merkle proof: cell write error");
+    } catch (CellBuilder::CellCreateError &) {
+      return td::Status::Error("failed to generate parallel Merkle proof: cell create error");
+    }
+  }
+
+ private:
+  ParallelMerkleProofImpl(MerkleProof::IsPrunnedFunction is_prunned,
+                          std::shared_ptr<std::atomic<unsigned>> remaining_spawns)
+      : is_prunned_(std::move(is_prunned)), remaining_spawns_(std::move(remaining_spawns)) {
+  }
+
+  MerkleProof::IsPrunnedFunction is_prunned_;
+  std::shared_ptr<std::atomic<unsigned>> remaining_spawns_;
+
+  bool try_reserve_task() const {
+    unsigned remaining = remaining_spawns_->load(std::memory_order_relaxed);
+    while (remaining != 0) {
+      if (remaining_spawns_->compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  td::Result<Ref<Cell>> dfs(Ref<Cell> cell, unsigned merkle_depth, bool check_pruned) {
+    CHECK(cell.not_null());
+    if (check_pruned && is_prunned_(cell)) {
+      auto result = CellBuilder::create_pruned_branch(cell, merkle_depth + 1);
+      CHECK(result.not_null());
+      return result;
+    }
+
+    CellSlice cs(NoVm(), cell);
+    int children_merkle_depth = cs.child_merkle_depth(merkle_depth);
+    CellBuilder cb;
+    cb.store_bits(cs.fetch_bits(cs.size()));
+    std::vector<Ref<Cell>> children;
+    children.reserve(cs.size_refs());
+    for (unsigned i = 0; i < cs.size_refs(); ++i) {
+      children.push_back(cs.prefetch_ref(i));
+    }
+
+    std::vector<td::Result<Ref<Cell>>> results;
+    results.reserve(children.size());
+    for (size_t i = 0; i < children.size(); ++i) {
+      results.emplace_back(td::Status::Error("parallel Merkle proof child was not processed"));
+    }
+    std::vector<bool> pruned(children.size());
+    for (size_t i = 0; i < children.size(); ++i) {
+      pruned[i] = is_prunned_(children[i]);
+      if (pruned[i]) {
+        results[i] = CellBuilder::create_pruned_branch(children[i], children_merkle_depth + 1);
+      }
+    }
+    std::vector<std::pair<size_t, std::future<td::Result<Ref<Cell>>>>> futures;
+    futures.reserve(children.size());
+    std::vector<bool> spawned(children.size());
+    for (size_t i = 1; i < children.size(); ++i) {
+      if (pruned[i] || !try_reserve_task()) {
+        continue;
+      }
+      spawned[i] = true;
+      auto child = children[i];
+      auto predicate = is_prunned_;
+      auto remaining_spawns = remaining_spawns_;
+      futures.emplace_back(
+          i, std::async(std::launch::async,
+                        [child = std::move(child), children_merkle_depth, predicate = std::move(predicate),
+                         remaining_spawns = std::move(remaining_spawns)]() mutable {
+                          return ParallelMerkleProofImpl(std::move(predicate), std::move(remaining_spawns))
+                              .dfs(std::move(child), children_merkle_depth, false);
+                        }));
+    }
+    for (size_t i = 0; i < children.size(); ++i) {
+      if (!pruned[i] && !spawned[i]) {
+        results[i] = dfs(children[i], children_merkle_depth, false);
+      }
+    }
+    for (auto& [index, future] : futures) {
+      results[index] = future.get();
+    }
+    for (auto &result : results) {
+      if (result.is_error()) {
+        return result.move_as_error();
+      }
+      cb.store_ref(result.move_as_ok());
+    }
+    auto hash_hint = [&](unsigned level, const Cell::LevelMask &, CellHash &hash) {
+      if (level <= merkle_depth) {
+        hash = cell->get_hash(level);
+        return true;
+      }
+      return false;
+    };
+    auto result = cb.finalize(cs.is_special(), std::move(hash_hint));
+    CHECK(result.not_null());
+    return result;
+  }
+};
+
 }  // namespace detail
 
 td::Result<Ref<Cell>> MerkleProof::generate_raw(Ref<Cell> cell, IsPrunnedFunction is_prunned) {
   return detail::MerkleProofImpl(is_prunned).create_from(cell);
 }
 
+td::Result<Ref<Cell>> MerkleProof::generate_raw_parallel(Ref<Cell> cell, IsPrunnedFunction is_prunned) {
+  return generate_raw_parallel(std::move(cell), std::move(is_prunned), 2);
+}
+
+td::Result<Ref<Cell>> MerkleProof::generate_raw_parallel(Ref<Cell> cell, IsPrunnedFunction is_prunned,
+                                                          unsigned max_tasks) {
+  if (max_tasks <= 1) {
+    return generate_raw(std::move(cell), std::move(is_prunned));
+  }
+  return detail::ParallelMerkleProofImpl(std::move(is_prunned), max_tasks).create_from(std::move(cell));
+}
+
 td::Result<Ref<Cell>> MerkleProof::generate_raw(Ref<Cell> cell, CellUsageTree *usage_tree) {
   return detail::MerkleProofImpl(usage_tree).create_from(cell);
+}
+
+td::Result<Ref<Cell>> MerkleProof::generate_raw_parallel(Ref<Cell> cell, CellUsageTree *usage_tree,
+                                                          unsigned max_tasks) {
+  if (max_tasks <= 1) {
+    return generate_raw(std::move(cell), usage_tree);
+  }
+  auto visited = std::make_shared<td::HashSet<Cell::Hash>>();
+  std::function<void(const Ref<Cell>&, CellUsageTree::NodeId)> collect =
+      [&](const Ref<Cell>& current, CellUsageTree::NodeId node_id) {
+        if (!usage_tree->is_loaded(node_id)) {
+          return;
+        }
+        visited->insert(current->get_hash());
+        CellSlice cs(NoVm(), current);
+        for (unsigned i = 0; i < cs.size_refs(); ++i) {
+          collect(cs.prefetch_ref(i), usage_tree->get_child(node_id, i));
+        }
+      };
+  collect(cell, usage_tree->root_id());
+  auto is_prunned = [visited = std::move(visited)](const Ref<Cell>& current) {
+    return visited->count(current->get_hash()) == 0;
+  };
+  return generate_raw_parallel(std::move(cell), std::move(is_prunned), max_tasks);
 }
 
 Ref<Cell> MerkleProof::virtualize_raw(Ref<Cell> cell, td::uint32 effective_level) {
@@ -127,6 +279,22 @@ td::Result<Ref<Cell>> MerkleProof::generate(Ref<Cell> cell, IsPrunnedFunction is
     return td::Status::Error("failed to generate Merkle proof: level is not 0");
   }
   TRY_RESULT(raw, generate_raw(std::move(cell), is_prunned));
+  return CellBuilder::create_merkle_proof(std::move(raw));
+}
+
+td::Result<Ref<Cell>> MerkleProof::generate_parallel(Ref<Cell> cell, IsPrunnedFunction is_prunned) {
+  return generate_parallel(std::move(cell), std::move(is_prunned), 2);
+}
+
+td::Result<Ref<Cell>> MerkleProof::generate_parallel(Ref<Cell> cell, IsPrunnedFunction is_prunned,
+                                                      unsigned max_tasks) {
+  if (cell.is_null()) {
+    return td::Status::Error("failed to generate parallel Merkle proof: cell is null");
+  }
+  if (cell->get_level() != 0) {
+    return td::Status::Error("failed to generate parallel Merkle proof: level is not 0");
+  }
+  TRY_RESULT(raw, generate_raw_parallel(std::move(cell), std::move(is_prunned), max_tasks));
   return CellBuilder::create_merkle_proof(std::move(raw));
 }
 

@@ -72,6 +72,8 @@
 #include <unistd.h>
 #endif
 #include <algorithm>
+#include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -2316,6 +2318,9 @@ void ValidatorEngine::start_validator() {
   validator_options_.write().set_state_serializer_enabled(config_.state_serializer_enabled &&
                                                           !state_serializer_disabled_flag_);
   load_collator_options();
+  auto collator_options = apply_collator_options_overrides(validator_options_->get_collator_options());
+  LOG(INFO) << "External message intake limit: " << collator_options->external_message_intake_limit;
+  validator_options_.write().set_collator_options(std::move(collator_options));
 
   validator_manager_ = ton::validator::ValidatorManagerFactory::create(
       validator_options_, db_root_, keyring_.get(), adnl_.get(), rldp2_.get(), quic_.get(), overlay_manager_.get());
@@ -3428,6 +3433,14 @@ void ValidatorEngine::load_collator_options() {
     return;
   }
   validator_options_.write().set_collator_options(r_collator_options.move_as_ok());
+}
+
+td::Ref<ton::validator::CollatorOptions> ValidatorEngine::apply_collator_options_overrides(
+    td::Ref<ton::validator::CollatorOptions> options) const {
+  if (external_message_intake_limit_) {
+    options.write().external_message_intake_limit = external_message_intake_limit_.value();
+  }
+  return options;
 }
 
 void ValidatorEngine::check_key(ton::PublicKeyHash id, td::Promise<> promise) {
@@ -4872,7 +4885,7 @@ void ValidatorEngine::run_control_query(ton::ton_api::engine_validator_setCollat
     promise.set_value(create_control_query_error(S.move_as_error_prefix("failed to write file: ")));
     return;
   }
-  validator_options_.write().set_collator_options(r_collator_options.move_as_ok());
+  validator_options_.write().set_collator_options(apply_collator_options_overrides(r_collator_options.move_as_ok()));
   td::actor::send_closure(validator_manager_, &ton::validator::ValidatorManagerInterface::update_options,
                           validator_options_);
   promise.set_value(ton::create_serialize_tl_object<ton::ton_api::engine_validator_success>());
@@ -6164,6 +6177,23 @@ int main(int argc, char *argv[]) {
   p.add_option('\0', "parallel-validation", "parallel validation over different accounts", [&]() {
     acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::set_parallel_validation, true); });
   });
+  p.add_checked_option(
+      '\0', "external-message-intake-limit",
+      "stop parallel external-message intake at this fraction of the soft block limit; 0 disables (default: disabled)",
+      [&](td::Slice arg) -> td::Status {
+        std::string str = arg.str();
+        char* end = nullptr;
+        errno = 0;
+        double value = std::strtod(str.c_str(), &end);
+        if (str.empty() || end != str.data() + str.size() || errno == ERANGE || !std::isfinite(value) || value < 0.0 ||
+            value > 1.0) {
+          return td::Status::Error("external-message-intake-limit should be a number in range [0, 1]");
+        }
+        acts.push_back([&x, value]() {
+          td::actor::send_closure(x, &ValidatorEngine::set_external_message_intake_limit, value);
+        });
+        return td::Status::OK();
+      });
   p.add_option('\0', "db-event-fifo", "path to FIFO pipe for publishing DB events", [&](td::Slice s) {
     acts.push_back([&x, s = s.str()]() { td::actor::send_closure(x, &ValidatorEngine::set_db_event_fifo_path, s); });
   });

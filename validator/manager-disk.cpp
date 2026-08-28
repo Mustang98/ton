@@ -535,7 +535,7 @@ void ValidatorManagerImpl::get_external_messages(ShardIdFull shard, std::unique_
     auto task = [](std::vector<td::Ref<ExtMessage>> messages,
                    std::unique_ptr<ExtMsgCallback> callback) -> td::actor::Task<> {
       for (const auto &x : messages) {
-        co_await callback->queue.try_push(std::make_pair(x, 0));
+        co_await callback->queue.try_push(ExtMsgQueueBatch{{x, 0}});
       }
       callback->queue.close();
       co_return {};

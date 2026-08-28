@@ -19,11 +19,11 @@
 
 #include "block/block-auto.h"
 #include "block/block-parse.h"
-#include "ton/ton-io.hpp"
 #include "vm/dict.h"
 
 #include "applied-ext-message-cleanup.hpp"
 #include "external-message.hpp"
+#include "ton/ton-io.hpp"
 
 namespace ton::validator {
 

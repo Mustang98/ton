@@ -18,6 +18,7 @@
 */
 #pragma once
 #include <functional>
+#include <tuple>
 
 #include "common/bitstring.h"
 #include "vm/cells.h"
@@ -105,6 +106,20 @@ struct CombineErrorValue {
 
 struct DictNonEmpty {};
 struct DictAdvance {};
+
+struct DictionaryReplacementStat {
+  td::uint64 cells{0};
+  td::uint64 bits{0};
+  td::uint64 internal_refs{0};
+  td::uint64 external_refs{0};
+
+  auto key() const {
+    return std::make_tuple(cells, bits, internal_refs, external_refs);
+  }
+  bool operator==(const DictionaryReplacementStat& other) const {
+    return key() == other.key();
+  }
+};
 
 class DictionaryBase {
  protected:
@@ -214,6 +229,8 @@ class DictionaryFixed : public DictionaryBase {
   bool int_key_exists(long long key);
   bool uint_key_exists(unsigned long long key);
   Ref<CellSlice> lookup(td::ConstBitPtr key, int key_len);
+  DictionaryReplacementStat estimate_replacement_proof_increment(
+      td::Span<td::ConstBitPtr> sorted_current_keys, td::Span<td::ConstBitPtr> sorted_previous_keys, int key_len);
   Ref<CellSlice> lookup_delete(td::ConstBitPtr key, int key_len);
   Ref<CellSlice> get_minmax_key(td::BitPtr key_buffer, int key_len, bool fetch_max = false, bool invert_first = false);
   Ref<CellSlice> extract_minmax_key(td::BitPtr key_buffer, int key_len, bool fetch_max = false,
@@ -291,6 +308,9 @@ class DictionaryFixed : public DictionaryBase {
   bool check_leaf(Ref<CellSlice> cs_ref, td::ConstBitPtr key, int key_len) const {
     return check_leaf(cs_ref.write(), key, key_len);
   }
+  void dict_estimate_replacement_proof_increment(Ref<Cell> cell, td::Span<td::ConstBitPtr> current_keys,
+                                                 td::Span<td::ConstBitPtr> previous_keys, int key_offset,
+                                                 int remaining_bits, DictionaryReplacementStat& stat);
   bool check_fork_raw(Ref<CellSlice> cs_ref, int n) const;
   friend class DictIterator;
 

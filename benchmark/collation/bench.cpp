@@ -435,7 +435,7 @@ class InMemoryManager final : public ton::validator::ValidatorManagerImpl {
     auto feed = [](std::vector<td::Ref<ton::validator::ExtMessage>> messages,
                    std::unique_ptr<ton::validator::ExtMsgCallback> callback) -> td::actor::Task<> {
       for (auto& message : messages) {
-        co_await callback->queue.push({std::move(message), 0});
+        co_await callback->queue.push(ton::validator::ExtMsgQueueBatch{{std::move(message), 0}});
       }
       callback->queue.close();
       co_return {};

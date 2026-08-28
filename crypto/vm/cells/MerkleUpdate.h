@@ -29,7 +29,10 @@ namespace vm {
 class MerkleUpdate {
  public:
   // from + update == to
-  static td::Result<Ref<Cell>> generate(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree);
+  static td::Result<Ref<Cell>> generate(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree,
+                                        bool prefer_direct_usage_node = false,
+                                        CellUsageTree *proof_usage_tree = nullptr,
+                                        unsigned parallel_old_proof_tasks = 1);
   // Returns Error if something go wrong. If validate(from).is_ok() and may_apply(from, to).is_ok(), then it
   // must not fail.
   static td::Result<Ref<Cell>> apply(Ref<Cell> from, Ref<Cell> update, StoreCellHint *hint = nullptr);
@@ -47,7 +50,10 @@ class MerkleUpdate {
   static td::Result<Ref<Cell>> apply_raw(Ref<Cell> from, Ref<Cell> update_from, Ref<Cell> update_to,
                                          td::uint32 from_level, td::uint32 to_level, StoreCellHint *hint = nullptr);
   static td::Result<std::pair<Ref<Cell>, Ref<Cell>>> generate_raw(Ref<Cell> from, Ref<Cell> to,
-                                                                  CellUsageTree *usage_tree);
+                                                                  CellUsageTree *usage_tree,
+                                                                  bool prefer_direct_usage_node = false,
+                                                                  CellUsageTree *proof_usage_tree = nullptr,
+                                                                  unsigned parallel_old_proof_tasks = 1);
   static td::Status validate_raw(Ref<Cell> update_from, Ref<Cell> update_to, td::uint32 from_level,
                                  td::uint32 to_level);
 

@@ -67,6 +67,10 @@ std::vector<td::Ref<BlockData>> ChainState::block_data() const {
   return std::visit([](const auto& tip) { return tip.block_data(); }, tip_);
 }
 
+const std::vector<td::Ref<BlockData>>& ChainState::recent_block_data() const {
+  return recent_block_data_;
+}
+
 std::vector<td::Ref<vm::Cell>> ChainState::state() const {
   return std::visit([](const auto& tip) { return tip.states(); }, tip_);
 }
@@ -123,7 +127,13 @@ td::Ref<ChainState> ChainState::apply(const BlockCandidate& candidate) const {
 
     auto state = vm::MerkleUpdate::apply(root_, rec.state_update).ensure().move_as_ok();
 
-    return td::Ref<ChainState>(new ChainState{NormalTip{block, state}, min_mc_block_id_},
+    auto recent_block_data = recent_block_data_;
+    recent_block_data.insert(recent_block_data.begin(), block);
+    constexpr size_t max_recent_blocks = 3;
+    if (recent_block_data.size() > max_recent_blocks) {
+      recent_block_data.resize(max_recent_blocks);
+    }
+    return td::Ref<ChainState>(new ChainState{NormalTip{block, state}, min_mc_block_id_, std::move(recent_block_data)},
                                td::Ref<ChainState>::acquire_t{});
   } catch (vm::CellBuilder::CellCreateError& e) {
     LOG(FATAL) << "Failed to apply Merkle update of " << candidate.id << ": CellCreateError";
@@ -144,9 +154,14 @@ td::Ref<vm::Cell> ChainState::BeforeMergeTip::root() const {
   return result;
 }
 
-ChainState::ChainState(Tip tip, BlockIdExt min_mc_block_id)
-    : tip_(std::move(tip)), min_mc_block_id_(std::move(min_mc_block_id)) {
+ChainState::ChainState(Tip tip, BlockIdExt min_mc_block_id, std::vector<td::Ref<BlockData>> recent_block_data)
+    : tip_(std::move(tip))
+    , min_mc_block_id_(std::move(min_mc_block_id))
+    , recent_block_data_(std::move(recent_block_data)) {
   root_ = std::visit([](const auto& tip) { return tip.root(); }, this->tip_);
+  if (recent_block_data_.empty()) {
+    recent_block_data_ = std::visit([](const auto& tip) { return tip.block_data(); }, tip_);
+  }
 }
 
 td::StringBuilder& operator<<(td::StringBuilder& sb, const ChainState& state) {
