@@ -230,6 +230,17 @@ class Collator final : public td::actor::Actor {
   void tear_down() override {
     ext_msg_cancellation_.cancel();
     ext_msg_queue_.close();
+    if (state_usage_tree_) {
+      state_usage_tree_->set_cell_load_callback({});
+    }
+    for (auto& [_, proof] : neighbor_proof_builders_) {
+      proof.set_cell_load_callback({});
+    }
+    for (auto& [_, storage] : account_storage_dicts_) {
+      if (storage.inited) {
+        storage.mpb.set_cell_load_callback({});
+      }
+    }
   }
 
   int verbosity{3 * 0};

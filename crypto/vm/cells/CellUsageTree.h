@@ -39,12 +39,69 @@ class CellUsageTree : public std::enable_shared_from_this<CellUsageTree> {
 
   struct NodePtr {
    public:
-    NodePtr() = default;
+    NodePtr() noexcept : tree_weak_(), node_id_(0), keep_alive_(false) {
+    }
     NodePtr(std::weak_ptr<CellUsageTree> tree_weak, NodeId node_id)
-        : tree_weak_(std::move(tree_weak)), node_id_(node_id) {
+        : tree_weak_(std::move(tree_weak)), node_id_(node_id), keep_alive_(false) {
+    }
+    NodePtr(std::shared_ptr<CellUsageTree> tree, NodeId node_id)
+        : tree_keep_alive_(std::move(tree)), node_id_(node_id), keep_alive_(true) {
+    }
+    NodePtr(const NodePtr& other) noexcept : node_id_(other.node_id_), keep_alive_(other.keep_alive_) {
+      if (keep_alive_) {
+        new (&tree_keep_alive_) std::shared_ptr<CellUsageTree>(other.tree_keep_alive_);
+      } else {
+        new (&tree_weak_) std::weak_ptr<CellUsageTree>(other.tree_weak_);
+      }
+    }
+    NodePtr(NodePtr&& other) noexcept : node_id_(other.node_id_), keep_alive_(other.keep_alive_) {
+      if (keep_alive_) {
+        new (&tree_keep_alive_) std::shared_ptr<CellUsageTree>(std::move(other.tree_keep_alive_));
+      } else {
+        new (&tree_weak_) std::weak_ptr<CellUsageTree>(std::move(other.tree_weak_));
+      }
+    }
+    NodePtr& operator=(const NodePtr& other) noexcept {
+      if (this != &other) {
+        if (keep_alive_ == other.keep_alive_) {
+          if (keep_alive_) {
+            tree_keep_alive_ = other.tree_keep_alive_;
+          } else {
+            tree_weak_ = other.tree_weak_;
+          }
+          node_id_ = other.node_id_;
+        } else {
+          this->~NodePtr();
+          new (this) NodePtr(other);
+        }
+      }
+      return *this;
+    }
+    NodePtr& operator=(NodePtr&& other) noexcept {
+      if (this != &other) {
+        if (keep_alive_ == other.keep_alive_) {
+          if (keep_alive_) {
+            tree_keep_alive_ = std::move(other.tree_keep_alive_);
+          } else {
+            tree_weak_ = std::move(other.tree_weak_);
+          }
+          node_id_ = other.node_id_;
+        } else {
+          this->~NodePtr();
+          new (this) NodePtr(std::move(other));
+        }
+      }
+      return *this;
+    }
+    ~NodePtr() {
+      if (keep_alive_) {
+        tree_keep_alive_.~shared_ptr();
+      } else {
+        tree_weak_.~weak_ptr();
+      }
     }
     bool empty() const {
-      return node_id_ == 0 || tree_weak_.expired();
+      return node_id_ == 0 || (keep_alive_ ? !tree_keep_alive_ : tree_weak_.expired());
     }
 
     bool on_load(const LoadedCell& loaded_cell) const;
@@ -54,15 +111,22 @@ class CellUsageTree : public std::enable_shared_from_this<CellUsageTree> {
     NodeId node_id_for(const CellUsageTree* tree) const;
 
    private:
-    std::weak_ptr<CellUsageTree> tree_weak_;
+    union {
+      std::weak_ptr<CellUsageTree> tree_weak_;
+      std::shared_ptr<CellUsageTree> tree_keep_alive_;
+    };
     NodeId node_id_{0};
+    bool keep_alive_{false};
   };
 
   CellUsageTree();
   ~CellUsageTree();
 
   NodePtr root_ptr();
+  // Use only when the produced usage cells can outlive the direct tree owner.
+  NodePtr root_ptr_keep_alive();
   NodePtr node_ptr(NodeId node_id);
+  NodePtr node_ptr_keep_alive(NodeId node_id);
   std::shared_ptr<CellUsageTree> clone_for_proof() const;
   NodeId root_id() const;
   size_t node_count() const {

@@ -63,8 +63,8 @@ class MerkleProofBuilder {
 
  public:
   MerkleProofBuilder() = default;
-  explicit MerkleProofBuilder(Ref<Cell> root);
-  Ref<Cell> init(Ref<Cell> root);
+  explicit MerkleProofBuilder(Ref<Cell> root, bool keep_usage_tree_alive = false);
+  Ref<Cell> init(Ref<Cell> root, bool keep_usage_tree_alive = false);
   bool clear();
   Ref<Cell> root() const {
     return usage_root;

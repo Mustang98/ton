@@ -478,6 +478,24 @@ TEST(CellUsageTree, concurrent_child_creation_and_load_are_deterministic) {
   }
 }
 
+TEST(CellUsageTree, keep_alive_nodes_preserve_their_tree) {
+  auto tree = std::make_shared<vm::CellUsageTree>();
+  std::weak_ptr<vm::CellUsageTree> weak_tree = tree;
+  auto root = tree->root_ptr_keep_alive();
+  auto child = root.create_child(0);
+  auto moved_root = std::move(root);
+  ASSERT_TRUE(root.empty());
+  ASSERT_TRUE(root.create_child(0).empty());
+
+  tree.reset();
+  ASSERT_TRUE(!weak_tree.expired());
+  ASSERT_TRUE(child.is_from_tree(weak_tree.lock().get()));
+
+  moved_root = {};
+  child = {};
+  ASSERT_TRUE(weak_tree.expired());
+}
+
 void test_two_bitstrings(const td::BitSlice& bs1, const td::BitSlice& bs2) {
   using td::to_binary;
   using td::to_hex;

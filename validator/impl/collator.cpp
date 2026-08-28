@@ -192,7 +192,7 @@ class AsyncAccountDictionary {
 
   explicit AsyncAccountDictionary(Ref<vm::Cell> root)
       : usage_tree_(std::make_shared<vm::CellUsageTree>())
-      , dict_(vm::UsageCell::create(unwrap_usage_cell(std::move(root)), usage_tree_->root_ptr()), 256,
+      , dict_(vm::UsageCell::create(unwrap_usage_cell(std::move(root)), usage_tree_->root_ptr_keep_alive()), 256,
               block::tlb::aug_ShardAccounts, false)
       , root_(dict_.get_root_cell())
       , loaded_cells_(std::make_shared<vm::ProofStorageStat>()) {
@@ -1372,7 +1372,7 @@ void Collator::got_neighbor_msg_queue(unsigned i, Ref<OutMsgQueueProof> res) {
   if (block_id.is_masterchain()) {
     state_root = res->state_root_;
   } else {
-    neighbor_proof_builders_.emplace_back(block_id, vm::MerkleProofBuilder{res->state_root_});
+    neighbor_proof_builders_.emplace_back(block_id, vm::MerkleProofBuilder{res->state_root_, true});
     state_root = neighbor_proof_builders_.back().second.root();
     if (full_collated_data_ && !block_id.is_masterchain()) {
       neighbor_proof_builders_.back().second.set_cell_load_callback(
@@ -1481,7 +1481,7 @@ bool Collator::unpack_merge_last_state() {
   if (full_collated_data_ && !is_masterchain()) {
     state_usage_tree_->set_cell_load_callback([&](const vm::LoadedCell& cell) { on_cell_loaded(cell); });
   }
-  prev_state_root_ = vm::UsageCell::create(prev_state_root_pure_, state_usage_tree_->root_ptr());
+  prev_state_root_ = vm::UsageCell::create(prev_state_root_pure_, state_usage_tree_->root_ptr_keep_alive());
   // 2. extract back slightly virtualized roots of the two original states
   Ref<vm::Cell> root0, root1;
   if (!block::gen::t_ShardState.cell_unpack_split_state(prev_state_root_, root0, root1)) {
@@ -1528,7 +1528,7 @@ bool Collator::unpack_last_state() {
   if (full_collated_data_ && !is_masterchain()) {
     state_usage_tree_->set_cell_load_callback([&](const vm::LoadedCell& cell) { on_cell_loaded(cell); });
   }
-  prev_state_root_ = vm::UsageCell::create(prev_state_root_pure_, state_usage_tree_->root_ptr());
+  prev_state_root_ = vm::UsageCell::create(prev_state_root_pure_, state_usage_tree_->root_ptr_keep_alive());
   // unpack previous state
   block::ShardState ss;
   return unpack_one_last_state(ss, prev_blocks.at(0), prev_state_root_) && (!after_split_ || split_last_state(ss)) &&
@@ -3229,7 +3229,7 @@ bool Collator::init_account_storage_dict(block::Account& account) {
                                      << ": dict is empty");
       }
     }
-    dict.mpb = vm::MerkleProofBuilder(std::move(dict_root));
+    dict.mpb = vm::MerkleProofBuilder(std::move(dict_root), true);
     dict.mpb.set_cell_load_callback([&](const vm::LoadedCell& cell) { on_cell_loaded(cell); });
   }
   auto S = account.init_account_storage_stat(dict.mpb.root());
@@ -3461,7 +3461,7 @@ bool Collator::prepare_accounts_parallel(const std::vector<StdSmcAddress>& addre
               return;
             }
             group->dict.inited = true;
-            group->dict.mpb = vm::MerkleProofBuilder(std::move(root));
+            group->dict.mpb = vm::MerkleProofBuilder(std::move(root), true);
             group->dict.mpb.set_cell_load_callback([this](const vm::LoadedCell& cell) { on_cell_loaded(cell); });
             target = &group->dict;
             root = target->mpb.root();
@@ -3645,7 +3645,7 @@ static td::Result<Ref<vm::Cell>> rebind_usage_cells_by_path(Ref<vm::Cell> update
         return cell;
       }
       TRY_RESULT(target_node, map_node(source_node));
-      return vm::UsageCell::create(usage_cell->underlying_cell(), target_tree.node_ptr(target_node));
+      return vm::UsageCell::create(usage_cell->underlying_cell(), target_tree.node_ptr_keep_alive(target_node));
     }
 
     vm::CellSlice cs{vm::NoVm(), cell};

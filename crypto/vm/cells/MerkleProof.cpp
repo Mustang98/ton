@@ -537,15 +537,17 @@ td::Result<Ref<Cell>> MerkleProof::combine_fast_raw(Ref<Cell> a, Ref<Cell> b) {
   return MerkleProofCombineFast(std::move(a), std::move(b)).run_raw();
 }
 
-MerkleProofBuilder::MerkleProofBuilder(Ref<Cell> root)
+MerkleProofBuilder::MerkleProofBuilder(Ref<Cell> root, bool keep_usage_tree_alive)
     : usage_tree(std::make_shared<CellUsageTree>()), orig_root(std::move(root)) {
-  usage_root = UsageCell::create(orig_root, usage_tree->root_ptr());
+  usage_root = UsageCell::create(
+      orig_root, keep_usage_tree_alive ? usage_tree->root_ptr_keep_alive() : usage_tree->root_ptr());
 }
 
-Ref<Cell> MerkleProofBuilder::init(Ref<Cell> root) {
+Ref<Cell> MerkleProofBuilder::init(Ref<Cell> root, bool keep_usage_tree_alive) {
   usage_tree = std::make_shared<CellUsageTree>();
   orig_root = std::move(root);
-  usage_root = UsageCell::create(orig_root, usage_tree->root_ptr());
+  usage_root = UsageCell::create(
+      orig_root, keep_usage_tree_alive ? usage_tree->root_ptr_keep_alive() : usage_tree->root_ptr());
   return usage_root;
 }
 

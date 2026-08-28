@@ -27,6 +27,13 @@ namespace vm {
 // CellUsageTree::NodePtr
 //
 bool CellUsageTree::NodePtr::on_load(const Cell::LoadedCell& loaded_cell) const {
+  if (keep_alive_) {
+    if (!tree_keep_alive_) {
+      return false;
+    }
+    tree_keep_alive_->on_load(node_id_, loaded_cell);
+    return true;
+  }
   auto tree = tree_weak_.lock();
   if (!tree) {
     return false;
@@ -36,6 +43,12 @@ bool CellUsageTree::NodePtr::on_load(const Cell::LoadedCell& loaded_cell) const 
 }
 
 CellUsageTree::NodePtr CellUsageTree::NodePtr::create_child(unsigned ref_id) const {
+  if (keep_alive_) {
+    if (!tree_keep_alive_) {
+      return {};
+    }
+    return {tree_keep_alive_, tree_keep_alive_->create_child(node_id_, ref_id)};
+  }
   auto tree = tree_weak_.lock();
   if (!tree) {
     return {};
@@ -45,7 +58,7 @@ CellUsageTree::NodePtr CellUsageTree::NodePtr::create_child(unsigned ref_id) con
 
 bool CellUsageTree::NodePtr::is_from_tree(const CellUsageTree* master_tree) const {
   DCHECK(master_tree);
-  auto tree = tree_weak_.lock();
+  auto tree = keep_alive_ ? tree_keep_alive_ : tree_weak_.lock();
   if (tree.get() != master_tree) {
     return false;
   }
@@ -53,13 +66,13 @@ bool CellUsageTree::NodePtr::is_from_tree(const CellUsageTree* master_tree) cons
 }
 
 CellUsageTree::NodeId CellUsageTree::NodePtr::node_id_for(const CellUsageTree* tree) const {
-  auto owner = tree_weak_.lock();
+  auto owner = keep_alive_ ? tree_keep_alive_ : tree_weak_.lock();
   return owner.get() == tree ? node_id_ : 0;
 }
 
 bool CellUsageTree::NodePtr::mark_path(CellUsageTree* master_tree) const {
   DCHECK(master_tree);
-  auto tree = tree_weak_.lock();
+  auto tree = keep_alive_ ? tree_keep_alive_ : tree_weak_.lock();
   if (tree.get() != master_tree) {
     return false;
   }
@@ -81,10 +94,19 @@ CellUsageTree::~CellUsageTree() {
 }
 
 CellUsageTree::NodePtr CellUsageTree::root_ptr() {
+  return {std::weak_ptr<CellUsageTree>{shared_from_this()}, 1};
+}
+
+CellUsageTree::NodePtr CellUsageTree::root_ptr_keep_alive() {
   return {shared_from_this(), 1};
 }
 
 CellUsageTree::NodePtr CellUsageTree::node_ptr(NodeId node_id) {
+  DCHECK(node_id != 0 && node_id < node_count_.load(std::memory_order_acquire));
+  return {std::weak_ptr<CellUsageTree>{shared_from_this()}, node_id};
+}
+
+CellUsageTree::NodePtr CellUsageTree::node_ptr_keep_alive(NodeId node_id) {
   DCHECK(node_id != 0 && node_id < node_count_.load(std::memory_order_acquire));
   return {shared_from_this(), node_id};
 }
