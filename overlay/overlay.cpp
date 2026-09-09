@@ -112,7 +112,8 @@ OverlayImpl::OverlayImpl(td::actor::ActorId<keyring::Keyring> keyring, td::actor
     , rules_(std::move(rules))
     , scope_(scope)
     , announce_self_(opts.announce_self_)
-    , opts_(std::move(opts)) {
+    , opts_(std::move(opts))
+    , public_whitelisted_peer_ids_(opts_.public_whitelisted_peers_.begin(), opts_.public_whitelisted_peers_.end()) {
   overlay_id_ = id_full_.compute_short_id();
   frequent_dht_lookup_ = opts_.frequent_dht_lookup_;
   peer_list_.local_member_flags_ = opts_.local_overlay_member_flags_;
@@ -709,8 +710,8 @@ void OverlayImpl::send_broadcast(PublicKeyHash send_as, td::uint32 flags, td::Bu
   broadcasts_simple_.send(this, send_as, std::move(data), flags);
 }
 
-void OverlayImpl::send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, td::BufferSlice data,
-                                     td::BufferSlice extra) {
+void OverlayImpl::send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, BroadcastFecDissemination dissemination,
+                                     td::BufferSlice data, td::BufferSlice extra) {
   if (!has_valid_membership_certificate()) {
     VLOG(overlay, WARNING) << "member certificate is invalid, valid_until="
                            << peer_list_.local_cert_is_valid_until_.at_unix();
@@ -730,7 +731,7 @@ void OverlayImpl::send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, td
     if (!extra.empty()) {
       LOG(WARNING) << "Broadcast extra for old fec broadcast is not supported";
     }
-    broadcasts_fec_.send(this, send_as, std::move(data), flags, opts_.broadcast_speed_multiplier_);
+    broadcasts_fec_.send(this, send_as, std::move(data), flags, dissemination, opts_.broadcast_speed_multiplier_);
   }
 }
 
@@ -882,9 +883,11 @@ td::actor::Task<OverlayNode> OverlayImpl::get_self_node_inner() {
 }
 
 void OverlayImpl::send_new_fec_broadcast_part(PublicKeyHash local_id, Overlay::BroadcastDataHash data_hash,
-                                              td::uint32 size, td::uint32 flags, td::BufferSlice part, td::uint32 seqno,
-                                              fec::FecType fec_type, td::uint32 date) {
-  broadcasts_fec_.send_part(this, local_id, data_hash, size, flags, std::move(part), seqno, std::move(fec_type), date);
+                                              td::uint32 size, td::uint32 flags,
+                                              BroadcastFecDissemination dissemination, td::BufferSlice part,
+                                              td::uint32 seqno, fec::FecType fec_type, td::uint32 date) {
+  broadcasts_fec_.send_part(this, local_id, data_hash, size, flags, dissemination, std::move(part), seqno,
+                            std::move(fec_type), date);
 }
 
 void OverlayImpl::broadcast_twostep_signed_simple(BroadcastTwostepDataSimple &&data,

@@ -145,6 +145,7 @@ class FullNodeImpl : public FullNode {
   };
 
   void update_shard_actor(ShardIdFull shard, bool active, bool enable_plumtree_broadcast);
+  void register_public_whitelisted_peers();
 
   adnl::AdnlNodeIdShort adnl_id_;
   FileHash zero_state_file_hash_;

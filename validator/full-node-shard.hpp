@@ -121,7 +121,7 @@ class FullNodeShardImpl : public FullNodeShard {
   void send_shard_block_info(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data) override;
   void send_block_candidate(BlockIdExt block_id, CatchainSeqno cc_seqno, td::uint32 validator_set_hash,
                             td::BufferSlice data) override;
-  void send_broadcast(BlockBroadcast broadcast) override;
+  void send_broadcast(BlockBroadcast broadcast, bool high_fanout) override;
   void send_block_finality_broadcast(BlockFinalityBroadcast finality) override;
 
   void start_up() override;
@@ -144,6 +144,7 @@ class FullNodeShardImpl : public FullNodeShard {
                                         const std::shared_ptr<ton::overlay::Certificate> &cert, td::uint32 payload_size,
                                         bool is_fec) const;
   PublicKeyHash full_node_adnl_source() const;
+  std::vector<adnl::AdnlNodeIdShort> get_public_whitelisted_peers() const;
 
   void ping_neighbours();
   void reload_neighbours();

@@ -423,6 +423,14 @@ class ValidatorEngine : public td::actor::Actor {
   void enable_public_rebroadcast() {
     full_node_options_.public_rebroadcast_enabled_ = true;
   }
+  void set_public_rebroadcast_fanout(td::uint32 fanout) {
+    LOG(INFO) << "configured public rebroadcast fanout=" << fanout;
+    full_node_options_.public_rebroadcast_fanout_ = fanout;
+  }
+  void set_public_whitelisted_peers(std::vector<ton::adnl::AdnlNode> public_whitelisted_peers) {
+    LOG(INFO) << "configured public whitelisted peers count=" << public_whitelisted_peers.size();
+    full_node_options_.public_whitelisted_peers_ = std::move(public_whitelisted_peers);
+  }
   void with_full_node_options(std::function<void(ton::validator::fullnode::FullNodeOptions &)> f) {
     f(full_node_options_);
   }

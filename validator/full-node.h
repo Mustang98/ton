@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "adnl/adnl-ext-client.h"
+#include "adnl/adnl-node.h"
 #include "adnl/adnl.h"
 #include "dht/dht.h"
 #include "overlay/overlays.h"
@@ -52,12 +53,18 @@ struct FullNodeConfig {
 };
 
 struct FullNodeOptions {
+  static constexpr td::uint32 DEFAULT_PUBLIC_REBROADCAST_FANOUT = 200;
+  static constexpr td::uint32 PUBLIC_REBROADCAST_MAX_PEERS = 800;
+  static constexpr td::uint32 PUBLIC_REBROADCAST_NODES_TO_SEND = 32;
+
   FullNodeConfig config_;
   double public_broadcast_speed_multiplier_ = 1.0;
   double private_broadcast_speed_multiplier_ = 1.0;
   double fast_sync_broadcast_speed_multiplier_ = 1.0;
   double initial_sync_delay_ = 60.0;
   bool public_rebroadcast_enabled_ = false;
+  td::uint32 public_rebroadcast_fanout_ = DEFAULT_PUBLIC_REBROADCAST_FANOUT;
+  std::vector<adnl::AdnlNode> public_whitelisted_peers_;
 
   struct RateLimiterParams {
     double window_size_ = 1.0;
@@ -181,7 +188,12 @@ class FullNode : public td::actor::Actor {
   static constexpr td::uint64 max_zerostate_size() {
     return 16 << 20;
   }
-  enum { broadcast_mode_public = 1, broadcast_mode_fast_sync = 2, broadcast_mode_custom = 4 };
+  enum {
+    broadcast_mode_public = 1,
+    broadcast_mode_fast_sync = 2,
+    broadcast_mode_custom = 4,
+    broadcast_mode_high_fanout = 8
+  };
 
   static constexpr td::int32 MAX_FAST_SYNC_OVERLAY_CLIENTS = 5;
   static constexpr td::uint32 PROTO_VERSION_MAJOR = 3;

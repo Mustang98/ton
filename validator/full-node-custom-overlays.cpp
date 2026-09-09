@@ -244,7 +244,7 @@ void FullNodeCustomOverlay::send_external_message(td::BufferSlice data) {
   auto B = create_serialize_tl_object<ton_api::tonNode_externalMessageBroadcast>(
       create_tl_object<ton_api::tonNode_externalMessage>(std::move(data)));
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                          local_id_.pubkey_hash(), 0, std::move(B));
+                          local_id_.pubkey_hash(), 0, overlay::BroadcastFecDissemination::Normal, std::move(B));
 }
 
 void FullNodeCustomOverlay::send_broadcast(BlockBroadcast broadcast) {
@@ -258,7 +258,8 @@ void FullNodeCustomOverlay::send_broadcast(BlockBroadcast broadcast) {
     return;
   }
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(), B.move_as_ok());
+                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(),
+                          overlay::BroadcastFecDissemination::Normal, B.move_as_ok());
 }
 
 void FullNodeCustomOverlay::send_block_finality_broadcast(BlockFinalityBroadcast finality) {
@@ -270,7 +271,8 @@ void FullNodeCustomOverlay::send_block_finality_broadcast(BlockFinalityBroadcast
   auto B = create_serialize_tl_object<ton_api::tonNode_blockFinalityBroadcast>(create_tl_block_id(finality.block_id),
                                                                                finality.sig_set->tl());
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(), std::move(B));
+                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(),
+                          overlay::BroadcastFecDissemination::Normal, std::move(B));
 }
 
 void FullNodeCustomOverlay::send_block_candidate(BlockIdExt block_id, CatchainSeqno cc_seqno,
@@ -286,7 +288,8 @@ void FullNodeCustomOverlay::send_block_candidate(BlockIdExt block_id, CatchainSe
   }
   VLOG(full_node, DEBUG) << "Sending newBlockCandidate in custom overlay \"" << name_ << "\": " << block_id;
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(), B.move_as_ok());
+                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(),
+                          overlay::BroadcastFecDissemination::Normal, B.move_as_ok());
 }
 
 void FullNodeCustomOverlay::send_shard_block_info(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data) {
@@ -298,7 +301,8 @@ void FullNodeCustomOverlay::send_shard_block_info(BlockIdExt block_id, CatchainS
                             local_id_.pubkey_hash(), 0, std::move(B));
   } else {
     td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                            local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(), std::move(B));
+                            local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(),
+                            overlay::BroadcastFecDissemination::Normal, std::move(B));
   }
 }
 

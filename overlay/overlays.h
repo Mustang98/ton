@@ -306,6 +306,7 @@ struct OverlayOptions {
   td::uint32 max_neighbours_ = 10;
   td::uint32 nodes_to_send_ = 4;
   td::uint32 propagate_broadcast_to_ = 5;
+  std::vector<adnl::AdnlNodeIdShort> public_whitelisted_peers_;
   td::uint32 default_permanent_members_flags_ = 0;
   double broadcast_speed_multiplier_ = 1.0;
   bool private_ping_peers_ = false;
@@ -339,6 +340,8 @@ struct OverlayOptions {
   td::RateLimiterWindow::Params unauth_broadcast_rate_limit_ = {};
   td::RateLimiterWindow::Params unauth_broadcast_size_rate_limit_ = {};
 };
+
+enum class BroadcastFecDissemination { Normal, HighFanout };
 
 using PlumtreeFecOptions = OverlayOptions::PlumtreeFecOptions;
 
@@ -449,9 +452,11 @@ class Overlays : public td::actor::Actor {
                                  td::uint32 flags, td::BufferSlice object) = 0;
   virtual void send_broadcast_fec(adnl::AdnlNodeIdShort src, OverlayIdShort overlay_id, td::BufferSlice object) = 0;
   virtual void send_broadcast_fec_ex(adnl::AdnlNodeIdShort src, OverlayIdShort overlay_id, PublicKeyHash send_as,
-                                     td::uint32 flags, td::BufferSlice object) = 0;
+                                     td::uint32 flags, BroadcastFecDissemination dissemination,
+                                     td::BufferSlice object) = 0;
   virtual void send_broadcast_fec_with_extra(adnl::AdnlNodeIdShort src, OverlayIdShort overlay_id,
-                                             PublicKeyHash send_as, td::uint32 flags, td::BufferSlice object,
+                                             PublicKeyHash send_as, td::uint32 flags,
+                                             BroadcastFecDissemination dissemination, td::BufferSlice object,
                                              td::BufferSlice extra) = 0;
   virtual void send_broadcast_plumtree_fec(adnl::AdnlNodeIdShort src, OverlayIdShort overlay_id, PublicKeyHash send_as,
                                            td::uint32 flags, td::BufferSlice object) = 0;

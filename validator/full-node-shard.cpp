@@ -114,6 +114,13 @@ void FullNodeShardImpl::create_overlay() {
   opts.is_original_sender_ = is_original_sender_;
   opts.plumtree_broadcast_sender_ = enable_plumtree_broadcast_ ? td::actor::ActorId<adnl::AdnlSenderEx>{quic_}
                                                                : td::actor::ActorId<adnl::AdnlSenderEx>{};
+  if (opts_.public_rebroadcast_enabled_) {
+    opts.max_neighbours_ = opts_.public_rebroadcast_fanout_;
+    opts.max_peers_ =
+        std::max({opts.max_peers_, FullNodeOptions::PUBLIC_REBROADCAST_MAX_PEERS, opts_.public_rebroadcast_fanout_});
+    opts.nodes_to_send_ = std::max(opts.nodes_to_send_, FullNodeOptions::PUBLIC_REBROADCAST_NODES_TO_SEND);
+    opts.public_whitelisted_peers_ = get_public_whitelisted_peers();
+  }
   td::actor::send_closure(overlays_, &overlay::Overlays::create_public_overlay_ex, adnl_id_, overlay_id_full_.clone(),
                           std::make_unique<Callback>(actor_id(this)), rules_,
                           PSTRING() << "{ \"type\": \"shard\", \"shard_id\": " << get_shard()
@@ -131,6 +138,22 @@ void FullNodeShardImpl::create_overlay() {
     td::actor::send_closure(overlays_, &overlay::Overlays::update_certificate, adnl_id_, overlay_id_, adnl_source,
                             adnl_source_cert_);
   }
+}
+
+std::vector<adnl::AdnlNodeIdShort> FullNodeShardImpl::get_public_whitelisted_peers() const {
+  std::vector<adnl::AdnlNodeIdShort> public_whitelisted_peers;
+  public_whitelisted_peers.reserve(opts_.public_whitelisted_peers_.size());
+  for (const auto &peer : opts_.public_whitelisted_peers_) {
+    auto short_id = peer.compute_short_id();
+    if (short_id == adnl_id_) {
+      continue;
+    }
+    public_whitelisted_peers.push_back(short_id);
+  }
+  std::sort(public_whitelisted_peers.begin(), public_whitelisted_peers.end());
+  public_whitelisted_peers.erase(std::unique(public_whitelisted_peers.begin(), public_whitelisted_peers.end()),
+                                 public_whitelisted_peers.end());
+  return public_whitelisted_peers;
 }
 
 void FullNodeShardImpl::check_broadcast(PublicKeyHash src, td::BufferSlice broadcast, td::Promise<td::Unit> promise) {
@@ -389,7 +412,8 @@ void FullNodeShardImpl::send_external_message(td::BufferSlice data) {
                             std::move(B));
   } else {
     td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, adnl_id_, overlay_id_, source,
-                            overlay::Overlays::BroadcastFlagFixedNeighbours(), std::move(B));
+                            overlay::Overlays::BroadcastFlagFixedNeighbours(),
+                            overlay::BroadcastFecDissemination::Normal, std::move(B));
   }
 }
 
@@ -404,7 +428,8 @@ void FullNodeShardImpl::send_shard_block_info(BlockIdExt block_id, CatchainSeqno
                             std::move(B));
   } else {
     td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, adnl_id_, overlay_id_, source,
-                            overlay::Overlays::BroadcastFlagAnySender(), std::move(B));
+                            overlay::Overlays::BroadcastFlagAnySender(), overlay::BroadcastFecDissemination::Normal,
+                            std::move(B));
   }
 }
 
@@ -426,7 +451,7 @@ void FullNodeShardImpl::send_block_candidate(BlockIdExt block_id, CatchainSeqno 
                           overlay::Overlays::BroadcastFlagAnySender(), std::move(payload));
 }
 
-void FullNodeShardImpl::send_broadcast(BlockBroadcast broadcast) {
+void FullNodeShardImpl::send_broadcast(BlockBroadcast broadcast, bool high_fanout) {
   VLOG(full_node, DEBUG) << "Sending block broadcast in public overlay: " << broadcast.block_id;
   auto B = serialize_block_broadcast(broadcast, k_called_from_public);
   if (B.is_error()) {
@@ -435,8 +460,10 @@ void FullNodeShardImpl::send_broadcast(BlockBroadcast broadcast) {
   }
   auto payload = B.move_as_ok();
   auto source = choose_outbound_source(static_cast<td::uint32>(payload.size()), true);
+  auto dissemination =
+      high_fanout ? overlay::BroadcastFecDissemination::HighFanout : overlay::BroadcastFecDissemination::Normal;
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, adnl_id_, overlay_id_, source,
-                          overlay::Overlays::BroadcastFlagAnySender(), std::move(payload));
+                          overlay::Overlays::BroadcastFlagAnySender(), dissemination, std::move(payload));
 }
 
 void FullNodeShardImpl::send_block_finality_broadcast(BlockFinalityBroadcast finality) {

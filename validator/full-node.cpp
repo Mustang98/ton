@@ -147,6 +147,7 @@ void FullNodeImpl::import_shard_overlay_certificate(ShardIdFull shard_id, Public
 
 void FullNodeImpl::update_adnl_id(adnl::AdnlNodeIdShort adnl_id, td::Promise<td::Unit> promise) {
   adnl_id_ = adnl_id;
+  register_public_whitelisted_peers();
 
   td::MultiPromise mp;
   auto ig = mp.init_guard();
@@ -438,7 +439,8 @@ void FullNodeImpl::send_broadcast(BlockBroadcast broadcast, int mode) {
       VLOG(full_node, WARNING) << "dropping OUT block broadcast to unknown shard";
       return;
     }
-    td::actor::send_closure(shard, &FullNodeShard::send_broadcast, std::move(broadcast));
+    td::actor::send_closure(shard, &FullNodeShard::send_broadcast, std::move(broadcast),
+                            static_cast<bool>(mode & broadcast_mode_high_fanout));
   }
 }
 
@@ -1008,6 +1010,7 @@ td::actor::Task<td::BufferSlice> FullNodeImpl::handle_query(td::BufferSlice quer
 
 void FullNodeImpl::start_up() {
   if (client_.empty()) {
+    register_public_whitelisted_peers();
     update_shard_actor(ShardIdFull{masterchainId}, true, false);
   }
   class Callback : public ValidatorManagerInterface::Callback {
@@ -1097,6 +1100,17 @@ void FullNodeImpl::start_up() {
   alarm_timestamp().relax(td::Timestamp::in(1.0));
 }
 
+void FullNodeImpl::register_public_whitelisted_peers() {
+  if (!opts_.public_rebroadcast_enabled_ || !client_.empty()) {
+    return;
+  }
+  for (const auto &peer : opts_.public_whitelisted_peers_) {
+    if (peer.compute_short_id() != adnl_id_) {
+      td::actor::send_closure(adnl_, &adnl::Adnl::add_peer, adnl_id_, peer.pub_id(), peer.addr_list());
+    }
+  }
+}
+
 void FullNodeImpl::update_private_overlays() {
   for (auto &p : custom_overlays_) {
     update_custom_overlay(p.second);
@@ -1145,7 +1159,7 @@ void FullNodeImpl::rebroadcast_block_to_public(BlockBroadcast broadcast) {
   LOG(INFO) << "Scheduling public rebroadcast type="
             << (broadcast.block_id.is_masterchain() ? "masterchain-block" : "shard-block")
             << " block=" << broadcast.block_id;
-  send_broadcast(std::move(broadcast), broadcast_mode_public);
+  send_broadcast(std::move(broadcast), broadcast_mode_public | broadcast_mode_high_fanout);
 }
 
 void FullNodeImpl::send_block_broadcast_to_custom_overlays(const BlockBroadcast &broadcast) {

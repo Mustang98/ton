@@ -38,6 +38,7 @@
 #include "td/utils/LRUCache.h"
 #include "td/utils/List.h"
 #include "td/utils/RateLimiterWindow.h"
+#include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/Time.h"
 #include "td/utils/buffer.h"
@@ -222,8 +223,8 @@ class OverlayImpl : public Overlay {
                      td::BufferSlice data, td::Promise<td::BufferSlice> promise) override;
   void send_message_to_neighbours(td::BufferSlice data) override;
   void send_broadcast(PublicKeyHash send_as, td::uint32 flags, td::BufferSlice data) override;
-  void send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, td::BufferSlice data,
-                          td::BufferSlice extra) override;
+  void send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, BroadcastFecDissemination dissemination,
+                          td::BufferSlice data, td::BufferSlice extra) override;
   void send_broadcast_plumtree_fec(PublicKeyHash send_as, td::uint32 flags, td::BufferSlice data) override;
   void send_broadcast_plumtree(PublicKeyHash send_as, td::uint32 flags, td::Bits256 broadcast_id,
                                td::BufferSlice data) override;
@@ -299,8 +300,8 @@ class OverlayImpl : public Overlay {
                             td::Result<std::pair<td::BufferSlice, PublicKey>> &&R);
   void broadcast_fec_checked(Overlay::BroadcastHash &&hash, td::Result<td::Unit> &&R);
   void send_new_fec_broadcast_part(PublicKeyHash local_id, Overlay::BroadcastDataHash data_hash, td::uint32 size,
-                                   td::uint32 flags, td::BufferSlice part, td::uint32 seqno, fec::FecType fec_type,
-                                   td::uint32 date);
+                                   td::uint32 flags, BroadcastFecDissemination dissemination, td::BufferSlice part,
+                                   td::uint32 seqno, fec::FecType fec_type, td::uint32 date);
 
   void broadcast_twostep_signed_simple(BroadcastTwostepDataSimple &&data,
                                        td::Result<std::pair<td::BufferSlice, PublicKey>> &&R);
@@ -387,6 +388,14 @@ class OverlayImpl : public Overlay {
 
   td::uint32 propagate_broadcast_to() const {
     return opts_.propagate_broadcast_to_;
+  }
+
+  const std::vector<adnl::AdnlNodeIdShort> &public_whitelisted_peers() const {
+    return opts_.public_whitelisted_peers_;
+  }
+
+  bool is_public_whitelisted_peer(const adnl::AdnlNodeIdShort &peer) const {
+    return public_whitelisted_peer_ids_.count(peer) != 0;
   }
 
   bool has_valid_membership_certificate();
@@ -588,7 +597,14 @@ class OverlayImpl : public Overlay {
   TrafficStats total_traffic, total_traffic_ctr;
   TrafficStats total_traffic_responses, total_traffic_responses_ctr;
 
+  struct AdnlNodeIdShortHash {
+    size_t operator()(const adnl::AdnlNodeIdShort &id) const {
+      return td::SliceHash{}(id.as_slice());
+    }
+  };
+
   OverlayOptions opts_;
+  std::unordered_set<adnl::AdnlNodeIdShort, AdnlNodeIdShortHash> public_whitelisted_peer_ids_;
   adnl::PeersMtuGuard peers_mtu_guard_;
   adnl::PeersMtuGuard plumtree_eager_mtu_guard_;
   adnl::Adnl::ProtectedPeersGuard protected_peers_guard_;

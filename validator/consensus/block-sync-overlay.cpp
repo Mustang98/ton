@@ -89,8 +89,8 @@ class BlockSyncOverlayImpl : public td::actor::SpawnsWith<Bus>, public td::actor
       extra = create_serialize_tl_object<tl::broadcastExtraLegacy>(event->candidate->id.slot);
     }
     td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_with_extra, local_adnl_id_, overlay_id_,
-                            local_adnl_id_.pubkey_hash(), 0, event->candidate->serialize_for_broadcast(),
-                            std::move(extra));
+                            local_adnl_id_.pubkey_hash(), 0, overlay::BroadcastFecDissemination::Normal,
+                            event->candidate->serialize_for_broadcast(), std::move(extra));
   }
 
  private:

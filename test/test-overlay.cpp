@@ -285,7 +285,8 @@ int main(int argc, char *argv[]) {
                                 }
                               });*/
       td::actor::send_closure(overlay_manager, &ton::overlay::Overlays::send_broadcast_fec_ex, root_nodes[0].adnl_id,
-                              overlay_id_short, root_nodes[0].id, 0, std::move(broadcast));
+                              overlay_id_short, root_nodes[0].id, 0, ton::overlay::BroadcastFecDissemination::Normal,
+                              std::move(broadcast));
     });
 
     t = td::Timestamp::in(10.0);
@@ -403,7 +404,8 @@ int main(int argc, char *argv[]) {
 
     scheduler.run_in_context([&] {
       td::actor::send_closure(overlay_manager, &ton::overlay::Overlays::send_broadcast_fec_ex, root_nodes[0].adnl_id,
-                              overlay_id_short, root_nodes[0].id, 0, std::move(broadcast));
+                              overlay_id_short, root_nodes[0].id, 0, ton::overlay::BroadcastFecDissemination::Normal,
+                              std::move(broadcast));
     });
 
     t = td::Timestamp::in(10.0);

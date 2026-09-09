@@ -332,9 +332,10 @@ void FullNodeFastSyncOverlay::send_shard_block_info(BlockIdExt block_id, Catchai
     td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_ex, local_id_, overlay_id_,
                             local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagNoTwostep(), std::move(B));
   } else {
-    td::actor::send_closure(
-        overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_, local_id_.pubkey_hash(),
-        overlay::Overlays::BroadcastFlagAnySender() | overlay::Overlays::BroadcastFlagNoTwostep(), std::move(B));
+    td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
+                            local_id_.pubkey_hash(),
+                            overlay::Overlays::BroadcastFlagAnySender() | overlay::Overlays::BroadcastFlagNoTwostep(),
+                            overlay::BroadcastFecDissemination::Normal, std::move(B));
   }
 }
 
@@ -349,7 +350,8 @@ void FullNodeFastSyncOverlay::send_broadcast(BlockBroadcast broadcast) {
     return;
   }
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(), B.move_as_ok());
+                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(),
+                          overlay::BroadcastFecDissemination::Normal, B.move_as_ok());
 }
 
 void FullNodeFastSyncOverlay::send_block_finality_broadcast(BlockFinalityBroadcast finality) {
@@ -388,7 +390,8 @@ void FullNodeFastSyncOverlay::send_block_candidate(BlockIdExt block_id, Catchain
   } else {
     VLOG(full_node, DEBUG) << "Sending newBlockCandidate in fast sync overlay (with compression): " << block_id;
     td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                            local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(), B.move_as_ok());
+                            local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(),
+                            overlay::BroadcastFecDissemination::Normal, B.move_as_ok());
   }
 }
 
@@ -398,7 +401,7 @@ void FullNodeFastSyncOverlay::send_validator_telemetry(tl_object_ptr<ton_api::va
   }
   auto data = serialize_tl_object(telemetry, true);
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                          local_id_.pubkey_hash(), 0, std::move(data));
+                          local_id_.pubkey_hash(), 0, overlay::BroadcastFecDissemination::Normal, std::move(data));
 }
 
 void FullNodeFastSyncOverlay::collect_validator_telemetry(std::string filename) {
@@ -466,7 +469,7 @@ void FullNodeFastSyncOverlay::send_plumtree_stats(
   auto data = create_serialize_tl_object<ton_api::overlay_plumtreeStatsExchange>(
       stats_overlay.bits256_value(), std::move(overlay_type), create_tl_shard_id(shard), std::move(records));
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                          local_id_.pubkey_hash(), 0, std::move(data));
+                          local_id_.pubkey_hash(), 0, overlay::BroadcastFecDissemination::Normal, std::move(data));
   VLOG(full_node, DEBUG) << "Sent Plumtree stats exchange for overlay " << stats_overlay.bits256_value().to_hex()
                          << ": " << records_count << " records";
 }
@@ -507,7 +510,8 @@ void FullNodeFastSyncOverlay::send_out_msg_queue_proof_broadcast(td::Ref<OutMsgQ
                         << " from " << broadcast->block_id.to_str() << ", msgs=" << broadcast->msg_count
                         << " bytes=" << broadcast->queue_proofs.size();
   td::actor::send_closure(overlays_, &overlay::Overlays::send_broadcast_fec_ex, local_id_, overlay_id_,
-                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(), std::move(B));*/
+                          local_id_.pubkey_hash(), overlay::Overlays::BroadcastFlagAnySender(),
+                          overlay::BroadcastFecDissemination::Normal, std::move(B));*/
 }
 
 void FullNodeFastSyncOverlay::start_up() {

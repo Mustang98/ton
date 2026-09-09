@@ -47,6 +47,7 @@
 #include "td/utils/ThreadSafeCounter.h"
 #include "td/utils/Time.h"
 #include "td/utils/TsFileLog.h"
+#include "td/utils/base64.h"
 #include "td/utils/buffer.h"
 #include "td/utils/filesystem.h"
 #include "td/utils/logging.h"
@@ -103,6 +104,75 @@ static td::Result<ton::adnl::AdnlNodeIdShort> parse_adnl_id_hex(td::Slice value)
     return td::Status::Error("zero ADNL id");
   }
   return id;
+}
+
+static td::Result<ton::adnl::AdnlNode> parse_public_whitelisted_peer(td::Slice declared_name,
+                                                                     const td::JsonValue &value) {
+  if (value.type() != td::JsonValue::Type::Object) {
+    return td::Status::Error("value must be an object");
+  }
+
+  TRY_RESULT(declared_id, parse_adnl_id_hex(declared_name));
+
+  const auto &object = value.get_object();
+  TRY_RESULT(host, object.get_required_string_field("host"));
+  TRY_RESULT(port, object.get_required_int_field("port"));
+  TRY_RESULT(public_key, object.get_required_string_field("pub_key"));
+  if (port <= 0 || port > 65535) {
+    return td::Status::Error("port must be between 1 and 65535");
+  }
+
+  TRY_RESULT_PREFIX(decoded_public_key, td::base64_decode(public_key), "bad public key: ");
+  if (decoded_public_key.size() != 32) {
+    return td::Status::Error("public key must contain 32 bytes");
+  }
+  td::Bits256 public_key_bits;
+  public_key_bits.as_slice().copy_from(td::Slice(decoded_public_key));
+  ton::adnl::AdnlNodeIdFull full_id{ton::PublicKey{ton::pubkeys::Ed25519{public_key_bits}}};
+  if (full_id.compute_short_id() != declared_id) {
+    return td::Status::Error("public key does not match the declared ADNL id");
+  }
+
+  td::IPAddress address;
+  TRY_STATUS(address.init_host_port(host, static_cast<td::uint16>(port)));
+  if (!address.is_ipv4()) {
+    return td::Status::Error("only IPv4 UDP addresses are supported");
+  }
+  ton::adnl::AdnlAddressList address_list;
+  TRY_STATUS(address_list.add_udp_adnl_address(address));
+  address_list.set_version(static_cast<td::uint32>(td::Clocks::system()));
+  address_list.set_reinit_date(ton::adnl::Adnl::adnl_start_time());
+  return ton::adnl::AdnlNode{std::move(full_id), std::move(address_list)};
+}
+
+static td::Result<std::vector<ton::adnl::AdnlNode>> parse_public_whitelisted_peers_file(td::Slice path) {
+  TRY_RESULT_PREFIX(data, td::read_file(path), "failed to read public whitelisted peers: ");
+  TRY_RESULT_PREFIX(json, td::json_decode(data.as_slice()), "failed to parse public whitelisted peers: ");
+  if (json.type() != td::JsonValue::Type::Object) {
+    return td::Status::Error("public whitelisted peers root must be an object");
+  }
+
+  std::vector<ton::adnl::AdnlNode> public_whitelisted_peers;
+  std::set<ton::adnl::AdnlNodeIdShort> seen;
+  td::Status status = td::Status::OK();
+  json.get_object().foreach ([&](td::Slice declared_name, const td::JsonValue &value) {
+    if (status.is_error()) {
+      return;
+    }
+    auto peer = parse_public_whitelisted_peer(declared_name, value);
+    if (peer.is_error()) {
+      status = peer.move_as_error_prefix(PSTRING() << "invalid public whitelisted peer " << declared_name << ": ");
+      return;
+    }
+    auto parsed_peer = peer.move_as_ok();
+    if (!seen.insert(parsed_peer.compute_short_id()).second) {
+      status = td::Status::Error(PSTRING() << "duplicate public whitelisted peer " << declared_name);
+      return;
+    }
+    public_whitelisted_peers.push_back(std::move(parsed_peer));
+  });
+  TRY_STATUS(std::move(status));
+  return public_whitelisted_peers;
 }
 
 Config::Config() {
@@ -5695,6 +5765,8 @@ int main(int argc, char *argv[]) {
   LOG_STATUS(td::change_maximize_rlimit(td::RlimitType::nofile, 3145728));
 
   std::vector<std::function<void()>> acts;
+  td::uint32 public_rebroadcast_fanout = ton::validator::fullnode::FullNodeOptions::DEFAULT_PUBLIC_REBROADCAST_FANOUT;
+  size_t public_whitelisted_peers_count = 0;
 
   td::OptionParser p;
   p.set_description("validator or full node for TON network");
@@ -6061,6 +6133,29 @@ int main(int argc, char *argv[]) {
       '\0', "public-rebroadcast",
       "enable publishing received or assembled block broadcasts into public overlays",
       [&]() { acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::enable_public_rebroadcast); }); });
+  p.add_checked_option('\0', "public-rebroadcast-fanout", "peer fanout for public block rebroadcasts (default: 200)",
+                       [&](td::Slice value) -> td::Status {
+                         TRY_RESULT(fanout, td::to_integer_safe<td::uint32>(value));
+                         if (fanout == 0) {
+                           return td::Status::Error("public-rebroadcast-fanout should be positive");
+                         }
+                         public_rebroadcast_fanout = fanout;
+                         acts.push_back([&x, fanout]() {
+                           td::actor::send_closure(x, &ValidatorEngine::set_public_rebroadcast_fanout, fanout);
+                         });
+                         return td::Status::OK();
+                       });
+  p.add_checked_option('\0', "public-whitelisted-peers",
+                       "JSON file with whitelisted first-hop ADNL peers for public block rebroadcasts",
+                       [&](td::Slice path) -> td::Status {
+                         TRY_RESULT(public_whitelisted_peers, parse_public_whitelisted_peers_file(path));
+                         public_whitelisted_peers_count = public_whitelisted_peers.size();
+                         acts.push_back([&x, public_whitelisted_peers = std::move(public_whitelisted_peers)]() mutable {
+                           td::actor::send_closure(x, &ValidatorEngine::set_public_whitelisted_peers,
+                                                   std::move(public_whitelisted_peers));
+                         });
+                         return td::Status::OK();
+                       });
   for (size_t iter = 0; iter < 3; ++iter) {
     static const char *suffixes[3] = {"", "-fast-sync", "-custom"};
     const char *suffix = suffixes[iter];
@@ -6226,6 +6321,15 @@ int main(int argc, char *argv[]) {
   p.add_option('\0', "dht-server", "run DHT server (default: DHT in client mode)",
                [&]() { acts.push_back([&] { td::actor::send_closure(x, &ValidatorEngine::set_dht_server, true); }); });
   auto S = p.run(argc, argv);
+  if (S.is_ok()) {
+    auto max_public_whitelisted_peers = static_cast<td::uint64>(public_rebroadcast_fanout) * 3 / 4;
+    if (public_whitelisted_peers_count > max_public_whitelisted_peers) {
+      S = td::Status::Error(PSTRING() << "--public-whitelisted-peers contains " << public_whitelisted_peers_count
+                                      << " entries, maximum for --public-rebroadcast-fanout="
+                                      << public_rebroadcast_fanout << " is " << max_public_whitelisted_peers
+                                      << " (75%)");
+    }
+  }
   if (S.is_error()) {
     LOG(ERROR) << "failed to parse options: " << S.move_as_error();
     std::_Exit(2);
