@@ -420,6 +420,9 @@ class ValidatorEngine : public td::actor::Actor {
   void set_initial_sync_delay(double value) {
     full_node_options_.initial_sync_delay_ = value;
   }
+  void enable_public_rebroadcast() {
+    full_node_options_.public_rebroadcast_enabled_ = true;
+  }
   void with_full_node_options(std::function<void(ton::validator::fullnode::FullNodeOptions &)> f) {
     f(full_node_options_);
   }

@@ -47,6 +47,10 @@ namespace fullnode {
 
 static const double INACTIVE_SHARD_TTL = (double)overlay::Overlays::overlay_peer_ttl() + 60.0;
 
+static bool is_public_rebroadcast_source(BroadcastSource source) {
+  return source == BroadcastSource::fast_sync_overlay || source == BroadcastSource::custom_overlay;
+}
+
 void FullNodeImpl::add_permanent_key(PublicKeyHash key, td::Promise<td::Unit> promise) {
   if (local_keys_.count(key)) {
     promise.set_value(td::Unit());
@@ -807,6 +811,9 @@ void FullNodeImpl::process_block_broadcast(BlockBroadcast broadcast, bool signat
   if (send_to_custom) {
     send_block_broadcast_to_custom_overlays(broadcast);
   }
+  if (opts_.public_rebroadcast_enabled_ && is_public_rebroadcast_source(source)) {
+    rebroadcast_block_to_public(broadcast.clone());
+  }
   td::actor::send_closure(validator_manager_, &ValidatorManagerInterface::new_block_broadcast, std::move(broadcast),
                           signatures_checked, source, [](td::Result<td::Unit> R) {
                             if (R.is_error()) {
@@ -825,7 +832,7 @@ void FullNodeImpl::process_block_finality_broadcast(BlockFinalityBroadcast final
     send_block_finality_broadcast_to_custom_overlays(finality);
   }
   td::actor::ask(validator_manager_, &ValidatorManagerInterface::new_block_finality_broadcast, std::move(finality),
-                 source)
+                 source, opts_.public_rebroadcast_enabled_ && is_public_rebroadcast_source(source))
       .detach();
 }
 
@@ -846,7 +853,7 @@ void FullNodeImpl::process_shard_block_info_broadcast(BlockIdExt block_id, Catch
     send_shard_block_info_to_custom_overlays(block_id, cc_seqno, data);
   }
   td::actor::send_closure(validator_manager_, &ValidatorManagerInterface::new_shard_block_description_broadcast,
-                          block_id, cc_seqno, std::move(data));
+                          block_id, cc_seqno, std::move(data), opts_.public_rebroadcast_enabled_);
 }
 
 void FullNodeImpl::get_out_msg_queue_query_token(td::Promise<std::unique_ptr<ActionToken>> promise) {
@@ -1029,6 +1036,9 @@ void FullNodeImpl::start_up() {
     void send_broadcast(BlockBroadcast broadcast, int mode) override {
       td::actor::send_closure(id_, &FullNodeImpl::send_broadcast, std::move(broadcast), mode);
     }
+    void rebroadcast_block_to_public(BlockBroadcast broadcast) override {
+      td::actor::send_closure(id_, &FullNodeImpl::rebroadcast_block_to_public, std::move(broadcast));
+    }
     void send_block_finality_broadcast(BlockFinalityBroadcast finality, int mode) override {
       td::actor::send_closure(id_, &FullNodeImpl::send_block_finality_broadcast, std::move(finality), mode);
     }
@@ -1124,6 +1134,18 @@ void FullNodeImpl::update_custom_overlay(CustomOverlayInfo &overlay) {
       try_local_id(it->second);
     }
   }
+}
+
+void FullNodeImpl::rebroadcast_block_to_public(BlockBroadcast broadcast) {
+  if (public_rebroadcasted_blocks_.contains(broadcast.block_id)) {
+    VLOG(full_node, DEBUG) << "Skipping duplicate public block rebroadcast: " << broadcast.block_id;
+    return;
+  }
+  public_rebroadcasted_blocks_.put(broadcast.block_id, {});
+  LOG(INFO) << "Scheduling public rebroadcast type="
+            << (broadcast.block_id.is_masterchain() ? "masterchain-block" : "shard-block")
+            << " block=" << broadcast.block_id;
+  send_broadcast(std::move(broadcast), broadcast_mode_public);
 }
 
 void FullNodeImpl::send_block_broadcast_to_custom_overlays(const BlockBroadcast &broadcast) {

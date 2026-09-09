@@ -298,7 +298,7 @@ td::actor::Task<> ValidatorManagerImpl::new_external_message_broadcast(td::Buffe
 }
 
 void ValidatorManagerImpl::new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
-                                                                 td::BufferSlice data) {
+                                                                 td::BufferSlice data, bool) {
   if (!last_masterchain_block_handle_) {
     shard_blocks_raw_.push_back(std::move(data));
     return;
@@ -552,7 +552,7 @@ void ValidatorManagerImpl::get_shard_blocks_for_collator(
   }
   if (!shard_blocks_raw_.empty()) {
     for (auto &raw : shard_blocks_raw_) {
-      new_shard_block_description_broadcast(BlockIdExt{}, 0, std::move(raw));
+      new_shard_block_description_broadcast(BlockIdExt{}, 0, std::move(raw), false);
     }
     shard_blocks_raw_.clear();
   }
@@ -973,7 +973,7 @@ void ValidatorManagerImpl::update_shard_blocks() {
   }
   if (!shard_blocks_raw_.empty()) {
     for (auto &raw : shard_blocks_raw_) {
-      new_shard_block_description_broadcast(BlockIdExt{}, 0, std::move(raw));
+      new_shard_block_description_broadcast(BlockIdExt{}, 0, std::move(raw), false);
     }
     shard_blocks_raw_.clear();
   }

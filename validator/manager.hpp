@@ -150,6 +150,7 @@ struct BlockReceiveStats {
 struct PendingBlockFinality {
   td::Ref<block::BlockSignatureSet> sig_set;
   BroadcastSource source;
+  bool public_rebroadcast = false;
 };
 
 struct WorkchainLabel {
@@ -303,6 +304,10 @@ class ValidatorManagerImpl : public ValidatorManager {
 
   td::LRUCache<BlockIdExt, PendingBlockFinality> pending_block_finality_{/* max_size = */ 256};
 
+  // Exact-head signatures retained after assembly as the duplicate marker for this path.
+  td::LRUCache<BlockIdExt, td::Ref<block::BlockSignatureSet>> public_rebroadcast_shard_signatures_{
+      /* max_size = */ 256};
+
   td::actor::ActorOwn<ExtMessagePool> ext_message_pool_;
   td::actor::ActorOwn<AppliedExtMessageCleanupActor> applied_ext_message_cleanup_actor_;
 
@@ -426,10 +431,11 @@ class ValidatorManagerImpl : public ValidatorManager {
                                                     td::actor::StartedTask<> wait_allow_broadcast);
 
   void new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
-                                             td::BufferSlice data) override;
+                                             td::BufferSlice data, bool public_rebroadcast) override;
   td::actor::Task<> new_block_candidate_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data,
                                                   BroadcastSource source) override;
-  td::actor::Task<> new_block_finality_broadcast(BlockFinalityBroadcast finality, BroadcastSource source) override;
+  td::actor::Task<> new_block_finality_broadcast(BlockFinalityBroadcast finality, BroadcastSource source,
+                                                 bool public_rebroadcast) override;
 
   void add_ext_server_id(adnl::AdnlNodeIdShort id) override;
   void add_ext_server_port(td::uint16 port) override;
@@ -588,8 +594,12 @@ class ValidatorManagerImpl : public ValidatorManager {
     promise.set_result(opts_->get_vertical_seqno(seqno));
   }
 
-  void add_shard_block_description(td::Ref<ShardTopBlockDescription> desc);
+  void add_shard_block_description(td::Ref<ShardTopBlockDescription> desc, bool public_rebroadcast = false);
   void add_cached_block_data(BlockIdExt block_id, td::BufferSlice data);
+  td::Result<BlockBroadcast> assemble_block_broadcast(BlockIdExt block_id, td::BufferSlice data,
+                                                      td::Ref<BlockData> parsed_block,
+                                                      td::Ref<block::BlockSignatureSet> sig_set);
+  void try_public_rebroadcast_shard_block(BlockIdExt block_id);
   void try_process_pending_block_finality(BlockIdExt block_id);
   void preload_msg_queue_to_masterchain(td::Ref<ShardTopBlockDescription> desc, td::Promise<td::Unit> promise);
   void loaded_msg_queue_to_masterchain(td::Ref<ShardTopBlockDescription> desc, td::Ref<OutMsgQueueProof> res,

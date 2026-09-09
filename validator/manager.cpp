@@ -309,7 +309,7 @@ td::actor::Task<> ValidatorManagerImpl::generate_shard_block_description(BlockId
     co_return {};
   }
   VLOG(validator, DEBUG) << "Generated shard block description for " << block_id;
-  new_shard_block_description_broadcast(block_id, sig_set->get_catchain_seqno(), r_desc.move_as_ok());
+  new_shard_block_description_broadcast(block_id, sig_set->get_catchain_seqno(), r_desc.move_as_ok(), false);
   co_return {};
 }
 
@@ -511,7 +511,7 @@ td::actor::Task<> ValidatorManagerImpl::new_external_message_query_cont(td::Ref<
 }
 
 void ValidatorManagerImpl::new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
-                                                                 td::BufferSlice data) {
+                                                                 td::BufferSlice data, bool public_rebroadcast) {
   if (!last_masterchain_block_handle_ || !started_) {
     VLOG(validator, DEBUG) << "dropping shard block description broadcast: not inited";
     return;
@@ -528,13 +528,15 @@ void ValidatorManagerImpl::new_shard_block_description_broadcast(BlockIdExt bloc
     VLOG(validator, DEBUG) << "dropping duplicate shard block broadcast";
     return;
   }
-  auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<td::Ref<ShardTopBlockDescription>> R) {
-    if (R.is_error()) {
-      VLOG(validator, INFO) << "dropping invalid new shard block description: " << R.move_as_error();
-    } else {
-      td::actor::send_closure(SelfId, &ValidatorManagerImpl::add_shard_block_description, R.move_as_ok());
-    }
-  });
+  auto P = td::PromiseCreator::lambda(
+      [SelfId = actor_id(this), public_rebroadcast](td::Result<td::Ref<ShardTopBlockDescription>> R) {
+        if (R.is_error()) {
+          VLOG(validator, INFO) << "dropping invalid new shard block description: " << R.move_as_error();
+        } else {
+          td::actor::send_closure(SelfId, &ValidatorManagerImpl::add_shard_block_description, R.move_as_ok(),
+                                  public_rebroadcast);
+        }
+      });
   run_validate_shard_block_description(std::move(data), last_masterchain_block_handle_, last_masterchain_state_,
                                        actor_id(this), td::Timestamp::in(2.0), std::move(P));
 }
@@ -604,7 +606,8 @@ static td::actor::Task<> check_finality_signatures(BlockIdExt block_id, Ref<bloc
 }
 
 td::actor::Task<> ValidatorManagerImpl::new_block_finality_broadcast(BlockFinalityBroadcast finality,
-                                                                     BroadcastSource source) {
+                                                                     BroadcastSource source,
+                                                                     bool public_rebroadcast) {
   if (!last_masterchain_block_handle_ || last_masterchain_state_.is_null()) {
     VLOG(validator, DEBUG) << "dropping block finality broadcast: not inited";
     co_return td::Unit{};
@@ -635,12 +638,22 @@ td::actor::Task<> ValidatorManagerImpl::new_block_finality_broadcast(BlockFinali
   if (!finality.block_id.is_masterchain() && finality.sig_set->is_final() && is_validator()) {
     generate_shard_block_description(finality.block_id, finality.sig_set).start().detach();
   }
-  pending_block_finality_.put(finality.block_id, PendingBlockFinality{std::move(finality.sig_set), source});
+  // Signature checking runs outside the actor, so another finality may have been cached while it was in progress.
+  cached = pending_block_finality_.get_if_exists(finality.block_id, false);
+  if (cached) {
+    if (cached->sig_set->is_final() >= finality.sig_set->is_final()) {
+      co_return {};
+    }
+    public_rebroadcast = cached->public_rebroadcast;
+  }
+  pending_block_finality_.put(
+      finality.block_id, PendingBlockFinality{std::move(finality.sig_set), source, public_rebroadcast});
   try_process_pending_block_finality(finality.block_id);
   co_return td::Unit{};
 }
 
-void ValidatorManagerImpl::add_shard_block_description(td::Ref<ShardTopBlockDescription> desc) {
+void ValidatorManagerImpl::add_shard_block_description(td::Ref<ShardTopBlockDescription> desc,
+                                                       bool public_rebroadcast) {
   for (const BlockIdExt &block_id : desc->get_chain_blocks()) {
     if (cached_checked_shard_block_descriptions_.put(block_id, td::Unit())) {
       if (cached_block_data_.contains(block_id)) {
@@ -652,6 +665,12 @@ void ValidatorManagerImpl::add_shard_block_description(td::Ref<ShardTopBlockDesc
         });
       }
     }
+  }
+  if (public_rebroadcast && !public_rebroadcast_shard_signatures_.contains(desc->block_id())) {
+    auto sig_set = desc->get_signature_set();
+    CHECK(sig_set.not_null());
+    public_rebroadcast_shard_signatures_.put(desc->block_id(), std::move(sig_set));
+    try_public_rebroadcast_shard_block(desc->block_id());
   }
   if (!desc->may_be_valid(last_masterchain_block_handle_, last_masterchain_state_)) {
     return;
@@ -772,6 +791,19 @@ void ValidatorManagerImpl::set_shard_block_description_ready(td::Ref<ShardTopBlo
   }
 }
 
+td::Result<BlockBroadcast> ValidatorManagerImpl::assemble_block_broadcast(
+    BlockIdExt block_id, td::BufferSlice data, td::Ref<BlockData> parsed_block,
+    td::Ref<block::BlockSignatureSet> sig_set) {
+  td::Result<td::BufferSlice> proof =
+      block_id.is_masterchain()
+          ? WaitBlockData::generate_proof(block_id, parsed_block->root_cell(), sig_set, last_masterchain_state_)
+          : WaitBlockData::generate_proof_link(block_id, parsed_block->root_cell());
+  if (proof.is_error()) {
+    return proof.move_as_error();
+  }
+  return BlockBroadcast{block_id, std::move(sig_set), std::move(data), proof.move_as_ok()};
+}
+
 void ValidatorManagerImpl::add_cached_block_data(BlockIdExt block_id, td::BufferSlice data) {
   if (block_id.is_masterchain()) {
     td::BufferSlice &block_data = cached_masterchain_block_candidates_.get(block_id);
@@ -815,6 +847,32 @@ void ValidatorManagerImpl::add_cached_block_data(BlockIdExt block_id, td::Buffer
     });
   }
   try_process_pending_block_finality(block_id);
+  try_public_rebroadcast_shard_block(block_id);
+}
+
+void ValidatorManagerImpl::try_public_rebroadcast_shard_block(BlockIdExt block_id) {
+  CHECK(!block_id.is_masterchain());
+  auto candidate = cached_block_data_.get_if_exists(block_id);
+  auto sig_set = public_rebroadcast_shard_signatures_.get_if_exists(block_id);
+  if (candidate == nullptr || sig_set == nullptr) {
+    return;
+  }
+
+  auto data = candidate->clone();
+  auto block = create_block(block_id, data.clone());
+  if (block.is_error()) {
+    VLOG(validator, WARNING) << "failed to parse shard candidate for public rebroadcast " << block_id << ": "
+                             << block.move_as_error();
+    return;
+  }
+  auto broadcast = assemble_block_broadcast(block_id, std::move(data), block.move_as_ok(), *sig_set);
+  if (broadcast.is_error()) {
+    VLOG(validator, WARNING) << "failed to assemble shard block for public rebroadcast " << block_id << ": "
+                             << broadcast.move_as_error();
+    return;
+  }
+
+  callback_->rebroadcast_block_to_public(broadcast.move_as_ok());
 }
 
 void ValidatorManagerImpl::try_process_pending_block_finality(BlockIdExt block_id) {
@@ -840,12 +898,9 @@ void ValidatorManagerImpl::try_process_pending_block_finality(BlockIdExt block_i
     return;
   }
 
-  td::Result<td::BufferSlice> proof =
-      block_id.is_masterchain()
-          ? WaitBlockData::generate_proof(block_id, block.ok()->root_cell(), finality->sig_set, last_masterchain_state_)
-          : WaitBlockData::generate_proof_link(block_id, block.ok()->root_cell());
-  if (proof.is_error()) {
-    auto error = proof.move_as_error();
+  auto broadcast = assemble_block_broadcast(block_id, std::move(data), block.move_as_ok(), finality->sig_set);
+  if (broadcast.is_error()) {
+    auto error = broadcast.move_as_error();
     if (error.code() == ErrorCode::notready) {
       VLOG(validator, DEBUG) << "failed to create pending block proof for " << block_id << ": " << error;
     } else {
@@ -859,16 +914,18 @@ void ValidatorManagerImpl::try_process_pending_block_finality(BlockIdExt block_i
     return;
   }
 
-  auto sig_set = finality->sig_set;
   auto finality_source = finality->source;
+  bool public_rebroadcast = finality->public_rebroadcast;
   if (block_id.is_masterchain()) {
     cached_masterchain_block_candidates_.erase(block_id);
   }
   pending_block_finality_.erase(block_id);
-  BlockBroadcast broadcast{block_id, std::move(sig_set), std::move(data), proof.move_as_ok()};
   update_block_receive_stats(block_id, BlockReceiveStats::from_candidate_finality(finality_source));
+  if (public_rebroadcast) {
+    callback_->rebroadcast_block_to_public(broadcast.ok().clone());
+  }
   td::actor::send_closure(
-      actor_id(this), &ValidatorManagerImpl::validate_block_broadcast, std::move(broadcast),
+      actor_id(this), &ValidatorManagerImpl::validate_block_broadcast, broadcast.move_as_ok(),
       /* signatures_checked = */ true, [block_id](td::Result<td::Unit> R) mutable {
         if (R.is_error()) {
           auto error = R.move_as_error();
@@ -2020,7 +2077,7 @@ void ValidatorManagerImpl::send_block_broadcast(BlockBroadcast broadcast, int mo
 }
 
 void ValidatorManagerImpl::send_block_finality_broadcast(BlockFinalityBroadcast finality, int mode) {
-  new_block_finality_broadcast(finality.clone(), BroadcastSource::consensus_overlay).start().detach();
+  new_block_finality_broadcast(finality.clone(), BroadcastSource::consensus_overlay, false).start().detach();
   callback_->send_block_finality_broadcast(std::move(finality), mode);
 }
 

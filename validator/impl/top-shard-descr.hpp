@@ -77,6 +77,9 @@ class ShardTopBlockDescrQ final : public ShardTopBlockDescrQBase {
   const std::vector<BlockIdExt>& get_chain_blocks() const override {
     return chain_blk_ids_;
   }
+  td::Ref<block::BlockSignatureSet> get_signature_set() const override {
+    return sig_set_;
+  }
   UnixTime generated_at() const override {
     return gen_utime_;
   }

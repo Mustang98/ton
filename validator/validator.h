@@ -250,6 +250,8 @@ class ValidatorManagerInterface : public td::actor::Actor {
     }
     virtual void send_broadcast(BlockBroadcast broadcast, int mode) {
     }
+    virtual void rebroadcast_block_to_public(BlockBroadcast broadcast) {
+    }
     virtual void send_block_finality_broadcast(BlockFinalityBroadcast finality, int mode) {
     }
     virtual void send_out_msg_queue_proof_broadcast(td::Ref<OutMsgQueueProofBroadcast> broadcats) {
@@ -344,12 +346,13 @@ class ValidatorManagerInterface : public td::actor::Actor {
     co_return td::Status::Error("not implemented");
   }
   virtual void new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
-                                                     td::BufferSlice data) = 0;
+                                                     td::BufferSlice data, bool public_rebroadcast) = 0;
   virtual td::actor::Task<> new_block_candidate_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
                                                           td::BufferSlice data, BroadcastSource source) {
     co_return td::Unit{};
   }
-  virtual td::actor::Task<> new_block_finality_broadcast(BlockFinalityBroadcast finality, BroadcastSource source) {
+  virtual td::actor::Task<> new_block_finality_broadcast(BlockFinalityBroadcast finality, BroadcastSource source,
+                                                         bool public_rebroadcast) {
     co_return td::Unit{};
   }
 

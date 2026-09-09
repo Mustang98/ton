@@ -191,9 +191,11 @@ class FullNodeImpl : public FullNode {
   td::LRUCache<BlockIdExt, td::Unit> custom_overlays_sent_broadcasts_{10000};
   td::LRUCache<BlockIdExt, td::Unit> custom_overlays_sent_finality_{10000};
   td::LRUCache<BlockIdExt, td::Unit> custom_overlays_sent_shard_block_desc_{10000};
+  td::LRUCache<BlockIdExt, td::Unit> public_rebroadcasted_blocks_{10000};
 
   void update_private_overlays();
   void update_custom_overlay(CustomOverlayInfo& overlay);
+  void rebroadcast_block_to_public(BlockBroadcast broadcast);
   void send_block_broadcast_to_custom_overlays(const BlockBroadcast& broadcast);
   void send_block_finality_broadcast_to_custom_overlays(const BlockFinalityBroadcast& finality);
   void send_block_candidate_broadcast_to_custom_overlays(const BlockIdExt& block_id, CatchainSeqno cc_seqno,

@@ -427,7 +427,7 @@ void FullNodeShardImpl::send_block_candidate(BlockIdExt block_id, CatchainSeqno 
 }
 
 void FullNodeShardImpl::send_broadcast(BlockBroadcast broadcast) {
-  VLOG(full_node, DEBUG) << "Sending block broadcast in private overlay: " << broadcast.block_id;
+  VLOG(full_node, DEBUG) << "Sending block broadcast in public overlay: " << broadcast.block_id;
   auto B = serialize_block_broadcast(broadcast, k_called_from_public);
   if (B.is_error()) {
     VLOG(full_node, WARNING) << "failed to serialize block broadcast: " << B.move_as_error();

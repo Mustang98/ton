@@ -210,7 +210,7 @@ class HardforkCreator : public td::actor::Actor {
     for (auto &topmsg : top_shard_descrs_) {
       td::actor::send_closure(validator_manager_,
                               &ton::validator::ValidatorManager::new_shard_block_description_broadcast,
-                              ton::BlockIdExt{}, 0, std::move(topmsg));
+                              ton::BlockIdExt{}, 0, std::move(topmsg), false);
     }
     class Callback : public ton::validator::ValidatorManagerInterface::Callback {
      private:

@@ -6057,6 +6057,10 @@ int main(int argc, char *argv[]) {
         acts.push_back([&x, v]() { td::actor::send_closure(x, &ValidatorEngine::set_initial_sync_delay, v); });
         return td::Status::OK();
       });
+  p.add_option(
+      '\0', "public-rebroadcast",
+      "enable publishing received or assembled block broadcasts into public overlays",
+      [&]() { acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::enable_public_rebroadcast); }); });
   for (size_t iter = 0; iter < 3; ++iter) {
     static const char *suffixes[3] = {"", "-fast-sync", "-custom"};
     const char *suffix = suffixes[iter];

@@ -154,7 +154,7 @@ class ValidatorManagerImpl : public ValidatorManager {
 
   td::actor::Task<> new_external_message_broadcast(td::BufferSlice data, int priority) override;
   void new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
-                                             td::BufferSlice data) override {
+                                             td::BufferSlice data, bool) override {
     UNREACHABLE();
   }
 
