@@ -565,6 +565,10 @@ td::actor::Task<QuerySender> FullNodeImpl::get_query_sender(ShardIdFull shard_id
     }
   }
 
+  if (opts_.public_rebroadcast_enabled_) {
+    co_return get_empty_query_sender();
+  }
+
   auto shard = get_shard_overlay_actor(shard_id, historical);
   if (shard.empty()) {
     co_return get_empty_query_sender();
@@ -667,25 +671,36 @@ td::actor::Task<> FullNodeImpl::get_next_blocks_loop() {
     ++attempt;
     auto r_query_sender = co_await get_query_sender(ShardIdFull{masterchainId}).wrap();
     if (r_query_sender.is_error()) {
+      public_rebroadcast_download_after_ = {};
       VLOG(full_node, WARNING) << "Cannot get query sender: " << r_query_sender.move_as_error();
       co_await td::actor::coro_sleep(td::Timestamp::in(1.0));
       continue;
     }
     auto query_sender = r_query_sender.move_as_ok();
     auto [task, promise] = td::actor::StartedTask<BlockHandle>::make_bridge();
+    bool rebroadcast_downloaded_block =
+        opts_.public_rebroadcast_enabled_ && public_rebroadcast_download_after_ == handle_->id();
     td::actor::create_actor<DownloadNextBlocks>(PSTRING() << "downloadnextblocks" << handle_->id().id, handle_,
-                                                query_sender, 1, validator_manager_, std::move(promise))
+                                                query_sender, 1, validator_manager_, rebroadcast_downloaded_block,
+                                                std::move(promise))
         .release();
     auto R = co_await std::move(task).wrap();
+    bool current_block_is_recent = handle_->inited_unix_time() &&
+                                   handle_->unix_time() >= (UnixTime)td::Clocks::system() - 5;
     // Do not penalize peer when it does not have next blocks if the last block is new enough
-    if (R.is_error() && R.error().code() == ErrorCode::notready && handle_->inited_unix_time() &&
-        handle_->unix_time() >= (UnixTime)td::Clocks::system() - 5) {
+    if (R.is_error() && R.error().code() == ErrorCode::notready && current_block_is_recent) {
       query_sender->query_finished(td::Status::OK());
     } else {
       query_sender->query_finished(R.as_status());
     }
     if (R.is_error()) {
       auto S = R.move_as_error();
+      if (opts_.public_rebroadcast_enabled_ && S.code() == ErrorCode::notready &&
+          (rebroadcast_downloaded_block || current_block_is_recent)) {
+        public_rebroadcast_download_after_ = handle_->id();
+      } else {
+        public_rebroadcast_download_after_ = {};
+      }
       if (S.code() != ErrorCode::notready && S.code() != ErrorCode::timeout) {
         VLOG(full_node, WARNING) << "failed to download next block after " << handle_->id() << ": " << S;
       } else {
@@ -699,6 +714,7 @@ td::actor::Task<> FullNodeImpl::get_next_blocks_loop() {
       continue;
     }
     attempt = 0;
+    public_rebroadcast_download_after_ = {};
     handle_ = R.move_as_ok();
     if (sync_promise_) {
       if (handle_->unix_time() > td::Clocks::system() - 300) {

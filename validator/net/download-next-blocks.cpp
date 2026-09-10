@@ -16,12 +16,15 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
+#include <optional>
+
 #include "adnl/utils.hpp"
 #include "td/utils/overloaded.h"
 #include "ton/ton-io.hpp"
 #include "ton/ton-shard.h"
 #include "ton/ton-tl.hpp"
 #include "validator/full-node.h"
+#include "validator/impl/proof.hpp"
 
 #include "download-next-blocks.hpp"
 #include "full-node-serializer.hpp"
@@ -34,12 +37,13 @@ namespace fullnode {
 
 DownloadNextBlocks::DownloadNextBlocks(BlockHandle handle, QuerySender query_sender, td::uint32 priority,
                                        td::actor::ActorId<ValidatorManagerInterface> validator_manager,
-                                       td::Promise<BlockHandle> promise)
+                                       bool rebroadcast_latest_downloaded_block, td::Promise<BlockHandle> promise)
     : handle_(handle)
     , start_prev_id_(handle->id())
     , query_sender_(std::move(query_sender))
     , priority_(priority)
     , validator_manager_(validator_manager)
+    , rebroadcast_latest_downloaded_block_(rebroadcast_latest_downloaded_block)
     , promise_(std::move(promise)) {
 }
 
@@ -134,14 +138,16 @@ td::actor::Task<> DownloadNextBlocks::run() {
   }
   VLOG(full_node, DEBUG) << "Got response, " << response_vec.size() << " blocks";
 
-  for (auto &obj : response_vec) {
-    co_await process_block(std::move(obj));
+  for (size_t i = 0; i < response_vec.size(); ++i) {
+    // Intermediate blocks are synchronization data; only the newest response block represents the live edge.
+    bool rebroadcast = rebroadcast_latest_downloaded_block_ && i + 1 == response_vec.size();
+    co_await process_block(std::move(response_vec[i]), rebroadcast);
   }
   VLOG(full_node, DEBUG) << "Done";
   co_return {};
 }
 
-td::actor::Task<> DownloadNextBlocks::process_block(tl_object_ptr<ton_api::tonNode_DataFull> obj) {
+td::actor::Task<> DownloadNextBlocks::process_block(tl_object_ptr<ton_api::tonNode_DataFull> obj, bool rebroadcast) {
   auto requires_state = CO_TRY(need_state_for_decompression(*obj).trace("need state for decompression"));
   Ref<vm::Cell> prev_state_root;
   if (requires_state) {
@@ -171,11 +177,26 @@ td::actor::Task<> DownloadNextBlocks::process_block(tl_object_ptr<ton_api::tonNo
   if (td::sha256_bits256(block_data.as_slice()) != id.file_hash) {
     co_return td::Status::Error(ErrorCode::protoviolation, "received data with bad hash");
   }
+
+  std::optional<BlockBroadcast> broadcast;
+  if (rebroadcast) {
+    auto proof_object = td::make_ref<ProofQ>(id, proof.clone());
+    auto signature_root = CO_TRY(proof_object->get_signatures_root().trace("extract signatures from block proof"));
+    ValidatorWeight signature_weight = 0;
+    auto signature_set = CO_TRY(
+        block::BlockSignatureSet::fetch(std::move(signature_root), signature_weight).trace("parse block signatures"));
+    broadcast.emplace(id, std::move(signature_set), block_data.clone(), proof.clone());
+  }
   co_await td::actor::ask(validator_manager_, &ValidatorManagerInterface::validate_block_is_next_proof, handle_->id(),
                           id, std::move(proof));
-  ReceivedBlock result{.id = id, .data = std::move(block_data)};
-  handle_ = co_await td::actor::ask(validator_manager_, &ValidatorManagerInterface::got_next_masterchain_block,
-                                    std::move(result));
+  if (broadcast) {
+    handle_ = co_await td::actor::ask(validator_manager_,
+                                      &ValidatorManagerInterface::got_next_masterchain_block_and_rebroadcast,
+                                      std::move(*broadcast));
+  } else {
+    handle_ = co_await td::actor::ask(validator_manager_, &ValidatorManagerInterface::got_next_masterchain_block,
+                                      ReceivedBlock{.id = id, .data = std::move(block_data)});
+  }
   success_ = true;
   VLOG(full_node, DEBUG) << "Downloaded block " << id;
   co_return {};

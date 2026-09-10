@@ -194,6 +194,8 @@ class FullNodeImpl : public FullNode {
   td::LRUCache<BlockIdExt, td::Unit> custom_overlays_sent_finality_{10000};
   td::LRUCache<BlockIdExt, td::Unit> custom_overlays_sent_shard_block_desc_{10000};
   td::LRUCache<BlockIdExt, td::Unit> public_rebroadcasted_blocks_{10000};
+  // A notready response at the live edge arms recovery of this block's successor.
+  BlockIdExt public_rebroadcast_download_after_;
 
   void update_private_overlays();
   void update_custom_overlay(CustomOverlayInfo& overlay);

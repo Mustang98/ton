@@ -219,6 +219,13 @@ void ValidatorManagerImpl::got_next_masterchain_block(ReceivedBlock block, td::P
   run_apply_block_query(block.id, pp.move_as_ok(), block.id, actor_id(this), td::Timestamp::in(10.0), std::move(P));
 }
 
+void ValidatorManagerImpl::got_next_masterchain_block_and_rebroadcast(BlockBroadcast broadcast,
+                                                                      td::Promise<BlockHandle> promise) {
+  ReceivedBlock block{broadcast.block_id, broadcast.data.clone()};
+  callback_->rebroadcast_block_to_public(std::move(broadcast));
+  got_next_masterchain_block(std::move(block), std::move(promise));
+}
+
 td::actor::Task<> ValidatorManagerImpl::new_block_broadcast(BlockBroadcast broadcast, bool signatures_checked,
                                                             BroadcastSource source) {
   if (last_masterchain_state_.is_null() || !last_masterchain_block_handle_) {
@@ -854,7 +861,11 @@ void ValidatorManagerImpl::try_public_rebroadcast_shard_block(BlockIdExt block_i
   CHECK(!block_id.is_masterchain());
   auto candidate = cached_block_data_.get_if_exists(block_id);
   auto sig_set = public_rebroadcast_shard_signatures_.get_if_exists(block_id);
-  if (candidate == nullptr || sig_set == nullptr) {
+  if (sig_set == nullptr) {
+    return;
+  }
+  if (candidate == nullptr) {
+    download_block_data_for_public_rebroadcast(block_id);
     return;
   }
 
@@ -875,11 +886,27 @@ void ValidatorManagerImpl::try_public_rebroadcast_shard_block(BlockIdExt block_i
   callback_->rebroadcast_block_to_public(broadcast.move_as_ok());
 }
 
+void ValidatorManagerImpl::download_block_data_for_public_rebroadcast(BlockIdExt block_id) {
+  wait_block_data_short(block_id, 0, td::Timestamp::in(60.0),
+                        [SelfId = actor_id(this), block_id](td::Result<td::Ref<BlockData>> R) {
+                          if (R.is_ok()) {
+                            td::actor::send_closure(SelfId, &ValidatorManagerImpl::add_cached_block_data, block_id,
+                                                    R.move_as_ok()->data());
+                          }
+                        });
+}
+
 void ValidatorManagerImpl::try_process_pending_block_finality(BlockIdExt block_id) {
   auto candidate = block_id.is_masterchain() ? cached_masterchain_block_candidates_.get_if_exists(block_id)
                                              : cached_block_data_.get_if_exists(block_id);
   auto finality = pending_block_finality_.get_if_exists(block_id);
-  if (candidate == nullptr || finality == nullptr) {
+  if (finality == nullptr) {
+    return;
+  }
+  if (candidate == nullptr) {
+    if (!block_id.is_masterchain() && finality->public_rebroadcast) {
+      download_block_data_for_public_rebroadcast(block_id);
+    }
     return;
   }
   if (last_masterchain_state_.is_null()) {

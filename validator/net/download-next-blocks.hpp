@@ -32,11 +32,12 @@ namespace fullnode {
 class DownloadNextBlocks : public td::actor::Actor {
  public:
   DownloadNextBlocks(BlockHandle handle, QuerySender query_sender, td::uint32 priority,
-                     td::actor::ActorId<ValidatorManagerInterface> validator_manager, td::Promise<BlockHandle> promise);
+                     td::actor::ActorId<ValidatorManagerInterface> validator_manager,
+                     bool rebroadcast_latest_downloaded_block, td::Promise<BlockHandle> promise);
 
   void start_up() override;
   td::actor::Task<> run();
-  td::actor::Task<> process_block(tl_object_ptr<ton_api::tonNode_DataFull> obj);
+  td::actor::Task<> process_block(tl_object_ptr<ton_api::tonNode_DataFull> obj, bool rebroadcast);
 
  private:
   BlockHandle handle_;
@@ -46,6 +47,7 @@ class DownloadNextBlocks : public td::actor::Actor {
   td::uint32 priority_;
 
   td::actor::ActorId<ValidatorManagerInterface> validator_manager_;
+  bool rebroadcast_latest_downloaded_block_;
   td::Promise<BlockHandle> promise_;
 
   bool success_ = false;

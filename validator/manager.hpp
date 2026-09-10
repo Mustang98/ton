@@ -393,6 +393,8 @@ class ValidatorManagerImpl : public ValidatorManager {
   void validate_block_proof_rel(BlockIdExt block_id, BlockIdExt rel_block_id, td::BufferSlice proof,
                                 td::Promise<td::Unit> promise) override;
   void got_next_masterchain_block(ReceivedBlock block, td::Promise<BlockHandle> promise) override;
+  void got_next_masterchain_block_and_rebroadcast(BlockBroadcast broadcast,
+                                                   td::Promise<BlockHandle> promise) override;
   td::actor::Task<> new_block_broadcast(BlockBroadcast broadcast, bool signatures_checked,
                                         BroadcastSource source) override;
   td::actor::Task<> validate_block_broadcast(BlockBroadcast broadcast, bool signatures_checked);
@@ -599,6 +601,7 @@ class ValidatorManagerImpl : public ValidatorManager {
   td::Result<BlockBroadcast> assemble_block_broadcast(BlockIdExt block_id, td::BufferSlice data,
                                                       td::Ref<BlockData> parsed_block,
                                                       td::Ref<block::BlockSignatureSet> sig_set);
+  void download_block_data_for_public_rebroadcast(BlockIdExt block_id);
   void try_public_rebroadcast_shard_block(BlockIdExt block_id);
   void try_process_pending_block_finality(BlockIdExt block_id);
   void preload_msg_queue_to_masterchain(td::Ref<ShardTopBlockDescription> desc, td::Promise<td::Unit> promise);
