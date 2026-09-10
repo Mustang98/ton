@@ -393,8 +393,7 @@ class ValidatorManagerImpl : public ValidatorManager {
   void validate_block_proof_rel(BlockIdExt block_id, BlockIdExt rel_block_id, td::BufferSlice proof,
                                 td::Promise<td::Unit> promise) override;
   void got_next_masterchain_block(ReceivedBlock block, td::Promise<BlockHandle> promise) override;
-  void got_next_masterchain_block_and_rebroadcast(BlockBroadcast broadcast,
-                                                   td::Promise<BlockHandle> promise) override;
+  void got_next_masterchain_block_and_rebroadcast(BlockBroadcast broadcast, td::Promise<BlockHandle> promise) override;
   td::actor::Task<> new_block_broadcast(BlockBroadcast broadcast, bool signatures_checked,
                                         BroadcastSource source) override;
   td::actor::Task<> validate_block_broadcast(BlockBroadcast broadcast, bool signatures_checked);
@@ -432,8 +431,8 @@ class ValidatorManagerImpl : public ValidatorManager {
   td::actor::Task<> new_external_message_query_cont(td::Ref<ExtMessage> message,
                                                     td::actor::StartedTask<> wait_allow_broadcast);
 
-  void new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
-                                             td::BufferSlice data, bool public_rebroadcast) override;
+  void new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data,
+                                             bool public_rebroadcast) override;
   td::actor::Task<> new_block_candidate_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data,
                                                   BroadcastSource source) override;
   td::actor::Task<> new_block_finality_broadcast(BlockFinalityBroadcast finality, BroadcastSource source,

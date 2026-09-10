@@ -183,15 +183,14 @@ void FullNodeShardImpl::process_external_message_broadcast(ton_api::tonNode_exte
 
   auto data = std::move(message.message_->data_);
   if (opts_.relay_externals_to_custom_enabled_ && !opts_.config_.ext_messages_broadcast_disabled_) {
-    auto relay_promise = td::PromiseCreator::lambda(
-        [promise = std::move(promise), full_node = full_node_, shard = shard_, relay_data = data.clone()](
-            td::Result<td::Unit> R) mutable {
-          if (R.is_ok()) {
-            td::actor::send_closure(full_node, &FullNode::relay_external_message_to_custom, shard,
-                                    std::move(relay_data));
-          }
-          promise.set_result(std::move(R));
-        });
+    auto relay_promise = td::PromiseCreator::lambda([promise = std::move(promise), full_node = full_node_,
+                                                     shard = shard_,
+                                                     relay_data = data.clone()](td::Result<td::Unit> R) mutable {
+      if (R.is_ok()) {
+        td::actor::send_closure(full_node, &FullNode::relay_external_message_to_custom, shard, std::move(relay_data));
+      }
+      promise.set_result(std::move(R));
+    });
     td::actor::send_closure(validator_manager_, &ValidatorManagerInterface::new_external_message_broadcast,
                             std::move(data), 0, std::move(relay_promise));
     return;

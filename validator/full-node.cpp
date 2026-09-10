@@ -353,7 +353,7 @@ td::actor::Task<> FullNodeImpl::send_ext_message(AccountIdPrefixFull dst, td::Bu
   co_return {};
 }
 
-bool FullNodeImpl::send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice& data) {
+bool FullNodeImpl::send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice &data) {
   bool skip_public = false;
   for (auto &[_, custom_overlay] : custom_overlays_) {
     if (custom_overlay.params_.send_shard(shard)) {
@@ -685,8 +685,8 @@ td::actor::Task<> FullNodeImpl::get_next_blocks_loop() {
                                                 std::move(promise))
         .release();
     auto R = co_await std::move(task).wrap();
-    bool current_block_is_recent = handle_->inited_unix_time() &&
-                                   handle_->unix_time() >= (UnixTime)td::Clocks::system() - 5;
+    bool current_block_is_recent =
+        handle_->inited_unix_time() && handle_->unix_time() >= (UnixTime)td::Clocks::system() - 5;
     // Do not penalize peer when it does not have next blocks if the last block is new enough
     if (R.is_error() && R.error().code() == ErrorCode::notready && current_block_is_recent) {
       query_sender->query_finished(td::Status::OK());

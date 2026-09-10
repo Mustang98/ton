@@ -65,7 +65,7 @@ struct FullNodeOptions {
   bool public_rebroadcast_enabled_ = false;
   bool relay_externals_to_custom_enabled_ = false;
   td::uint32 public_rebroadcast_fanout_ = DEFAULT_PUBLIC_REBROADCAST_FANOUT;
-  std::vector<adnl::AdnlNode> public_whitelisted_peers_;
+  std::vector<adnl::AdnlNode> public_whitelisted_peers_ = {};
 
   struct RateLimiterParams {
     double window_size_ = 1.0;

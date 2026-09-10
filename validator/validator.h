@@ -298,8 +298,7 @@ class ValidatorManagerInterface : public td::actor::Actor {
   virtual void validate_block_proof_rel(BlockIdExt block_id, BlockIdExt rel_block_id, td::BufferSlice proof,
                                         td::Promise<td::Unit> promise) = 0;
   virtual void got_next_masterchain_block(ReceivedBlock block, td::Promise<BlockHandle> promise) = 0;
-  virtual void got_next_masterchain_block_and_rebroadcast(BlockBroadcast broadcast,
-                                                           td::Promise<BlockHandle> promise) {
+  virtual void got_next_masterchain_block_and_rebroadcast(BlockBroadcast broadcast, td::Promise<BlockHandle> promise) {
     promise.set_error(td::Status::Error("not implemented"));
   }
   virtual td::actor::Task<> new_block_broadcast(BlockBroadcast broadcast, bool signatures_checked,
@@ -349,8 +348,8 @@ class ValidatorManagerInterface : public td::actor::Actor {
   virtual td::actor::Task<> new_external_message_query(td::BufferSlice data) {
     co_return td::Status::Error("not implemented");
   }
-  virtual void new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
-                                                     td::BufferSlice data, bool public_rebroadcast) = 0;
+  virtual void new_shard_block_description_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data,
+                                                     bool public_rebroadcast) = 0;
   virtual td::actor::Task<> new_block_candidate_broadcast(BlockIdExt block_id, CatchainSeqno cc_seqno,
                                                           td::BufferSlice data, BroadcastSource source) {
     co_return td::Unit{};

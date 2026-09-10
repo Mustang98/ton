@@ -146,7 +146,8 @@ static td::Result<ton::adnl::AdnlNode> parse_public_whitelisted_peer(td::Slice d
 }
 
 static td::Result<std::vector<ton::adnl::AdnlNode>> parse_public_whitelisted_peers_file(td::Slice path) {
-  TRY_RESULT_PREFIX(data, td::read_file(path), "failed to read public whitelisted peers: ");
+  auto path_str = path.str();
+  TRY_RESULT_PREFIX(data, td::read_file(path_str), "failed to read public whitelisted peers: ");
   TRY_RESULT_PREFIX(json, td::json_decode(data.as_slice()), "failed to parse public whitelisted peers: ");
   if (json.type() != td::JsonValue::Type::Object) {
     return td::Status::Error("public whitelisted peers root must be an object");
@@ -6130,14 +6131,13 @@ int main(int argc, char *argv[]) {
         return td::Status::OK();
       });
   p.add_option(
-      '\0', "public-rebroadcast",
-      "enable publishing received or assembled block broadcasts into public overlays",
+      '\0', "public-rebroadcast", "enable publishing received or assembled block broadcasts into public overlays",
       [&]() { acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::enable_public_rebroadcast); }); });
-  p.add_option('\0', "relay-externals-to-custom",
-               "relay validated external messages received from public overlays into custom overlays", [&]() {
-                 acts.push_back(
-                     [&x]() { td::actor::send_closure(x, &ValidatorEngine::enable_relay_externals_to_custom); });
-               });
+  p.add_option(
+      '\0', "relay-externals-to-custom",
+      "relay validated external messages received from public overlays into custom overlays", [&]() {
+        acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::enable_relay_externals_to_custom); });
+      });
   p.add_checked_option('\0', "public-rebroadcast-fanout", "peer fanout for public block rebroadcasts (default: 200)",
                        [&](td::Slice value) -> td::Status {
                          TRY_RESULT(fanout, td::to_integer_safe<td::uint32>(value));

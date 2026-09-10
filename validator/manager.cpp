@@ -613,8 +613,7 @@ static td::actor::Task<> check_finality_signatures(BlockIdExt block_id, Ref<bloc
 }
 
 td::actor::Task<> ValidatorManagerImpl::new_block_finality_broadcast(BlockFinalityBroadcast finality,
-                                                                     BroadcastSource source,
-                                                                     bool public_rebroadcast) {
+                                                                     BroadcastSource source, bool public_rebroadcast) {
   if (!last_masterchain_block_handle_ || last_masterchain_state_.is_null()) {
     VLOG(validator, DEBUG) << "dropping block finality broadcast: not inited";
     co_return td::Unit{};
@@ -653,8 +652,8 @@ td::actor::Task<> ValidatorManagerImpl::new_block_finality_broadcast(BlockFinali
     }
     public_rebroadcast = cached->public_rebroadcast;
   }
-  pending_block_finality_.put(
-      finality.block_id, PendingBlockFinality{std::move(finality.sig_set), source, public_rebroadcast});
+  pending_block_finality_.put(finality.block_id,
+                              PendingBlockFinality{std::move(finality.sig_set), source, public_rebroadcast});
   try_process_pending_block_finality(finality.block_id);
   co_return td::Unit{};
 }
@@ -798,9 +797,9 @@ void ValidatorManagerImpl::set_shard_block_description_ready(td::Ref<ShardTopBlo
   }
 }
 
-td::Result<BlockBroadcast> ValidatorManagerImpl::assemble_block_broadcast(
-    BlockIdExt block_id, td::BufferSlice data, td::Ref<BlockData> parsed_block,
-    td::Ref<block::BlockSignatureSet> sig_set) {
+td::Result<BlockBroadcast> ValidatorManagerImpl::assemble_block_broadcast(BlockIdExt block_id, td::BufferSlice data,
+                                                                          td::Ref<BlockData> parsed_block,
+                                                                          td::Ref<block::BlockSignatureSet> sig_set) {
   td::Result<td::BufferSlice> proof =
       block_id.is_masterchain()
           ? WaitBlockData::generate_proof(block_id, parsed_block->root_cell(), sig_set, last_masterchain_state_)
