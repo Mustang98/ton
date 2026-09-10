@@ -6133,6 +6133,11 @@ int main(int argc, char *argv[]) {
       '\0', "public-rebroadcast",
       "enable publishing received or assembled block broadcasts into public overlays",
       [&]() { acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::enable_public_rebroadcast); }); });
+  p.add_option('\0', "relay-externals-to-custom",
+               "relay validated external messages received from public overlays into custom overlays", [&]() {
+                 acts.push_back(
+                     [&x]() { td::actor::send_closure(x, &ValidatorEngine::enable_relay_externals_to_custom); });
+               });
   p.add_checked_option('\0', "public-rebroadcast-fanout", "peer fanout for public block rebroadcasts (default: 200)",
                        [&](td::Slice value) -> td::Status {
                          TRY_RESULT(fanout, td::to_integer_safe<td::uint32>(value));

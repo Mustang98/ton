@@ -63,6 +63,7 @@ struct FullNodeOptions {
   double fast_sync_broadcast_speed_multiplier_ = 1.0;
   double initial_sync_delay_ = 60.0;
   bool public_rebroadcast_enabled_ = false;
+  bool relay_externals_to_custom_enabled_ = false;
   td::uint32 public_rebroadcast_fanout_ = DEFAULT_PUBLIC_REBROADCAST_FANOUT;
   std::vector<adnl::AdnlNode> public_whitelisted_peers_;
 
@@ -158,6 +159,7 @@ class FullNode : public td::actor::Actor {
 
   virtual void add_custom_overlay(CustomOverlayParams params, td::Promise<td::Unit> promise) = 0;
   virtual void del_custom_overlay(std::string name, td::Promise<td::Unit> promise) = 0;
+  virtual void relay_external_message_to_custom(ShardIdFull shard, td::BufferSlice data) = 0;
 
   virtual void process_block_broadcast(BlockBroadcast broadcast, bool signatures_checked, BroadcastSource source,
                                        bool send_to_custom) = 0;

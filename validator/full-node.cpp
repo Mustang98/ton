@@ -340,19 +340,7 @@ td::actor::Task<> FullNodeImpl::send_ext_message(AccountIdPrefixFull dst, td::Bu
                                       td::Timestamp::in(1.0), 1024);
     co_return {};
   }
-  bool skip_public = false;
-  for (auto &[_, private_overlay] : custom_overlays_) {
-    if (private_overlay.params_.send_shard(dst.as_leaf_shard())) {
-      for (auto &[local_id, actor] : private_overlay.actors_) {
-        if (private_overlay.params_.msg_senders_.contains(local_id)) {
-          td::actor::send_closure(actor, &FullNodeCustomOverlay::send_external_message, data.clone());
-          if (private_overlay.params_.skip_public_msg_send_) {
-            skip_public = true;
-          }
-        }
-      }
-    }
-  }
+  bool skip_public = send_external_message_to_custom_overlays(dst.as_leaf_shard(), data);
   if (skip_public || opts_.config_.ext_messages_broadcast_disabled_) {
     co_return {};
   }
@@ -363,6 +351,30 @@ td::actor::Task<> FullNodeImpl::send_ext_message(AccountIdPrefixFull dst, td::Bu
   }
   td::actor::send_closure(shard, &FullNodeShard::send_external_message, std::move(data));
   co_return {};
+}
+
+bool FullNodeImpl::send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice& data) {
+  bool skip_public = false;
+  for (auto &[_, custom_overlay] : custom_overlays_) {
+    if (custom_overlay.params_.send_shard(shard)) {
+      for (auto &[local_id, actor] : custom_overlay.actors_) {
+        if (custom_overlay.params_.msg_senders_.contains(local_id)) {
+          td::actor::send_closure(actor, &FullNodeCustomOverlay::send_external_message, data.clone());
+          if (custom_overlay.params_.skip_public_msg_send_) {
+            skip_public = true;
+          }
+        }
+      }
+    }
+  }
+  return skip_public;
+}
+
+void FullNodeImpl::relay_external_message_to_custom(ShardIdFull shard, td::BufferSlice data) {
+  if (!opts_.relay_externals_to_custom_enabled_ || opts_.config_.ext_messages_broadcast_disabled_) {
+    return;
+  }
+  send_external_message_to_custom_overlays(shard, data);
 }
 
 void FullNodeImpl::send_shard_block_info(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data) {

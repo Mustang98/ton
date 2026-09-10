@@ -423,6 +423,9 @@ class ValidatorEngine : public td::actor::Actor {
   void enable_public_rebroadcast() {
     full_node_options_.public_rebroadcast_enabled_ = true;
   }
+  void enable_relay_externals_to_custom() {
+    full_node_options_.relay_externals_to_custom_enabled_ = true;
+  }
   void set_public_rebroadcast_fanout(td::uint32 fanout) {
     LOG(INFO) << "configured public rebroadcast fanout=" << fanout;
     full_node_options_.public_rebroadcast_fanout_ = fanout;
