@@ -51,6 +51,14 @@ static bool is_public_rebroadcast_source(BroadcastSource source) {
   return source == BroadcastSource::fast_sync_overlay || source == BroadcastSource::custom_overlay;
 }
 
+static PublicRebroadcastRoute public_rebroadcast_route(BroadcastSource source) {
+  if (source == BroadcastSource::fast_sync_overlay) {
+    return PublicRebroadcastRoute::fast_sync_full;
+  }
+  CHECK(source == BroadcastSource::custom_overlay);
+  return PublicRebroadcastRoute::custom_full;
+}
+
 void FullNodeImpl::add_permanent_key(PublicKeyHash key, td::Promise<td::Unit> promise) {
   if (local_keys_.count(key)) {
     promise.set_value(td::Unit());
@@ -340,7 +348,7 @@ td::actor::Task<> FullNodeImpl::send_ext_message(AccountIdPrefixFull dst, td::Bu
                                       td::Timestamp::in(1.0), 1024);
     co_return {};
   }
-  bool skip_public = send_external_message_to_custom_overlays(dst.as_leaf_shard(), data);
+  bool skip_public = send_external_message_to_custom_overlays(dst.as_leaf_shard(), data, false);
   if (skip_public || opts_.config_.ext_messages_broadcast_disabled_) {
     co_return {};
   }
@@ -353,19 +361,26 @@ td::actor::Task<> FullNodeImpl::send_ext_message(AccountIdPrefixFull dst, td::Bu
   co_return {};
 }
 
-bool FullNodeImpl::send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice &data) {
+bool FullNodeImpl::send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice &data,
+                                                            bool count_relay_metrics) {
   bool skip_public = false;
+  bool relayed = false;
   for (auto &[_, custom_overlay] : custom_overlays_) {
     if (custom_overlay.params_.send_shard(shard)) {
       for (auto &[local_id, actor] : custom_overlay.actors_) {
         if (custom_overlay.params_.msg_senders_.contains(local_id)) {
           td::actor::send_closure(actor, &FullNodeCustomOverlay::send_external_message, data.clone());
+          relayed = true;
           if (custom_overlay.params_.skip_public_msg_send_) {
             skip_public = true;
           }
         }
       }
     }
+  }
+  if (count_relay_metrics) {
+    auto result = relayed ? ExternalRelayResult::relayed : ExternalRelayResult::no_custom_route;
+    rebroadcaster_metrics_.external_messages.at(result).inc();
   }
   return skip_public;
 }
@@ -374,7 +389,7 @@ void FullNodeImpl::relay_external_message_to_custom(ShardIdFull shard, td::Buffe
   if (!opts_.relay_externals_to_custom_enabled_ || opts_.config_.ext_messages_broadcast_disabled_) {
     return;
   }
-  send_external_message_to_custom_overlays(shard, data);
+  send_external_message_to_custom_overlays(shard, data, true);
 }
 
 void FullNodeImpl::send_shard_block_info(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data) {
@@ -838,7 +853,7 @@ void FullNodeImpl::process_block_broadcast(BlockBroadcast broadcast, bool signat
     send_block_broadcast_to_custom_overlays(broadcast);
   }
   if (opts_.public_rebroadcast_enabled_ && is_public_rebroadcast_source(source)) {
-    rebroadcast_block_to_public(broadcast.clone());
+    rebroadcast_block_to_public(broadcast.clone(), public_rebroadcast_route(source));
   }
   td::actor::send_closure(validator_manager_, &ValidatorManagerInterface::new_block_broadcast, std::move(broadcast),
                           signatures_checked, source, [](td::Result<td::Unit> R) {
@@ -1063,8 +1078,8 @@ void FullNodeImpl::start_up() {
     void send_broadcast(BlockBroadcast broadcast, int mode) override {
       td::actor::send_closure(id_, &FullNodeImpl::send_broadcast, std::move(broadcast), mode);
     }
-    void rebroadcast_block_to_public(BlockBroadcast broadcast) override {
-      td::actor::send_closure(id_, &FullNodeImpl::rebroadcast_block_to_public, std::move(broadcast));
+    void rebroadcast_block_to_public(BlockBroadcast broadcast, PublicRebroadcastRoute route) override {
+      td::actor::send_closure(id_, &FullNodeImpl::rebroadcast_block_to_public, std::move(broadcast), route);
     }
     void send_block_finality_broadcast(BlockFinalityBroadcast finality, int mode) override {
       td::actor::send_closure(id_, &FullNodeImpl::send_block_finality_broadcast, std::move(finality), mode);
@@ -1174,16 +1189,33 @@ void FullNodeImpl::update_custom_overlay(CustomOverlayInfo &overlay) {
   }
 }
 
-void FullNodeImpl::rebroadcast_block_to_public(BlockBroadcast broadcast) {
+void FullNodeImpl::rebroadcast_block_to_public(BlockBroadcast broadcast, PublicRebroadcastRoute route) {
+  auto chain = broadcast.block_id.is_masterchain() ? RebroadcasterChain::master : RebroadcasterChain::shard;
   if (public_rebroadcasted_blocks_.contains(broadcast.block_id)) {
+    rebroadcaster_metrics_.block_duplicates.at(chain, route).inc();
     VLOG(full_node, DEBUG) << "Skipping duplicate public block rebroadcast: " << broadcast.block_id;
     return;
   }
   public_rebroadcasted_blocks_.put(broadcast.block_id, {});
+  rebroadcaster_metrics_.blocks.at(chain, route).inc();
+  rebroadcaster_metrics_.last_block_timestamp_seconds.at(chain).set(td::Clocks::system());
   LOG(INFO) << "Scheduling public rebroadcast type="
             << (broadcast.block_id.is_masterchain() ? "masterchain-block" : "shard-block")
             << " block=" << broadcast.block_id;
   send_broadcast(std::move(broadcast), broadcast_mode_public | broadcast_mode_high_fanout);
+}
+
+td::actor::Task<> FullNodeImpl::collect(metrics::Context ctx) {
+  auto rebroadcaster = ctx.with_name("rebroadcaster");
+  rebroadcaster.collect(metrics::Gauge<td::uint64>{opts_.public_rebroadcast_enabled_}, "enabled");
+  rebroadcaster.collect(metrics::Gauge<td::uint64>{opts_.relay_externals_to_custom_enabled_ &&
+                                                   !opts_.config_.ext_messages_broadcast_disabled_},
+                        "external_relay_enabled");
+  rebroadcaster.collect(metrics::Gauge<td::uint64>{opts_.public_rebroadcast_fanout_}, "configured_fanout");
+  rebroadcaster.collect(metrics::Gauge<td::uint64>{opts_.public_whitelisted_peers_.size()},
+                        "configured_whitelisted_peers");
+  rebroadcaster.collect(rebroadcaster_metrics_);
+  co_return {};
 }
 
 void FullNodeImpl::send_block_broadcast_to_custom_overlays(const BlockBroadcast &broadcast) {

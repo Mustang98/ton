@@ -343,6 +343,19 @@ struct OverlayOptions {
 
 enum class BroadcastFecDissemination { Normal, HighFanout };
 
+struct OverlayMetrics {
+  metrics::TlTrafficBucket broadcasts;
+  std::string overlay_id;
+  td::uint64 high_fanout_broadcasts = 0;
+  td::uint64 high_fanout_errors = 0;
+  td::uint64 high_fanout_whitelisted_peer_sends = 0;
+  td::uint64 high_fanout_random_peer_sends = 0;
+  bool is_public = false;
+  td::uint64 public_peers = 0;
+  td::uint64 public_whitelisted_peers = 0;
+  td::uint64 public_alive_whitelisted_peers = 0;
+};
+
 using PlumtreeFecOptions = OverlayOptions::PlumtreeFecOptions;
 
 struct OverlayManagerBufferLimits {
@@ -488,9 +501,8 @@ class Overlays : public td::actor::Actor {
     co_return {};
   }
 
-  // Merge one overlay's drained inbound broadcast content into the manager's aggregate (the bucket is
-  // non-atomic, so it must be accumulated on the manager thread). `done` is fulfilled after the merge.
-  virtual void absorb_broadcasts(metrics::TlTrafficBucket delta, td::Promise<td::Unit> done) = 0;
+  // Merge one overlay's drained counters and topology snapshot on the manager thread.
+  virtual void absorb_metrics(OverlayMetrics delta, td::Promise<td::Unit> done) = 0;
 };
 
 }  // namespace overlay

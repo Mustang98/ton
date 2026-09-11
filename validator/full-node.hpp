@@ -44,6 +44,16 @@ namespace validator {
 
 namespace fullnode {
 
+enum class RebroadcasterChain { master, shard };
+inline constexpr metrics::LabelEnum<RebroadcasterChain, 2> ton_metric_label(RebroadcasterChain) {
+  return {"chain", {{"master", "shard"}}};
+}
+
+enum class ExternalRelayResult { relayed, no_custom_route };
+inline constexpr metrics::LabelEnum<ExternalRelayResult, 2> ton_metric_label(ExternalRelayResult) {
+  return {"result", {{"relayed", "no_custom_route"}}};
+}
+
 class FullNodeImpl : public FullNode {
  public:
   void update_dht_node(td::actor::ActorId<dht::Dht> dht) override {
@@ -126,6 +136,8 @@ class FullNodeImpl : public FullNode {
   td::actor::Task<td::BufferSlice> handle_query(td::BufferSlice query, adnl::AdnlNodeIdShort src,
                                                 QuerySource source) override;
 
+  td::actor::Task<> collect(metrics::Context ctx) override;
+
   void start_up() override;
 
   FullNodeImpl(adnl::AdnlNodeIdShort adnl_id, FileHash zero_state_file_hash, FullNodeOptions opts,
@@ -137,6 +149,20 @@ class FullNodeImpl : public FullNode {
                td::Promise<td::Unit> started_promise);
 
  private:
+  struct RebroadcasterMetrics {
+    metrics::Labeled<metrics::Counter, RebroadcasterChain, PublicRebroadcastRoute> blocks;
+    metrics::Labeled<metrics::Counter, RebroadcasterChain, PublicRebroadcastRoute> block_duplicates;
+    metrics::Labeled<metrics::Gauge<double>, RebroadcasterChain> last_block_timestamp_seconds;
+    metrics::Labeled<metrics::Counter, ExternalRelayResult> external_messages;
+
+    void collect(metrics::Context ctx) const {
+      ctx.collect(blocks, "blocks");
+      ctx.collect(block_duplicates, "block_duplicates");
+      ctx.collect(last_block_timestamp_seconds, "last_block_timestamp_seconds");
+      ctx.collect(external_messages, "external_messages");
+    }
+  } rebroadcaster_metrics_;
+
   struct ShardInfo {
     td::actor::ActorOwn<FullNodeShard> actor;
     PublicKeyHash local_id = PublicKeyHash::zero();
@@ -199,8 +225,9 @@ class FullNodeImpl : public FullNode {
 
   void update_private_overlays();
   void update_custom_overlay(CustomOverlayInfo& overlay);
-  bool send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice& data);
-  void rebroadcast_block_to_public(BlockBroadcast broadcast);
+  bool send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice& data,
+                                                bool count_relay_metrics);
+  void rebroadcast_block_to_public(BlockBroadcast broadcast, PublicRebroadcastRoute route);
   void send_block_broadcast_to_custom_overlays(const BlockBroadcast& broadcast);
   void send_block_finality_broadcast_to_custom_overlays(const BlockFinalityBroadcast& finality);
   void send_block_candidate_broadcast_to_custom_overlays(const BlockIdExt& block_id, CatchainSeqno cc_seqno,

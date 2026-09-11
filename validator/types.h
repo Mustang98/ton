@@ -56,4 +56,12 @@ enum class BroadcastSource {
   custom_overlay,
 };
 
+enum class PublicRebroadcastRoute {
+  fast_sync_full,
+  custom_full,
+  assembled_top_descr,
+  assembled_finality,
+  download,
+};
+
 }  // namespace ton::validator

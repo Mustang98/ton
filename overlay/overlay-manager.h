@@ -121,7 +121,7 @@ class OverlayManager : public Overlays {
   void forget_peer(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay, adnl::AdnlNodeIdShort peer_id) override;
 
   td::actor::Task<> collect(metrics::Context ctx) override;
-  void absorb_broadcasts(metrics::TlTrafficBucket delta, td::Promise<td::Unit> done) override;
+  void absorb_metrics(OverlayMetrics delta, td::Promise<td::Unit> done) override;
 
   struct PrintId {};
 
@@ -138,6 +138,13 @@ class OverlayManager : public Overlays {
 
   // Broadcast content: outbound recorded here directly, inbound drained from the per-overlay actors.
   metrics::Labeled<metrics::TlTrafficBucket, metrics::Direction> broadcasts_;
+  metrics::DynLabel<"overlay_id", std::string, metrics::Counter> high_fanout_broadcasts_;
+  metrics::DynLabel<"overlay_id", std::string, metrics::Counter> high_fanout_errors_;
+  metrics::DynLabel<"overlay_id", std::string, metrics::Counter> high_fanout_whitelisted_peer_sends_;
+  metrics::DynLabel<"overlay_id", std::string, metrics::Counter> high_fanout_random_peer_sends_;
+  metrics::DynLabel<"overlay_id", std::string, metrics::Gauge<td::uint64>> public_peer_memberships_;
+  metrics::DynLabel<"overlay_id", std::string, metrics::Gauge<td::uint64>> public_whitelisted_peer_memberships_;
+  metrics::DynLabel<"overlay_id", std::string, metrics::Gauge<td::uint64>> public_alive_whitelisted_peer_memberships_;
 
   struct BufferedRequest {
     adnl::AdnlNodeIdShort src;

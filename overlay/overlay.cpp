@@ -568,7 +568,7 @@ void OverlayImpl::start_up() {
 
 void OverlayImpl::tear_down() {
   // Whatever hasn't been scraped yet would otherwise be lost with this overlay (fire-and-forget).
-  td::actor::send_closure(manager_, &Overlays::absorb_broadcasts, drain_metrics(), td::Promise<td::Unit>());
+  td::actor::send_closure(manager_, &Overlays::absorb_metrics, drain_metrics(), td::Promise<td::Unit>());
 }
 
 void OverlayImpl::update_peers_mtu() {
@@ -736,6 +736,9 @@ void OverlayImpl::send_broadcast(PublicKeyHash send_as, td::uint32 flags, td::Bu
 void OverlayImpl::send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, BroadcastFecDissemination dissemination,
                                      td::BufferSlice data, td::BufferSlice extra) {
   if (!has_valid_membership_certificate()) {
+    if (dissemination == BroadcastFecDissemination::HighFanout) {
+      ++pending_metrics_.high_fanout_errors;
+    }
     VLOG(overlay, WARNING) << "member certificate is invalid, valid_until="
                            << peer_list_.local_cert_is_valid_until_.at_unix();
     return;
@@ -745,6 +748,9 @@ void OverlayImpl::send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, Br
   if (!has_valid_broadcast_certificate(
           send_as, data.size(), /* is_fec = */ true,
           /* is_any_sender = */ (flags & Overlays::BroadcastFlagAnySender()) && !twostep)) {
+    if (dissemination == BroadcastFecDissemination::HighFanout) {
+      ++pending_metrics_.high_fanout_errors;
+    }
     VLOG(overlay, WARNING) << "broadcast source certificate is invalid";
     return;
   }
@@ -753,6 +759,9 @@ void OverlayImpl::send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, Br
   } else {
     if (!extra.empty()) {
       LOG(WARNING) << "Broadcast extra for old fec broadcast is not supported";
+    }
+    if (dissemination == BroadcastFecDissemination::HighFanout) {
+      ++pending_metrics_.high_fanout_broadcasts;
     }
     broadcasts_fec_.send(this, send_as, std::move(data), flags, dissemination, opts_.broadcast_speed_multiplier_);
   }
@@ -956,12 +965,24 @@ void OverlayImpl::receive_plumtree_repair_response(adnl::AdnlNodeIdShort from, t
 }
 
 void OverlayImpl::deliver_broadcast(PublicKeyHash source, td::BufferSlice data, td::BufferSlice extra) {
-  delivered_.account(data.as_slice());
+  pending_metrics_.broadcasts.account(data.as_slice());
   callback_->receive_broadcast_with_extra(source, overlay_id_, std::move(data), std::move(extra));
 }
 
 void OverlayImpl::collect_metrics(td::Promise<td::Unit> done) {
-  td::actor::send_closure(manager_, &Overlays::absorb_broadcasts, drain_metrics(), std::move(done));
+  auto metrics = drain_metrics();
+  if (overlay_type_ == OverlayType::Public) {
+    metrics.is_public = true;
+    metrics.public_peers = peer_list_.peers_.size();
+    for (const auto &peer : public_whitelisted_peer_ids_) {
+      if (peer == local_id_) {
+        continue;
+      }
+      ++metrics.public_whitelisted_peers;
+      metrics.public_alive_whitelisted_peers += is_public_whitelisted_peer_alive(peer);
+    }
+  }
+  td::actor::send_closure(manager_, &Overlays::absorb_metrics, std::move(metrics), std::move(done));
 }
 
 void OverlayImpl::register_delivered_broadcast(const BroadcastHash &hash) {

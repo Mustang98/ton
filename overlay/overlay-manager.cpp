@@ -474,7 +474,11 @@ void OverlayManager::send_broadcast_fec_with_extra(adnl::AdnlNodeIdShort local_i
       broadcasts_.at(metrics::Direction::out).account(object.as_slice());
       td::actor::send_closure(it2->second.overlay, &Overlay::send_broadcast_fec, send_as, flags, dissemination,
                               std::move(object), std::move(extra));
+      return;
     }
+  }
+  if (dissemination == BroadcastFecDissemination::HighFanout) {
+    high_fanout_errors_.at(overlay_id.bits256_value().to_hex()).inc();
   }
 }
 
@@ -708,6 +712,9 @@ td::actor::Task<> OverlayManager::collect(metrics::Context ctx) {
   // outlives it), then wait for the round-trips. An overlay that dies mid-drain has already flushed
   // in its tear_down, so a failed ask is harmless.
   std::vector<td::actor::StartedTask<td::Unit>> drains;
+  public_peer_memberships_ = {};
+  public_whitelisted_peer_memberships_ = {};
+  public_alive_whitelisted_peer_memberships_ = {};
   for (const auto &[local_id, by_overlay] : overlays_) {
     for (const auto &[overlay_id, desc] : by_overlay) {
       drains.push_back(td::actor::ask(desc.overlay.get(), &Overlay::collect_metrics));
@@ -715,12 +722,39 @@ td::actor::Task<> OverlayManager::collect(metrics::Context ctx) {
   }
   co_await td::actor::all_wrap(std::move(drains));
 
-  ctx.with_name("overlay").collect(broadcasts_, "broadcast");
+  auto overlay = ctx.with_name("overlay");
+  overlay.collect(broadcasts_, "broadcast");
+  auto high_fanout = overlay.with_name("high_fanout");
+  high_fanout.collect(high_fanout_broadcasts_, "broadcasts");
+  high_fanout.collect(high_fanout_errors_, "errors");
+  high_fanout.collect(high_fanout_whitelisted_peer_sends_, "whitelisted_peer_sends");
+  high_fanout.collect(high_fanout_random_peer_sends_, "random_peer_sends");
+  auto public_overlay = overlay.with_name("public");
+  public_overlay.collect(public_peer_memberships_, "peer_memberships");
+  public_overlay.collect(public_whitelisted_peer_memberships_, "whitelisted_peer_memberships");
+  public_overlay.collect(public_alive_whitelisted_peer_memberships_, "alive_whitelisted_peer_memberships");
   co_return {};
 }
 
-void OverlayManager::absorb_broadcasts(metrics::TlTrafficBucket delta, td::Promise<td::Unit> done) {
-  broadcasts_.at(metrics::Direction::in) += delta;
+void OverlayManager::absorb_metrics(OverlayMetrics delta, td::Promise<td::Unit> done) {
+  broadcasts_.at(metrics::Direction::in) += delta.broadcasts;
+  if (delta.high_fanout_broadcasts != 0) {
+    high_fanout_broadcasts_.at(delta.overlay_id).inc(delta.high_fanout_broadcasts);
+  }
+  if (delta.high_fanout_errors != 0) {
+    high_fanout_errors_.at(delta.overlay_id).inc(delta.high_fanout_errors);
+  }
+  if (delta.high_fanout_whitelisted_peer_sends != 0) {
+    high_fanout_whitelisted_peer_sends_.at(delta.overlay_id).inc(delta.high_fanout_whitelisted_peer_sends);
+  }
+  if (delta.high_fanout_random_peer_sends != 0) {
+    high_fanout_random_peer_sends_.at(delta.overlay_id).inc(delta.high_fanout_random_peer_sends);
+  }
+  if (delta.is_public) {
+    public_peer_memberships_.at(delta.overlay_id).add(delta.public_peers);
+    public_whitelisted_peer_memberships_.at(delta.overlay_id).add(delta.public_whitelisted_peers);
+    public_alive_whitelisted_peer_memberships_.at(delta.overlay_id).add(delta.public_alive_whitelisted_peers);
+  }
   done.set_value(td::Unit());
 }
 

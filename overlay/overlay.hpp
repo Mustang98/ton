@@ -403,6 +403,14 @@ class OverlayImpl : public Overlay {
     return entry != nullptr && entry->is_alive();
   }
 
+  void record_high_fanout_peer_send(bool whitelisted) {
+    if (whitelisted) {
+      ++pending_metrics_.high_fanout_whitelisted_peer_sends;
+    } else {
+      ++pending_metrics_.high_fanout_random_peer_sends;
+    }
+  }
+
   bool has_valid_membership_certificate();
   bool has_valid_broadcast_certificate(const PublicKeyHash &source, size_t size, bool is_fec, bool is_any_sender);
 
@@ -522,11 +530,12 @@ class OverlayImpl : public Overlay {
 
   std::unique_ptr<Overlays::Callback> callback_;
 
-  // Reassembled broadcast content, accounted here on the overlay thread and drained into the manager's
-  // aggregate on scrape and on tear_down.
-  metrics::TlTrafficBucket delivered_;
-  metrics::TlTrafficBucket drain_metrics() {
-    return std::exchange(delivered_, {});
+  // Actor-local counters, drained into the manager's aggregate on scrape and tear_down.
+  OverlayMetrics pending_metrics_;
+  OverlayMetrics drain_metrics() {
+    auto result = std::exchange(pending_metrics_, {});
+    result.overlay_id = overlay_id_.bits256_value().to_hex();
+    return result;
   }
 
   BroadcastsSimple broadcasts_simple_;

@@ -41,6 +41,10 @@ namespace ton {
 
 namespace validator {
 
+inline constexpr metrics::LabelEnum<PublicRebroadcastRoute, 5> ton_metric_label(PublicRebroadcastRoute) {
+  return {"route", {{"fast_sync_full", "custom_full", "assembled_top_descr", "assembled_finality", "download"}}};
+}
+
 namespace fullnode {
 
 struct FullNodeConfig {
@@ -180,6 +184,8 @@ class FullNode : public td::actor::Actor {
 
   virtual td::actor::Task<td::BufferSlice> handle_query(td::BufferSlice query, adnl::AdnlNodeIdShort src,
                                                         QuerySource source) = 0;
+
+  virtual td::actor::Task<> collect(metrics::Context ctx) = 0;
 
   static constexpr td::uint32 max_block_size() {
     return 4 << 20;

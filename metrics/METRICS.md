@@ -26,20 +26,20 @@ each nesting level appends a segment joined with `_`:
   with no name adds none, letting the inner node supply the final segment.
 - `Counter` renders as `<segments>_total`.
 - `Gauge<T>` renders as `<segments>`, except `std::chrono` types which append `_seconds`.
-- `Labeled<Inner, L...>` adds one label per axis over a **closed** value set — `direction`, `kind`,
-  `reason`, `result`, `state`, `trust`, `workchain`, `source`. (An `outcome` axis is defined too, but
+- `Labeled<Inner, L...>` adds one label per axis over a **closed** value set — `chain`, `direction`, `kind`,
+  `reason`, `result`, `route`, `state`, `trust`, `workchain`, `source`. (An `outcome` axis is defined too, but
   its only holder `TransferStats` is never instantiated, so no family carries it.) **Every cell of a
   closed axis is emitted on every scrape**, including zero-valued ones, so all such label combinations below are
   always present in the exposition (which is why the permanently-zero series in Known gaps still
   show up).
   The **open** label axes behave differently and emit only values actually observed: `code` on
-  the HTTP responses family, `tl` on the traffic and latency buckets, `op` on the perf families, and
-  `type` / `scheduler` on the actor families. The `tl` buckets always
+  the HTTP responses family, `overlay_id` on the rebroadcaster's overlay families, `tl` on the traffic
+  and latency buckets, `op` on the perf families, and `type` / `scheduler` on the actor families. The `tl` buckets always
   emit their `tl="unknown"` cell, populated or not, and a latency bucket always emits both of its
   families even when nothing was ever observed.
 
 Registered collectors, in order: the exporter itself, `AdnlNetworkManager`, `Adnl`, `QuicSender`,
-`Rldp` (rldp2), `Overlays`, `ValidatorManagerInterface`.
+`Rldp` (rldp2), `Overlays` when DHT is configured, `ValidatorManagerInterface`, and `FullNode` when configured.
 
 ## Scrape semantics
 
@@ -76,7 +76,7 @@ can miss stalls between gathers (see *Known gaps*).
 
 | metric | type | labels | meaning |
 |---|---|---|---|
-| `ton_exporter_collectors` | gauge | — | Registered collector callbacks: 7 in a full validator-engine, 6 when no DHT node is configured (which also drops the `ton_overlay_*` families, since the overlay manager is only created with one). |
+| `ton_exporter_collectors` | gauge | — | Registered collector callbacks: 8 with both DHT and FullNode, 7 when either optional collector is absent, and 6 when both are absent. Without DHT the `ton_overlay_*` families are absent; without FullNode the `ton_rebroadcaster_*` families are absent. |
 | `ton_exporter_collections_total` | counter | — | Gather attempts started. Concurrent scrapes sharing one flight increment it once. It stays zero before the seal and while nobody scrapes. |
 | `ton_exporter_last_collection_duration_seconds` | gauge | — | Duration of the **previous** successful gather (the current one sets it after this body is already rendered). How much of a scrape interval collection itself costs. |
 | `ton_perf_ops_total` | counter | `op` | Executions of a `TD_PERF_COUNTER` site, read straight from the process-global registry on each gather (its totals are already cumulative, so nothing is mirrored). `op` is the site name (`Ed25519_sign`, `Ed25519_verify_signature`, `cell_load`, `cell_store`, `raptor_solve`, …); a site registers on first execution, so one that has never run emits no series. |
@@ -399,6 +399,17 @@ pairs), with a `tear_down` flush so a dying overlay's counts survive.
 |---|---|---|---|
 | `ton_overlay_broadcast_bytes_total` | counter | `direction=in\|out`, `tl` | Broadcast content bytes. `out` at the four terminal `send_broadcast*` entry points, pre-FEC-encoding, and only for content submitted to an overlay this node participates in (still counted if certificate checks later reject it). `in` at `deliver_broadcast`, post-reassembly. |
 | `ton_overlay_broadcast_messages_total` | counter | same | Broadcast count for the same events. |
+| `ton_overlay_high_fanout_broadcasts_total` | counter | `overlay_id` | High-fanout FEC broadcasts that passed certificate checks and entered FEC encoding. |
+| `ton_overlay_high_fanout_errors_total` | counter | `overlay_id` | High-fanout sends rejected because the overlay was missing or a membership/broadcast certificate was invalid. Logs retain the exact reason. |
+| `ton_overlay_high_fanout_whitelisted_peer_sends_total` | counter | `overlay_id` | Per-peer FEC-part sends queued to whitelisted peers. Completed neighbours are skipped and do not increment it. |
+| `ton_overlay_high_fanout_random_peer_sends_total` | counter | `overlay_id` | Per-peer FEC-part sends queued to the remaining randomly selected peers. Completed neighbours are skipped and do not increment it. |
+| `ton_overlay_public_peer_memberships` | gauge | `overlay_id` | Entries in this public overlay's peer table. |
+| `ton_overlay_public_whitelisted_peer_memberships` | gauge | `overlay_id` | Configured remote whitelist memberships in this overlay. The local ID, if listed, is excluded. |
+| `ton_overlay_public_alive_whitelisted_peer_memberships` | gauge | `overlay_id` | Whitelist memberships currently considered alive in this overlay. |
+
+`overlay_id` is the same short ID exposed by `getstats`, rendered as 64 hexadecimal characters here.
+For blockchain public overlays, that response's existing `scope` field maps the ID to its
+`workchain_id` and `shard_id` (`workchain_id = -1` is masterchain).
 
 Two semantics worth knowing. Sizes here are content bytes while the transport tiers count wire
 bytes, so the transport app tier's FEC-part traffic (`*_app_*` under the four FEC constructors:
@@ -410,6 +421,29 @@ their content, so they land under the content's own `tl` in the app tier. And `d
 includes self-originated broadcasts — a node delivers its own broadcast to its own callbacks, so a
 locally originated broadcast increments both directions; `in` means "content this overlay
 delivered", not "received from peers".
+
+---
+
+## Public rebroadcaster
+
+Collected by `FullNode`. Counters describe the rebroadcaster's decisions before the public overlay;
+the overlay high-fanout families above confirm that the scheduled broadcast passed certificates and
+produced FEC sends.
+
+| metric | type | labels | meaning |
+|---|---|---|---|
+| `ton_rebroadcaster_enabled` | gauge | — | 1 when `--public-rebroadcast` is enabled. |
+| `ton_rebroadcaster_external_relay_enabled` | gauge | — | 1 when public-to-custom external relay is enabled and external-message broadcasting is not disabled by full-node configuration. |
+| `ton_rebroadcaster_configured_fanout` | gauge | — | Configured high-fanout target, including when public rebroadcasting is disabled. |
+| `ton_rebroadcaster_configured_whitelisted_peers` | gauge | — | Peers loaded from the public whitelist file. This is the configured list size, unlike overlay-local membership gauges. |
+| `ton_rebroadcaster_blocks_total` | counter | `chain=master\|shard`, `route=fast_sync_full\|custom_full\|assembled_top_descr\|assembled_finality\|download` | Unique blocks accepted by the rebroadcast LRU and scheduled to the public overlay. `route` is the first path to win deduplication. |
+| `ton_rebroadcaster_block_duplicates_total` | counter | same | Later attempts rejected by the rebroadcast LRU, attributed to the route that supplied the duplicate. |
+| `ton_rebroadcaster_last_block_timestamp_seconds` | gauge | `chain=master\|shard` | Unix timestamp when the latest unique block of that chain was scheduled; 0 until the first one. |
+| `ton_rebroadcaster_external_messages_total` | counter | `result=relayed\|no_custom_route` | Validated public external messages reaching the relay stage. `relayed` means the message was submitted to at least one matching custom overlay. |
+
+The rebroadcast route is intentionally not the origin of every block component. For assembled shard
+blocks, input origins remain available through `ton_first_received_total` and `ton_received_total`;
+no source metadata is added to the candidate or signature caches solely for metrics.
 
 ---
 

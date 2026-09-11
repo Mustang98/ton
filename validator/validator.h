@@ -250,7 +250,7 @@ class ValidatorManagerInterface : public td::actor::Actor {
     }
     virtual void send_broadcast(BlockBroadcast broadcast, int mode) {
     }
-    virtual void rebroadcast_block_to_public(BlockBroadcast broadcast) {
+    virtual void rebroadcast_block_to_public(BlockBroadcast broadcast, PublicRebroadcastRoute route) {
     }
     virtual void send_block_finality_broadcast(BlockFinalityBroadcast finality, int mode) {
     }

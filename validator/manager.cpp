@@ -222,7 +222,7 @@ void ValidatorManagerImpl::got_next_masterchain_block(ReceivedBlock block, td::P
 void ValidatorManagerImpl::got_next_masterchain_block_and_rebroadcast(BlockBroadcast broadcast,
                                                                       td::Promise<BlockHandle> promise) {
   ReceivedBlock block{broadcast.block_id, broadcast.data.clone()};
-  callback_->rebroadcast_block_to_public(std::move(broadcast));
+  callback_->rebroadcast_block_to_public(std::move(broadcast), PublicRebroadcastRoute::download);
   got_next_masterchain_block(std::move(block), std::move(promise));
 }
 
@@ -882,7 +882,7 @@ void ValidatorManagerImpl::try_public_rebroadcast_shard_block(BlockIdExt block_i
     return;
   }
 
-  callback_->rebroadcast_block_to_public(broadcast.move_as_ok());
+  callback_->rebroadcast_block_to_public(broadcast.move_as_ok(), PublicRebroadcastRoute::assembled_top_descr);
 }
 
 void ValidatorManagerImpl::download_block_data_for_public_rebroadcast(BlockIdExt block_id) {
@@ -948,7 +948,7 @@ void ValidatorManagerImpl::try_process_pending_block_finality(BlockIdExt block_i
   pending_block_finality_.erase(block_id);
   update_block_receive_stats(block_id, BlockReceiveStats::from_candidate_finality(finality_source));
   if (public_rebroadcast) {
-    callback_->rebroadcast_block_to_public(broadcast.ok().clone());
+    callback_->rebroadcast_block_to_public(broadcast.ok().clone(), PublicRebroadcastRoute::assembled_finality);
   }
   td::actor::send_closure(
       actor_id(this), &ValidatorManagerImpl::validate_block_broadcast, broadcast.move_as_ok(),

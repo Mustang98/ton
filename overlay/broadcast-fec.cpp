@@ -255,7 +255,8 @@ td::Status BroadcastFec::distribute_part(OverlayImpl *overlay, td::uint32 seqno)
   auto manager = overlay->overlay_manager();
 
   auto &limiter = overlay->get_broadcasts_limiter(src_.compute_short_id(), certificate_.get());
-  for (auto &n : nodes) {
+  for (size_t node_idx = 0; node_idx < nodes.size(); ++node_idx) {
+    const auto &n = nodes[node_idx];
     if (neighbour_completed(n)) {
       continue;
     }
@@ -270,6 +271,9 @@ td::Status BroadcastFec::distribute_part(OverlayImpl *overlay, td::uint32 seqno)
       td::actor::send_closure(manager, &OverlayManager::send_message, n, overlay->local_id(), overlay->overlay_id(),
                               data.clone());
       limiter.register_out_traffic(data.size());
+    }
+    if (dissemination_ == BroadcastFecDissemination::HighFanout) {
+      overlay->record_high_fanout_peer_send(node_idx < whitelisted_count);
     }
   }
   if (dissemination_ == BroadcastFecDissemination::HighFanout && seqno == 0) {
