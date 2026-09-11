@@ -226,7 +226,7 @@ td::Status BroadcastFec::distribute_part(OverlayImpl *overlay, td::uint32 seqno)
       if (nodes.size() >= fanout) {
         break;
       }
-      if (peer != overlay->local_id()) {
+      if (peer != overlay->local_id() && overlay->is_public_whitelisted_peer_alive(peer)) {
         nodes.push_back(peer);
       }
     }

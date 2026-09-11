@@ -398,6 +398,11 @@ class OverlayImpl : public Overlay {
     return public_whitelisted_peer_ids_.count(peer) != 0;
   }
 
+  bool is_public_whitelisted_peer_alive(const adnl::AdnlNodeIdShort &peer) const {
+    auto entry = peer_list_.peers_.get(peer);
+    return entry != nullptr && entry->is_alive();
+  }
+
   bool has_valid_membership_certificate();
   bool has_valid_broadcast_certificate(const PublicKeyHash &source, size_t size, bool is_fec, bool is_any_sender);
 
@@ -605,6 +610,7 @@ class OverlayImpl : public Overlay {
 
   OverlayOptions opts_;
   std::unordered_set<adnl::AdnlNodeIdShort, AdnlNodeIdShortHash> public_whitelisted_peer_ids_;
+  size_t next_public_whitelisted_peer_ = 0;
   adnl::PeersMtuGuard peers_mtu_guard_;
   adnl::PeersMtuGuard plumtree_eager_mtu_guard_;
   adnl::Adnl::ProtectedPeersGuard protected_peers_guard_;

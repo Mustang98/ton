@@ -123,6 +123,19 @@ OverlayImpl::OverlayImpl(td::actor::ActorId<keyring::Keyring> keyring, td::actor
 
   auto nodes_size = static_cast<td::uint32>(nodes.size());
   OverlayImpl::update_root_member_list(std::move(nodes), std::move(root_public_keys), std::move(cert));
+  if (overlay_type_ == OverlayType::Public) {
+    for (const auto &peer_id : opts_.public_whitelisted_peers_) {
+      if (peer_id == local_id_) {
+        continue;
+      }
+      auto peer = peer_list_.peers_.get(peer_id);
+      if (peer == nullptr) {
+        peer_list_.peers_.insert(peer_id, OverlayPeer{OverlayNode{peer_id, overlay_id_, 0}});
+        peer = peer_list_.peers_.get(peer_id);
+      }
+      peer->set_permanent(true);
+    }
+  }
   update_neighbours(nodes_size);
 
   if (overlay_type_ == OverlayType::Public &&
@@ -467,6 +480,16 @@ void OverlayImpl::alarm() {
         auto peer_id = peer->get_id();
         if (peer_id != neighbour_id) {
           send_random_peers_query(peer_id);
+        }
+      }
+      if (overlay_type_ == OverlayType::Public && !opts_.public_whitelisted_peers_.empty()) {
+        auto peers_to_check = std::min<size_t>(5, opts_.public_whitelisted_peers_.size());
+        for (size_t i = 0; i < peers_to_check; ++i) {
+          auto peer = opts_.public_whitelisted_peers_[next_public_whitelisted_peer_++];
+          if (next_public_whitelisted_peer_ == opts_.public_whitelisted_peers_.size()) {
+            next_public_whitelisted_peer_ = 0;
+          }
+          send_random_peers_query(peer);
         }
       }
     } else {
