@@ -565,10 +565,6 @@ td::actor::Task<QuerySender> FullNodeImpl::get_query_sender(ShardIdFull shard_id
     }
   }
 
-  if (opts_.public_rebroadcast_enabled_) {
-    co_return get_empty_query_sender();
-  }
-
   auto shard = get_shard_overlay_actor(shard_id, historical);
   if (shard.empty()) {
     co_return get_empty_query_sender();
