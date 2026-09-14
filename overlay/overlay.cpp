@@ -514,7 +514,9 @@ void OverlayImpl::alarm() {
         if (!P) {
           break;
         }
-        vec.push_back(P->get_node()->clone());
+        if (P->has_full_id()) {
+          vec.push_back(P->get_node()->clone());
+        }
       }
       if (vec.size() > 0) {
         td::actor::send_closure(manager_, &OverlayManager::save_to_db, local_id_, overlay_id_, std::move(vec));
