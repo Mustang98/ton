@@ -134,6 +134,7 @@ OverlayImpl::OverlayImpl(td::actor::ActorId<keyring::Keyring> keyring, td::actor
         peer = peer_list_.peers_.get(peer_id);
       }
       peer->set_permanent(true);
+      peer_list_.evictable_bad_peers_.erase(peer_id);
     }
   }
   update_neighbours(nodes_size);

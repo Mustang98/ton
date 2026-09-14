@@ -600,7 +600,9 @@ class OverlayImpl : public Overlay {
     std::map<PublicKeyHash, SlaveKeys> root_public_keys_;
     OverlayMemberCertificate cert_;
     std::set<adnl::AdnlNodeIdShort> bad_peers_;
-    adnl::AdnlNodeIdShort next_bad_peer_ = adnl::AdnlNodeIdShort::zero();
+    // Exactly the non-permanent subset of bad_peers_.
+    std::set<adnl::AdnlNodeIdShort> evictable_bad_peers_;
+    adnl::AdnlNodeIdShort next_evictable_bad_peer_ = adnl::AdnlNodeIdShort::zero();
     td::DecTree<adnl::AdnlNodeIdShort, OverlayPeer> peers_;
     size_t persistent_node_count_ = 0;
     std::vector<adnl::AdnlNodeIdShort> neighbours_;

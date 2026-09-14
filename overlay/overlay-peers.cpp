@@ -34,7 +34,9 @@ namespace overlay {
 
 void OverlayImpl::del_peer(const adnl::AdnlNodeIdShort &id) {
   auto P = peer_list_.peers_.get(id);
+  peer_list_.evictable_bad_peers_.erase(id);
   if (P == nullptr) {
+    peer_list_.bad_peers_.erase(id);
     return;
   }
   if (P->is_permanent_member()) {
@@ -110,14 +112,19 @@ void OverlayImpl::del_some_peers() {
   size_t iteration_seqno = 0;
   while (peer_list_.peers_.size() > max_peers() && iteration_seqno++ < max_iterations) {
     OverlayPeer *P;
-    if (peer_list_.bad_peers_.empty()) {
+    if (peer_list_.evictable_bad_peers_.empty()) {
       P = get_random_peer();
     } else {
-      auto it = peer_list_.bad_peers_.upper_bound(peer_list_.next_bad_peer_);
-      if (it == peer_list_.bad_peers_.end()) {
-        it = peer_list_.bad_peers_.begin();
+      auto it = peer_list_.evictable_bad_peers_.upper_bound(peer_list_.next_evictable_bad_peer_);
+      if (it == peer_list_.evictable_bad_peers_.end()) {
+        it = peer_list_.evictable_bad_peers_.begin();
       }
-      P = peer_list_.peers_.get(peer_list_.next_bad_peer_ = *it);
+      auto id = peer_list_.next_evictable_bad_peer_ = *it;
+      P = peer_list_.peers_.get(id);
+      if (!P || P->is_permanent_member()) {
+        del_peer(id);
+        continue;
+      }
     }
     if (P && !P->is_permanent_member()) {
       auto id = P->get_id();
@@ -253,6 +260,8 @@ void OverlayImpl::add_peer(OverlayNode node, bool verified, bool checked_signatu
   } else if (verified) {
     VLOG(overlay, DEBUG) << this << ": adding peer " << id << " of version " << node.version();
     CHECK(overlay_type_ != OverlayType::CertificatedMembers || (node.certificate() && !node.certificate()->empty()));
+    peer_list_.bad_peers_.erase(id);
+    peer_list_.evictable_bad_peers_.erase(id);
     peer_list_.peers_.insert(id, OverlayPeer(std::move(node)));
     peer_list_.pending_peers_.remove(id);
     del_some_peers();
@@ -358,8 +367,14 @@ void OverlayImpl::on_ping_result(adnl::AdnlNodeIdShort peer, bool success, doubl
     }
     if (p->is_alive()) {
       peer_list_.bad_peers_.erase(peer);
+      peer_list_.evictable_bad_peers_.erase(peer);
     } else {
       peer_list_.bad_peers_.insert(peer);
+      if (p->is_permanent_member()) {
+        peer_list_.evictable_bad_peers_.erase(peer);
+      } else {
+        peer_list_.evictable_bad_peers_.insert(peer);
+      }
       if (p->is_neighbour() || p->is_plumtree_neighbour()) {
         del_from_all_neighbour_lists(p);
         update_neighbours(0);
@@ -867,6 +882,11 @@ void OverlayImpl::update_root_member_list(std::vector<adnl::AdnlNodeIdShort> ids
   std::vector<adnl::AdnlNodeIdShort> to_del;
   peer_list_.peers_.iterate([&](const adnl::AdnlNodeIdShort &key, OverlayPeer &peer) {
     peer.set_permanent(std::binary_search(ids.begin(), ids.end(), key));
+    if (!peer.is_permanent_member() && peer_list_.bad_peers_.contains(key)) {
+      peer_list_.evictable_bad_peers_.insert(key);
+    } else {
+      peer_list_.evictable_bad_peers_.erase(key);
+    }
     if (peer.is_permanent_member()) {
       peer.clear_certificate();
     } else {
@@ -885,6 +905,8 @@ void OverlayImpl::update_root_member_list(std::vector<adnl::AdnlNodeIdShort> ids
       OverlayPeer peer(std::move(node));
       peer.set_permanent(true);
       CHECK(peer.is_permanent_member());
+      peer_list_.bad_peers_.erase(id);
+      peer_list_.evictable_bad_peers_.erase(id);
       peer_list_.peers_.insert(std::move(id), std::move(peer));
     }
   }
