@@ -763,9 +763,6 @@ void OverlayImpl::send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, Br
     if (!extra.empty()) {
       LOG(WARNING) << "Broadcast extra for old fec broadcast is not supported";
     }
-    if (dissemination == BroadcastFecDissemination::HighFanout) {
-      ++pending_metrics_.high_fanout_broadcasts;
-    }
     broadcasts_fec_.send(this, send_as, std::move(data), flags, dissemination, opts_.broadcast_speed_multiplier_);
   }
 }

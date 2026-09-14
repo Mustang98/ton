@@ -44,11 +44,6 @@ namespace validator {
 
 namespace fullnode {
 
-enum class RebroadcasterChain { master, shard };
-inline constexpr metrics::LabelEnum<RebroadcasterChain, 2> ton_metric_label(RebroadcasterChain) {
-  return {"chain", {{"master", "shard"}}};
-}
-
 enum class ExternalRelayResult { relayed, no_custom_route };
 inline constexpr metrics::LabelEnum<ExternalRelayResult, 2> ton_metric_label(ExternalRelayResult) {
   return {"result", {{"relayed", "no_custom_route"}}};
@@ -150,9 +145,9 @@ class FullNodeImpl : public FullNode {
 
  private:
   struct RebroadcasterMetrics {
-    metrics::Labeled<metrics::Counter, RebroadcasterChain, PublicRebroadcastRoute> blocks;
-    metrics::Labeled<metrics::Counter, RebroadcasterChain, PublicRebroadcastRoute> block_duplicates;
-    metrics::Labeled<metrics::Gauge<double>, RebroadcasterChain> last_block_timestamp_seconds;
+    metrics::Labeled<metrics::Counter, overlay::OverlayChain, PublicRebroadcastRoute> blocks;
+    metrics::Labeled<metrics::Counter, overlay::OverlayChain, PublicRebroadcastRoute> block_duplicates;
+    metrics::Labeled<metrics::Gauge<double>, overlay::OverlayChain> last_block_timestamp_seconds;
     metrics::Labeled<metrics::Counter, ExternalRelayResult> external_messages;
 
     void collect(metrics::Context ctx) const {

@@ -399,7 +399,6 @@ pairs), with a `tear_down` flush so a dying overlay's counts survive.
 |---|---|---|---|
 | `ton_overlay_broadcast_bytes_total` | counter | `direction=in\|out`, `tl` | Broadcast content bytes. `out` at the four terminal `send_broadcast*` entry points, pre-FEC-encoding, and only for content submitted to an overlay this node participates in (still counted if certificate checks later reject it). `in` at `deliver_broadcast`, post-reassembly. |
 | `ton_overlay_broadcast_messages_total` | counter | same | Broadcast count for the same events. |
-| `ton_overlay_high_fanout_broadcasts_total` | counter | `chain=master\|shard` | High-fanout FEC broadcasts that passed certificate checks and entered FEC encoding. |
 | `ton_overlay_high_fanout_errors_total` | counter | `chain=master\|shard` | High-fanout sends rejected because the overlay was missing or a membership/broadcast certificate was invalid. Logs retain the exact reason. |
 | `ton_overlay_high_fanout_whitelisted_peer_sends_total` | counter | `chain=master\|shard` | Per-peer FEC-part sends queued to whitelisted peers. Completed neighbours are skipped and do not increment it. |
 | `ton_overlay_high_fanout_random_peer_sends_total` | counter | `chain=master\|shard` | Per-peer FEC-part sends queued to the remaining randomly selected peers. Completed neighbours are skipped and do not increment it. |

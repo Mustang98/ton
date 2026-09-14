@@ -1190,7 +1190,7 @@ void FullNodeImpl::update_custom_overlay(CustomOverlayInfo &overlay) {
 }
 
 void FullNodeImpl::rebroadcast_block_to_public(BlockBroadcast broadcast, PublicRebroadcastRoute route) {
-  auto chain = broadcast.block_id.is_masterchain() ? RebroadcasterChain::master : RebroadcasterChain::shard;
+  auto chain = broadcast.block_id.is_masterchain() ? overlay::OverlayChain::master : overlay::OverlayChain::shard;
   if (public_rebroadcasted_blocks_.contains(broadcast.block_id)) {
     rebroadcaster_metrics_.block_duplicates.at(chain, route).inc();
     VLOG(full_node, DEBUG) << "Skipping duplicate public block rebroadcast: " << broadcast.block_id;

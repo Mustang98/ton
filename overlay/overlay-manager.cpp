@@ -731,7 +731,6 @@ td::actor::Task<> OverlayManager::collect(metrics::Context ctx) {
   auto overlay = ctx.with_name("overlay");
   overlay.collect(broadcasts_, "broadcast");
   auto high_fanout = overlay.with_name("high_fanout");
-  high_fanout.collect(high_fanout_broadcasts_, "broadcasts");
   high_fanout.collect(high_fanout_errors_, "errors");
   high_fanout.collect(high_fanout_whitelisted_peer_sends_, "whitelisted_peer_sends");
   high_fanout.collect(high_fanout_random_peer_sends_, "random_peer_sends");
@@ -749,9 +748,6 @@ void OverlayManager::absorb_metrics(OverlayMetrics delta, td::Promise<td::Unit> 
     return;
   }
   auto chain = *delta.public_chain;
-  if (delta.high_fanout_broadcasts != 0) {
-    high_fanout_broadcasts_.at(chain).inc(delta.high_fanout_broadcasts);
-  }
   if (delta.high_fanout_errors != 0) {
     high_fanout_errors_.at(chain).inc(delta.high_fanout_errors);
   }

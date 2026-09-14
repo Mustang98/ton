@@ -138,7 +138,6 @@ class OverlayManager : public Overlays {
 
   // Broadcast content: outbound recorded here directly, inbound drained from the per-overlay actors.
   metrics::Labeled<metrics::TlTrafficBucket, metrics::Direction> broadcasts_;
-  metrics::Labeled<metrics::Counter, OverlayChain> high_fanout_broadcasts_;
   metrics::Labeled<metrics::Counter, OverlayChain> high_fanout_errors_;
   metrics::Labeled<metrics::Counter, OverlayChain> high_fanout_whitelisted_peer_sends_;
   metrics::Labeled<metrics::Counter, OverlayChain> high_fanout_random_peer_sends_;

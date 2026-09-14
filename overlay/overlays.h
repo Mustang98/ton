@@ -354,7 +354,6 @@ enum class BroadcastFecDissemination { Normal, HighFanout };
 struct OverlayMetrics {
   metrics::TlTrafficBucket broadcasts;
   std::optional<OverlayChain> public_chain;
-  td::uint64 high_fanout_broadcasts = 0;
   td::uint64 high_fanout_errors = 0;
   td::uint64 high_fanout_whitelisted_peer_sends = 0;
   td::uint64 high_fanout_random_peer_sends = 0;
