@@ -971,8 +971,7 @@ void OverlayImpl::deliver_broadcast(PublicKeyHash source, td::BufferSlice data, 
 
 void OverlayImpl::collect_metrics(td::Promise<td::Unit> done) {
   auto metrics = drain_metrics();
-  if (overlay_type_ == OverlayType::Public) {
-    metrics.is_public = true;
+  if (overlay_type_ == OverlayType::Public && metrics.public_chain) {
     metrics.public_peers = peer_list_.peers_.size();
     for (const auto &peer : public_whitelisted_peer_ids_) {
       if (peer == local_id_) {

@@ -225,6 +225,9 @@ void OverlayManager::create_public_overlay_ex(adnl::AdnlNodeIdShort local_id, Ov
                                               td::string scope, OverlayOptions opts) {
   CHECK(!dht_node_.empty());
   auto id = overlay_id.compute_short_id();
+  if (opts.overlay_chain_) {
+    public_overlay_chains_[id] = *opts.overlay_chain_;
+  }
   register_overlay(local_id, id, OverlayMemberCertificate{},
                    Overlay::create_public(keyring_, adnl_, actor_id(this), dht_node_, local_id, std::move(overlay_id),
                                           std::move(callback), std::move(rules), scope, std::move(opts)));
@@ -478,7 +481,10 @@ void OverlayManager::send_broadcast_fec_with_extra(adnl::AdnlNodeIdShort local_i
     }
   }
   if (dissemination == BroadcastFecDissemination::HighFanout) {
-    high_fanout_errors_.at(overlay_id.bits256_value().to_hex()).inc();
+    auto it = public_overlay_chains_.find(overlay_id);
+    if (it != public_overlay_chains_.end()) {
+      high_fanout_errors_.at(it->second).inc();
+    }
   }
 }
 
@@ -738,23 +744,26 @@ td::actor::Task<> OverlayManager::collect(metrics::Context ctx) {
 
 void OverlayManager::absorb_metrics(OverlayMetrics delta, td::Promise<td::Unit> done) {
   broadcasts_.at(metrics::Direction::in) += delta.broadcasts;
+  if (!delta.public_chain) {
+    done.set_value(td::Unit());
+    return;
+  }
+  auto chain = *delta.public_chain;
   if (delta.high_fanout_broadcasts != 0) {
-    high_fanout_broadcasts_.at(delta.overlay_id).inc(delta.high_fanout_broadcasts);
+    high_fanout_broadcasts_.at(chain).inc(delta.high_fanout_broadcasts);
   }
   if (delta.high_fanout_errors != 0) {
-    high_fanout_errors_.at(delta.overlay_id).inc(delta.high_fanout_errors);
+    high_fanout_errors_.at(chain).inc(delta.high_fanout_errors);
   }
   if (delta.high_fanout_whitelisted_peer_sends != 0) {
-    high_fanout_whitelisted_peer_sends_.at(delta.overlay_id).inc(delta.high_fanout_whitelisted_peer_sends);
+    high_fanout_whitelisted_peer_sends_.at(chain).inc(delta.high_fanout_whitelisted_peer_sends);
   }
   if (delta.high_fanout_random_peer_sends != 0) {
-    high_fanout_random_peer_sends_.at(delta.overlay_id).inc(delta.high_fanout_random_peer_sends);
+    high_fanout_random_peer_sends_.at(chain).inc(delta.high_fanout_random_peer_sends);
   }
-  if (delta.is_public) {
-    public_peer_memberships_.at(delta.overlay_id).add(delta.public_peers);
-    public_whitelisted_peer_memberships_.at(delta.overlay_id).add(delta.public_whitelisted_peers);
-    public_alive_whitelisted_peer_memberships_.at(delta.overlay_id).add(delta.public_alive_whitelisted_peers);
-  }
+  public_peer_memberships_.at(chain).add(delta.public_peers);
+  public_whitelisted_peer_memberships_.at(chain).add(delta.public_whitelisted_peers);
+  public_alive_whitelisted_peer_memberships_.at(chain).add(delta.public_alive_whitelisted_peers);
   done.set_value(td::Unit());
 }
 

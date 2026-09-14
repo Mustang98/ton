@@ -138,13 +138,14 @@ class OverlayManager : public Overlays {
 
   // Broadcast content: outbound recorded here directly, inbound drained from the per-overlay actors.
   metrics::Labeled<metrics::TlTrafficBucket, metrics::Direction> broadcasts_;
-  metrics::DynLabel<"overlay_id", std::string, metrics::Counter> high_fanout_broadcasts_;
-  metrics::DynLabel<"overlay_id", std::string, metrics::Counter> high_fanout_errors_;
-  metrics::DynLabel<"overlay_id", std::string, metrics::Counter> high_fanout_whitelisted_peer_sends_;
-  metrics::DynLabel<"overlay_id", std::string, metrics::Counter> high_fanout_random_peer_sends_;
-  metrics::DynLabel<"overlay_id", std::string, metrics::Gauge<td::uint64>> public_peer_memberships_;
-  metrics::DynLabel<"overlay_id", std::string, metrics::Gauge<td::uint64>> public_whitelisted_peer_memberships_;
-  metrics::DynLabel<"overlay_id", std::string, metrics::Gauge<td::uint64>> public_alive_whitelisted_peer_memberships_;
+  metrics::Labeled<metrics::Counter, OverlayChain> high_fanout_broadcasts_;
+  metrics::Labeled<metrics::Counter, OverlayChain> high_fanout_errors_;
+  metrics::Labeled<metrics::Counter, OverlayChain> high_fanout_whitelisted_peer_sends_;
+  metrics::Labeled<metrics::Counter, OverlayChain> high_fanout_random_peer_sends_;
+  metrics::Labeled<metrics::Gauge<td::uint64>, OverlayChain> public_peer_memberships_;
+  metrics::Labeled<metrics::Gauge<td::uint64>, OverlayChain> public_whitelisted_peer_memberships_;
+  metrics::Labeled<metrics::Gauge<td::uint64>, OverlayChain> public_alive_whitelisted_peer_memberships_;
+  std::map<OverlayIdShort, OverlayChain> public_overlay_chains_;
 
   struct BufferedRequest {
     adnl::AdnlNodeIdShort src;

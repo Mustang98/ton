@@ -534,7 +534,9 @@ class OverlayImpl : public Overlay {
   OverlayMetrics pending_metrics_;
   OverlayMetrics drain_metrics() {
     auto result = std::exchange(pending_metrics_, {});
-    result.overlay_id = overlay_id_.bits256_value().to_hex();
+    if (overlay_type_ == OverlayType::Public) {
+      result.public_chain = opts_.overlay_chain_;
+    }
     return result;
   }
 

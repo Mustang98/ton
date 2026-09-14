@@ -33,8 +33,8 @@ each nesting level appends a segment joined with `_`:
   always present in the exposition (which is why the permanently-zero series in Known gaps still
   show up).
   The **open** label axes behave differently and emit only values actually observed: `code` on
-  the HTTP responses family, `overlay_id` on the rebroadcaster's overlay families, `tl` on the traffic
-  and latency buckets, `op` on the perf families, and `type` / `scheduler` on the actor families. The `tl` buckets always
+  the HTTP responses family, `tl` on the traffic and latency buckets, `op` on the perf families, and
+  `type` / `scheduler` on the actor families. The `tl` buckets always
   emit their `tl="unknown"` cell, populated or not, and a latency bucket always emits both of its
   families even when nothing was ever observed.
 
@@ -399,17 +399,13 @@ pairs), with a `tear_down` flush so a dying overlay's counts survive.
 |---|---|---|---|
 | `ton_overlay_broadcast_bytes_total` | counter | `direction=in\|out`, `tl` | Broadcast content bytes. `out` at the four terminal `send_broadcast*` entry points, pre-FEC-encoding, and only for content submitted to an overlay this node participates in (still counted if certificate checks later reject it). `in` at `deliver_broadcast`, post-reassembly. |
 | `ton_overlay_broadcast_messages_total` | counter | same | Broadcast count for the same events. |
-| `ton_overlay_high_fanout_broadcasts_total` | counter | `overlay_id` | High-fanout FEC broadcasts that passed certificate checks and entered FEC encoding. |
-| `ton_overlay_high_fanout_errors_total` | counter | `overlay_id` | High-fanout sends rejected because the overlay was missing or a membership/broadcast certificate was invalid. Logs retain the exact reason. |
-| `ton_overlay_high_fanout_whitelisted_peer_sends_total` | counter | `overlay_id` | Per-peer FEC-part sends queued to whitelisted peers. Completed neighbours are skipped and do not increment it. |
-| `ton_overlay_high_fanout_random_peer_sends_total` | counter | `overlay_id` | Per-peer FEC-part sends queued to the remaining randomly selected peers. Completed neighbours are skipped and do not increment it. |
-| `ton_overlay_public_peer_memberships` | gauge | `overlay_id` | Entries in this public overlay's peer table. |
-| `ton_overlay_public_whitelisted_peer_memberships` | gauge | `overlay_id` | Configured remote whitelist memberships in this overlay. The local ID, if listed, is excluded. |
-| `ton_overlay_public_alive_whitelisted_peer_memberships` | gauge | `overlay_id` | Whitelist memberships currently considered alive in this overlay. |
-
-`overlay_id` is the same short ID exposed by `getstats`, rendered as 64 hexadecimal characters here.
-For blockchain public overlays, that response's existing `scope` field maps the ID to its
-`workchain_id` and `shard_id` (`workchain_id = -1` is masterchain).
+| `ton_overlay_high_fanout_broadcasts_total` | counter | `chain=master\|shard` | High-fanout FEC broadcasts that passed certificate checks and entered FEC encoding. |
+| `ton_overlay_high_fanout_errors_total` | counter | `chain=master\|shard` | High-fanout sends rejected because the overlay was missing or a membership/broadcast certificate was invalid. Logs retain the exact reason. |
+| `ton_overlay_high_fanout_whitelisted_peer_sends_total` | counter | `chain=master\|shard` | Per-peer FEC-part sends queued to whitelisted peers. Completed neighbours are skipped and do not increment it. |
+| `ton_overlay_high_fanout_random_peer_sends_total` | counter | `chain=master\|shard` | Per-peer FEC-part sends queued to the remaining randomly selected peers. Completed neighbours are skipped and do not increment it. |
+| `ton_overlay_public_peer_memberships` | gauge | `chain=master\|shard` | Entries in the public overlay peer table for this chain. |
+| `ton_overlay_public_whitelisted_peer_memberships` | gauge | `chain=master\|shard` | Configured remote whitelist memberships in the public overlay for this chain. The local ID, if listed, is excluded. |
+| `ton_overlay_public_alive_whitelisted_peer_memberships` | gauge | `chain=master\|shard` | Whitelist memberships currently considered alive in the public overlay for this chain. |
 
 Two semantics worth knowing. Sizes here are content bytes while the transport tiers count wire
 bytes, so the transport app tier's FEC-part traffic (`*_app_*` under the four FEC constructors:

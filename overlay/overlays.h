@@ -19,6 +19,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "adnl/adnl-node-id.hpp"
@@ -40,6 +41,11 @@ namespace ton {
 namespace overlay {
 
 enum class OverlayType { Public, FixedMemberList, CertificatedMembers };
+
+enum class OverlayChain { master, shard };
+inline constexpr metrics::LabelEnum<OverlayChain, 2> ton_metric_label(OverlayChain) {
+  return {"chain", {{"master", "shard"}}};
+}
 
 class OverlayIdShort {
  public:
@@ -335,6 +341,8 @@ struct OverlayOptions {
   td::actor::ActorId<adnl::AdnlSenderEx> plumtree_broadcast_sender_ = {};
   PlumtreeFecOptions plumtree_fec_options_;
 
+  std::optional<OverlayChain> overlay_chain_;
+
   td::RateLimiterWindow::Params auth_broadcast_rate_limit_ = {};
   td::RateLimiterWindow::Params auth_broadcast_size_rate_limit_ = {};
   td::RateLimiterWindow::Params unauth_broadcast_rate_limit_ = {};
@@ -345,12 +353,11 @@ enum class BroadcastFecDissemination { Normal, HighFanout };
 
 struct OverlayMetrics {
   metrics::TlTrafficBucket broadcasts;
-  std::string overlay_id;
+  std::optional<OverlayChain> public_chain;
   td::uint64 high_fanout_broadcasts = 0;
   td::uint64 high_fanout_errors = 0;
   td::uint64 high_fanout_whitelisted_peer_sends = 0;
   td::uint64 high_fanout_random_peer_sends = 0;
-  bool is_public = false;
   td::uint64 public_peers = 0;
   td::uint64 public_whitelisted_peers = 0;
   td::uint64 public_alive_whitelisted_peers = 0;
