@@ -141,7 +141,7 @@ static td::Result<ton::adnl::AdnlNode> parse_public_whitelisted_peer(td::Slice d
   ton::adnl::AdnlAddressList address_list;
   TRY_STATUS(address_list.add_udp_adnl_address(address));
   address_list.set_version(static_cast<td::uint32>(td::Clocks::system()));
-  address_list.set_reinit_date(ton::adnl::Adnl::adnl_start_time());
+  address_list.set_reinit_date(0);
   return ton::adnl::AdnlNode{std::move(full_id), std::move(address_list)};
 }
 
