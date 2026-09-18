@@ -433,6 +433,7 @@ produced FEC sends.
 | `ton_rebroadcaster_configured_whitelisted_peers` | gauge | — | Peers loaded from the public whitelist file. This is the configured list size, unlike overlay-local membership gauges. |
 | `ton_rebroadcaster_blocks_total` | counter | `chain=master\|shard`, `route=fast_sync_full\|custom_full\|assembled_top_descr\|assembled_finality\|download` | Unique blocks accepted by the rebroadcast LRU and scheduled to the public overlay. `route` is the first path to win deduplication. |
 | `ton_rebroadcaster_block_duplicates_total` | counter | same | Later attempts rejected by the rebroadcast LRU, attributed to the route that supplied the duplicate. |
+| `ton_rebroadcaster_received_public_block_broadcasts_total` | counter | `chain=master\|shard` | Complete public-overlay full-block broadcasts delivered after overlay broadcast-ID deduplication and successfully deserialized. Different broadcast IDs for the same block increment separately; repeated FEC parts or paths for one broadcast ID do not. Includes locally originated broadcasts delivered back through the public-overlay callback. |
 | `ton_rebroadcaster_last_block_timestamp_seconds` | gauge | `chain=master\|shard` | Unix timestamp when the latest unique block of that chain was scheduled; 0 until the first one. |
 | `ton_rebroadcaster_external_messages_total` | counter | `result=relayed\|no_custom_route` | Validated public external messages reaching the relay stage. `relayed` means the message was submitted to at least one matching custom overlay. |
 

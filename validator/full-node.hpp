@@ -147,12 +147,14 @@ class FullNodeImpl : public FullNode {
   struct RebroadcasterMetrics {
     metrics::Labeled<metrics::Counter, overlay::OverlayChain, PublicRebroadcastRoute> blocks;
     metrics::Labeled<metrics::Counter, overlay::OverlayChain, PublicRebroadcastRoute> block_duplicates;
+    metrics::Labeled<metrics::Counter, overlay::OverlayChain> received_public_block_broadcasts;
     metrics::Labeled<metrics::Gauge<double>, overlay::OverlayChain> last_block_timestamp_seconds;
     metrics::Labeled<metrics::Counter, ExternalRelayResult> external_messages;
 
     void collect(metrics::Context ctx) const {
       ctx.collect(blocks, "blocks");
       ctx.collect(block_duplicates, "block_duplicates");
+      ctx.collect(received_public_block_broadcasts, "received_public_block_broadcasts");
       ctx.collect(last_block_timestamp_seconds, "last_block_timestamp_seconds");
       ctx.collect(external_messages, "external_messages");
     }

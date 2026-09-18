@@ -849,6 +849,10 @@ void FullNodeImpl::new_key_block(BlockHandle handle) {
 
 void FullNodeImpl::process_block_broadcast(BlockBroadcast broadcast, bool signatures_checked, BroadcastSource source,
                                            bool send_to_custom) {
+  if (source == BroadcastSource::public_overlay) {
+    auto chain = broadcast.block_id.is_masterchain() ? overlay::OverlayChain::master : overlay::OverlayChain::shard;
+    rebroadcaster_metrics_.received_public_block_broadcasts.at(chain).inc();
+  }
   if (send_to_custom) {
     send_block_broadcast_to_custom_overlays(broadcast);
   }
