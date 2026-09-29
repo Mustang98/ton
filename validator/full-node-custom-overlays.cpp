@@ -31,6 +31,22 @@ namespace {
 
 constexpr const char *k_called_from_custom = "custom";
 
+void validate_and_relay_external_message(td::actor::ActorId<ValidatorManagerInterface> validator_manager,
+                                         td::actor::ActorId<FullNode> full_node, std::string source_overlay,
+                                         adnl::AdnlNodeIdShort source, td::BufferSlice data, int priority) {
+  auto relay_data = data.clone();
+  auto promise =
+      td::PromiseCreator::lambda([full_node, source_overlay = std::move(source_overlay), source,
+                                  data = std::move(relay_data), priority](td::Result<td::Unit> result) mutable {
+        if (result.is_ok()) {
+          td::actor::send_closure(full_node, &FullNode::relay_external_message, std::move(data),
+                                  std::move(source_overlay), source, priority);
+        }
+      });
+  td::actor::send_closure(validator_manager, &ValidatorManagerInterface::new_external_message_broadcast,
+                          std::move(data), priority, std::move(promise));
+}
+
 }  // namespace
 
 void FullNodeCustomOverlay::process_broadcast(PublicKeyHash src, ton_api::tonNode_blockBroadcast &query) {
@@ -150,11 +166,18 @@ void FullNodeCustomOverlay::process_broadcast(PublicKeyHash src, ton_api::tonNod
                            << "\" from unauthorized sender " << src;
     return;
   }
-  VLOG(full_node, DEBUG) << "Got external message in custom overlay \"" << name_ << "\" from " << src
-                         << " (priority=" << it->second << ")";
-  td::actor::ask(validator_manager_, &ValidatorManagerInterface::new_external_message_broadcast,
-                 std::move(query.message_->data_), it->second)
-      .detach();
+  auto hash = td::sha256_bits256(query.message_->data_.as_slice());
+  VLOG(full_node, WARNING) << "Received external message hash=" << hash.to_hex()
+                           << " size=" << query.message_->data_.size() << " priority=" << it->second
+                           << " from sender=" << src << " in custom overlay \"" << name_ << "\"";
+  if (msg_senders_.contains(local_id_)) {
+    td::actor::ask(validator_manager_, &ValidatorManagerInterface::new_external_message_broadcast,
+                   std::move(query.message_->data_), it->second)
+        .detach();
+  } else {
+    validate_and_relay_external_message(validator_manager_, full_node_, name_, adnl::AdnlNodeIdShort{src},
+                                        std::move(query.message_->data_), it->second);
+  }
 }
 
 void FullNodeCustomOverlay::process_broadcast(PublicKeyHash src, ton_api::tonNode_newBlockCandidateBroadcast &query) {

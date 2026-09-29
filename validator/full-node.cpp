@@ -360,6 +360,25 @@ td::actor::Task<> FullNodeImpl::send_ext_message(AccountIdPrefixFull dst, td::Bu
   co_return {};
 }
 
+void FullNodeImpl::relay_external_message(td::BufferSlice data, std::string source_overlay,
+                                          adnl::AdnlNodeIdShort source, int priority) {
+  if (!opts_.relay_externals_in_custom_) {
+    return;
+  }
+  auto hash = td::sha256_bits256(data.as_slice());
+  for (auto &[name, custom_overlay] : custom_overlays_) {
+    for (auto &[local_id, actor] : custom_overlay.actors_) {
+      if (custom_overlay.params_.msg_senders_.contains(local_id)) {
+        VLOG(full_node, WARNING) << "Relaying external message hash=" << hash.to_hex() << " size=" << data.size()
+                                 << " priority=" << priority << " from sender=" << source << " in custom overlay \""
+                                 << source_overlay << "\" to custom overlay \"" << name
+                                 << "\" via local sender=" << local_id;
+        td::actor::send_closure(actor, &FullNodeCustomOverlay::send_external_message, data.clone());
+      }
+    }
+  }
+}
+
 void FullNodeImpl::send_shard_block_info(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data) {
   if (!client_.empty()) {
     VLOG(full_node, WARNING) << "dropping OUT shard block info message: full-node is in slave mode";

@@ -66,6 +66,8 @@ class FullNodeImpl : public FullNode {
 
   void add_custom_overlay(CustomOverlayParams params, td::Promise<td::Unit> promise) override;
   void del_custom_overlay(std::string name, td::Promise<td::Unit> promise) override;
+  void relay_external_message(td::BufferSlice data, std::string source_overlay, adnl::AdnlNodeIdShort source,
+                              int priority) override;
 
   void on_new_masterchain_block(td::Ref<MasterchainState> state, std::set<ShardIdFull> shards_to_monitor);
 

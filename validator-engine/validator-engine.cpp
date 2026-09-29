@@ -5981,6 +5981,16 @@ int main(int argc, char *argv[]) {
   p.add_option('\0', "unsynced-liteserver", "allow liteserver queries before node is fully synced", [&]() {
     acts.push_back([&x]() { td::actor::send_closure(x, &ValidatorEngine::set_unsynced_liteserver, true); });
   });
+  p.add_option('\0', "relay-externals-in-custom",
+               "relay external messages received in custom overlays to all custom overlays where this node is a "
+               "message sender",
+               [&]() {
+                 acts.push_back([&x]() {
+                   td::actor::send_closure(
+                       x, &ValidatorEngine::with_full_node_options,
+                       [](ton::validator::fullnode::FullNodeOptions &opts) { opts.relay_externals_in_custom_ = true; });
+                 });
+               });
   p.add_option('\0', "fast-state-serializer", "deprecated option (enabled by default)", [&]() {});
   p.add_option('\0', "collect-validator-telemetry",
                "store validator telemetry from fast sync overlay to a given file (json format)", [&](td::Slice s) {
