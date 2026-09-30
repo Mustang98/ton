@@ -44,9 +44,9 @@ namespace validator {
 
 namespace fullnode {
 
-enum class ExternalRelayResult { relayed, no_custom_route };
+enum class ExternalRelayResult { relayed, no_fast_sync_route };
 inline constexpr metrics::LabelEnum<ExternalRelayResult, 2> ton_metric_label(ExternalRelayResult) {
-  return {"result", {{"relayed", "no_custom_route"}}};
+  return {"result", {{"relayed", "no_fast_sync_route"}}};
 }
 
 class FullNodeImpl : public FullNode {
@@ -71,7 +71,7 @@ class FullNodeImpl : public FullNode {
 
   void add_custom_overlay(CustomOverlayParams params, td::Promise<td::Unit> promise) override;
   void del_custom_overlay(std::string name, td::Promise<td::Unit> promise) override;
-  void relay_external_message_to_custom(ShardIdFull shard, td::BufferSlice data) override;
+  void relay_external_message_to_fast_sync(ShardIdFull shard, td::BufferSlice data) override;
 
   void on_new_masterchain_block(td::Ref<MasterchainState> state, std::set<ShardIdFull> shards_to_monitor);
 
@@ -232,8 +232,7 @@ class FullNodeImpl : public FullNode {
 
   void update_private_overlays();
   void update_custom_overlay(CustomOverlayInfo& overlay);
-  bool send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice& data,
-                                                bool count_relay_metrics);
+  bool send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice& data);
   void rebroadcast_block_to_public(BlockBroadcast broadcast, PublicRebroadcastRoute route);
   void send_block_broadcast_to_custom_overlays(const BlockBroadcast& broadcast);
   void send_block_finality_broadcast_to_custom_overlays(const BlockFinalityBroadcast& finality);

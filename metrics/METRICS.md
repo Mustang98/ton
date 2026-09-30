@@ -428,14 +428,14 @@ produced FEC sends.
 | metric | type | labels | meaning |
 |---|---|---|---|
 | `ton_rebroadcaster_enabled` | gauge | — | 1 when `--public-rebroadcast` is enabled. |
-| `ton_rebroadcaster_external_relay_enabled` | gauge | — | 1 when public-to-custom external relay is enabled and external-message broadcasting is not disabled by full-node configuration. |
+| `ton_rebroadcaster_external_relay_enabled` | gauge | — | 1 when public-to-fast-sync external relay is enabled and external-message broadcasting is not disabled by full-node configuration. |
 | `ton_rebroadcaster_configured_fanout` | gauge | — | Configured high-fanout target, including when public rebroadcasting is disabled. |
 | `ton_rebroadcaster_configured_whitelisted_peers` | gauge | — | Peers loaded from the public whitelist file. This is the configured list size, unlike overlay-local membership gauges. |
 | `ton_rebroadcaster_blocks_total` | counter | `chain=master\|shard`, `route=fast_sync_full\|custom_full\|assembled_top_descr\|assembled_finality\|download` | Unique blocks accepted by the rebroadcast LRU and scheduled to the public overlay. `route` is the first path to win deduplication. |
 | `ton_rebroadcaster_block_duplicates_total` | counter | same | Later attempts rejected by the rebroadcast LRU, attributed to the route that supplied the duplicate. |
 | `ton_rebroadcaster_received_public_block_broadcasts_total` | counter | `chain=master\|shard` | Complete public-overlay full-block broadcasts delivered after overlay broadcast-ID deduplication and successfully deserialized. Different broadcast IDs for the same block increment separately; repeated FEC parts or paths for one broadcast ID do not. Includes locally originated broadcasts delivered back through the public-overlay callback. |
 | `ton_rebroadcaster_last_block_timestamp_seconds` | gauge | `chain=master\|shard` | Unix timestamp when the latest unique block of that chain was scheduled; 0 until the first one. |
-| `ton_rebroadcaster_external_messages_total` | counter | `result=relayed\|no_custom_route` | Validated public external messages reaching the relay stage. `relayed` means the message was submitted to at least one matching custom overlay. |
+| `ton_rebroadcaster_external_messages_total` | counter | `result=relayed\|no_fast_sync_route` | Validated public external messages reaching the relay stage. `relayed` means the message was submitted to the matching fast-sync overlay. |
 
 The rebroadcast route is intentionally not the origin of every block component. For assembled shard
 blocks, input origins remain available through `ton_first_received_total` and `ton_received_total`;

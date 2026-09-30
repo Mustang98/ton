@@ -392,9 +392,8 @@ void FullNodeImpl::update_public_overlay_mode(double fast_sync_authority_until) 
   }
   enable_public_overlays_at_ = td::Timestamp::never();
   bool is_validator_or_collator = !local_keys_.empty() || !local_collator_nodes_.empty();
-  // Both modes explicitly require public overlays even if the process also owns validator or collator identities.
-  bool requires_public_overlays = opts_.public_rebroadcast_enabled_ || opts_.relay_externals_to_custom_enabled_;
-  if (requires_public_overlays || !is_validator_or_collator) {
+  // Public rebroadcasters must retain public overlays even if the process also owns validator or collator identities.
+  if (opts_.public_rebroadcast_enabled_ || !is_validator_or_collator) {
     set_public_overlays_enabled(true);
     return;
   }
@@ -444,7 +443,7 @@ td::actor::Task<> FullNodeImpl::send_ext_message(AccountIdPrefixFull dst, td::Bu
                                       td::Timestamp::in(1.0), 1024);
     co_return {};
   }
-  bool skip_public = send_external_message_to_custom_overlays(dst.as_leaf_shard(), data, false);
+  bool skip_public = send_external_message_to_custom_overlays(dst.as_leaf_shard(), data);
   if (!opts_.config_.ext_messages_broadcast_disabled_) {
     auto fast_sync_overlay = fast_sync_overlays_.choose_overlay(dst.as_leaf_shard()).first;
     if (!fast_sync_overlay.empty()) {
@@ -463,16 +462,13 @@ td::actor::Task<> FullNodeImpl::send_ext_message(AccountIdPrefixFull dst, td::Bu
   co_return {};
 }
 
-bool FullNodeImpl::send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice &data,
-                                                            bool count_relay_metrics) {
+bool FullNodeImpl::send_external_message_to_custom_overlays(ShardIdFull shard, const td::BufferSlice &data) {
   bool skip_public = false;
-  bool relayed = false;
   for (auto &[_, custom_overlay] : custom_overlays_) {
     if (custom_overlay.params_.send_shard(shard)) {
       for (auto &[local_id, actor] : custom_overlay.actors_) {
         if (custom_overlay.params_.msg_senders_.contains(local_id)) {
           td::actor::send_closure(actor, &FullNodeCustomOverlay::send_external_message, data.clone());
-          relayed = true;
           if (custom_overlay.params_.skip_public_msg_send_) {
             skip_public = true;
           }
@@ -480,18 +476,20 @@ bool FullNodeImpl::send_external_message_to_custom_overlays(ShardIdFull shard, c
       }
     }
   }
-  if (count_relay_metrics) {
-    auto result = relayed ? ExternalRelayResult::relayed : ExternalRelayResult::no_custom_route;
-    rebroadcaster_metrics_.external_messages.at(result).inc();
-  }
   return skip_public;
 }
 
-void FullNodeImpl::relay_external_message_to_custom(ShardIdFull shard, td::BufferSlice data) {
-  if (!opts_.relay_externals_to_custom_enabled_ || opts_.config_.ext_messages_broadcast_disabled_) {
+void FullNodeImpl::relay_external_message_to_fast_sync(ShardIdFull shard, td::BufferSlice data) {
+  if (!opts_.relay_externals_to_fast_sync_enabled_ || opts_.config_.ext_messages_broadcast_disabled_) {
     return;
   }
-  send_external_message_to_custom_overlays(shard, data, true);
+  auto fast_sync_overlay = fast_sync_overlays_.choose_overlay(shard).first;
+  if (fast_sync_overlay.empty()) {
+    rebroadcaster_metrics_.external_messages.at(ExternalRelayResult::no_fast_sync_route).inc();
+    return;
+  }
+  td::actor::send_closure(fast_sync_overlay, &FullNodeFastSyncOverlay::send_external_message, std::move(data));
+  rebroadcaster_metrics_.external_messages.at(ExternalRelayResult::relayed).inc();
 }
 
 void FullNodeImpl::send_shard_block_info(BlockIdExt block_id, CatchainSeqno cc_seqno, td::BufferSlice data) {
@@ -1325,7 +1323,7 @@ void FullNodeImpl::rebroadcast_block_to_public(BlockBroadcast broadcast, PublicR
 td::actor::Task<> FullNodeImpl::collect(metrics::Context ctx) {
   auto rebroadcaster = ctx.with_name("rebroadcaster");
   rebroadcaster.collect(metrics::Gauge<td::uint64>{opts_.public_rebroadcast_enabled_}, "enabled");
-  rebroadcaster.collect(metrics::Gauge<td::uint64>{opts_.relay_externals_to_custom_enabled_ &&
+  rebroadcaster.collect(metrics::Gauge<td::uint64>{opts_.relay_externals_to_fast_sync_enabled_ &&
                                                    !opts_.config_.ext_messages_broadcast_disabled_},
                         "external_relay_enabled");
   rebroadcaster.collect(metrics::Gauge<td::uint64>{opts_.public_rebroadcast_fanout_}, "configured_fanout");
