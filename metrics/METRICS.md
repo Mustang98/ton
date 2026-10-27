@@ -435,6 +435,7 @@ pairs), with a `tear_down` flush so a dying overlay's counts survive.
 | `ton_overlay_broadcast_bytes_total` | counter | `direction=in\|out`, `tl` | Broadcast content bytes. `out` at the four terminal `send_broadcast*` entry points, pre-FEC-encoding, and only for content submitted to an overlay this node participates in (still counted if certificate checks later reject it). `in` at `deliver_broadcast`, post-reassembly. |
 | `ton_overlay_broadcast_messages_total` | counter | same | Broadcast count for the same events. |
 | `ton_overlay_public_peer_memberships` | gauge | `chain=master\|shard` | Entries in the public-overlay peer tables for this chain. Shard values are aggregated if more than one public shard overlay exists. |
+| `ton_overlay_public_plumtree_neighbour_memberships` | gauge | `chain=master\|shard` | Entries in the public overlays' Plumtree neighbour lists for this chain. Shard values are aggregated if more than one public shard overlay exists. |
 | `ton_overlay_public_alive_whitelisted_peer_memberships` | gauge | `chain=master\|shard` | Configured whitelist memberships currently considered alive in the public overlays for this chain. |
 | `ton_overlay_public_plumtree_eager_peers_avg` | gauge | `chain=master\|shard` | Average eager-set size across every Plumtree tree in the public overlays for this chain. These peers receive full payloads rather than only IHAVEs. |
 | `ton_overlay_public_plumtree_whitelisted_eager_peers_avg` | gauge | `chain=master\|shard` | Average number of whitelisted eager peers across the same trees. |

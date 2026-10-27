@@ -360,11 +360,13 @@ struct PlumtreeEagerPeerStats {
 
 struct PublicOverlayMetrics {
   td::uint64 peers = 0;
+  td::uint64 plumtree_neighbours = 0;
   td::uint64 alive_whitelisted_peers = 0;
   PlumtreeEagerPeerStats eager_peers;
 
   PublicOverlayMetrics &operator+=(const PublicOverlayMetrics &other) {
     peers += other.peers;
+    plumtree_neighbours += other.plumtree_neighbours;
     alive_whitelisted_peers += other.alive_whitelisted_peers;
     eager_peers.peers += other.eager_peers.peers;
     eager_peers.whitelisted_peers += other.eager_peers.whitelisted_peers;

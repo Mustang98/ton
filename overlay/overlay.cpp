@@ -959,6 +959,7 @@ void OverlayImpl::collect_metrics(td::Promise<td::Unit> done) {
   auto metrics = drain_metrics();
   if (metrics.public_chain) {
     metrics.public_overlay.peers = peer_list_.peers_.size();
+    metrics.public_overlay.plumtree_neighbours = peer_list_.plumtree_neighbours_.size();
     for (const auto &peer : public_whitelisted_peer_ids_) {
       if (peer != local_id_) {
         auto *entry = peer_list_.peers_.get(peer);

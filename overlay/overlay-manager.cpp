@@ -702,6 +702,7 @@ void OverlayManager::forget_peer(adnl::AdnlNodeIdShort local_id, OverlayIdShort 
 
 void PublicOverlayMetrics::collect(metrics::Context ctx) const {
   ctx.collect(metrics::Gauge<td::uint64>{peers}, "peer_memberships");
+  ctx.collect(metrics::Gauge<td::uint64>{plumtree_neighbours}, "plumtree_neighbour_memberships");
   ctx.collect(metrics::Gauge<td::uint64>{alive_whitelisted_peers}, "alive_whitelisted_peer_memberships");
   double trees = static_cast<double>(eager_peers.trees);
   ctx.collect(metrics::Gauge<double>{trees == 0.0 ? 0.0 : static_cast<double>(eager_peers.peers) / trees},
