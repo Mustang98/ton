@@ -121,7 +121,7 @@ void FullNodeShardImpl::create_overlay() {
     opts.plumtree_neighbour_partition_count_ = opts_.public_rebroadcast_partition_count_;
     opts.plumtree_neighbour_partition_index_ = opts_.public_rebroadcast_partition_index_;
     opts.public_whitelisted_peers_ = get_public_whitelisted_peers();
-    opts.max_peers_ = std::max<td::uint32>(opts.max_peers_, 600);
+    opts.max_peers_ = std::max<td::uint32>(opts.max_peers_, 800);
   }
   opts.plumtree_broadcast_sender_ = quic_;
   opts.plumtree_fec_options_.stats_store_limit_ = k_public_plumtree_stats_store_limit;
