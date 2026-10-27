@@ -466,15 +466,17 @@ void OverlayImpl::alarm() {
           send_random_peers_v2(peer, {});
         }
       };
-      auto neighbour_id = adnl::AdnlNodeIdShort::zero();
+      std::set<adnl::AdnlNodeIdShort> queried_peers;
       if (auto neighbour = get_random_neighbour_peer()) {
-        neighbour_id = neighbour->get_id();
-        send_random_peers_query(neighbour_id);
+        queried_peers.insert(neighbour->get_id());
+        send_random_peers_query(neighbour->get_id());
       }
-      if (auto peer = get_random_peer()) {
-        auto peer_id = peer->get_id();
-        if (peer_id != neighbour_id) {
-          send_random_peers_query(peer_id);
+      constexpr td::uint32 target_queries = 4;
+      for (td::uint32 attempt = 0; queried_peers.size() < target_queries && attempt < target_queries * 4; ++attempt) {
+        if (auto peer = get_random_peer()) {
+          if (queried_peers.insert(peer->get_id()).second) {
+            send_random_peers_query(peer->get_id());
+          }
         }
       }
       if (overlay_type_ == OverlayType::Public && !opts_.public_whitelisted_peers_.empty()) {

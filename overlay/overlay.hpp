@@ -609,7 +609,7 @@ class OverlayImpl : public Overlay {
 
   std::set<adnl::AdnlNodeIdShort> reject_signatures_from_;
   td::RateLimiterWindow receive_peers_rate_limiter_;
-  td::RateLimiterWindow process_pending_peers_rate_limiter_{60.0, 180};
+  td::RateLimiterWindow process_pending_peers_rate_limiter_{10.0, 80};
   std::set<adnl::AdnlNodeIdShort> processing_pending_peers_;
 
   void cleanup_authorized_key_limiters();

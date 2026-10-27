@@ -341,6 +341,12 @@ td::actor::Task<> OverlayImpl::process_pending_peer(OverlayNode node) {
                               << " - unsupported protocol version " << version.first << "." << version.second;
           break;
         }
+        if (static_cast<td::uint32>(capabilities.ok()->flags_) &
+            OverlayCapabilitiesFlags::DoNotReceivePlumtreeBroadcasts) {
+          VLOG(overlay, INFO) << this << ": dropping pending peer " << node.adnl_id_short()
+                              << " - does not receive Plumtree broadcasts";
+          break;
+        }
       }
     }
     VLOG(overlay, INFO) << this << ": adding pending peer " << node.adnl_id_short();

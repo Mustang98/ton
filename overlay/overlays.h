@@ -106,6 +106,13 @@ struct OverlayMemberFlags {
   enum Values : td::uint32 { DoNotReceivePlumtreeBroadcasts = 1 };
 };
 
+// Flags advertised in tonNode.capabilities by public-overlay peers.
+// These are separate from OverlayMemberFlags because public overlays exchange
+// overlay.node (V1), which does not carry member flags.
+struct OverlayCapabilitiesFlags {
+  enum Values : td::uint32 { DoNotReceivePlumtreeBroadcasts = 1 };
+};
+
 enum BroadcastCheckResult { Forbidden = 1, NeedCheck = 2, Allowed = 3 };
 
 inline BroadcastCheckResult broadcast_check_result_max(BroadcastCheckResult l, BroadcastCheckResult r) {
@@ -318,7 +325,7 @@ struct OverlayOptions {
   td::uint32 default_permanent_members_flags_ = 0;
   double broadcast_speed_multiplier_ = 1.0;
   bool private_ping_peers_ = false;
-  td::uint32 max_pending_peers_ = 100;
+  td::uint32 max_pending_peers_ = 200;
 
   td::actor::ActorId<adnl::AdnlSenderEx> twostep_broadcast_sender_ = {};
   bool send_twostep_broadcast_ = false;
