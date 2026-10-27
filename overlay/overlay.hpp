@@ -466,6 +466,7 @@ class OverlayImpl : public Overlay {
   void add_peers(const tl_object_ptr<ton_api::overlay_nodes> &nodes, bool verified, bool checked_signature = false);
   void add_peers(const tl_object_ptr<ton_api::overlay_nodesV2> &nodes, bool verified, bool checked_signature = false);
   bool is_public_whitelisted_peer(const adnl::AdnlNodeIdShort &id) const;
+  bool matches_plumtree_neighbour_partition(const adnl::AdnlNodeIdShort &id) const;
   bool update_public_whitelisted_peer(OverlayPeer *peer);
   void process_pending_peers();
   td::actor::Task<> process_pending_peer(OverlayNode node);

@@ -5813,6 +5813,8 @@ int main(int argc, char *argv[]) {
   LOG_STATUS(td::change_maximize_rlimit(td::RlimitType::nofile, 3145728));
 
   std::vector<std::function<void()>> acts;
+  td::uint32 public_rebroadcast_partition_count = 1;
+  td::uint32 public_rebroadcast_partition_index = 0;
 
   td::OptionParser p;
   p.set_description("validator or full node for TON network");
@@ -6189,6 +6191,23 @@ int main(int argc, char *argv[]) {
                          });
                          return td::Status::OK();
                        });
+  p.add_checked_option('\0', "public-rebroadcast-partitions",
+                       "number of deterministic public rebroadcast peer partitions (default: 1)",
+                       [&](td::Slice value) -> td::Status {
+                         TRY_RESULT(count, td::to_integer_safe<td::uint32>(value));
+                         if (count == 0) {
+                           return td::Status::Error("public-rebroadcast-partitions should be positive");
+                         }
+                         public_rebroadcast_partition_count = count;
+                         return td::Status::OK();
+                       });
+  p.add_checked_option('\0', "public-rebroadcast-partition-index",
+                       "zero-based public rebroadcast peer partition index (default: 0)",
+                       [&](td::Slice value) -> td::Status {
+                         TRY_RESULT(index, td::to_integer_safe<td::uint32>(value));
+                         public_rebroadcast_partition_index = index;
+                         return td::Status::OK();
+                       });
   p.add_checked_option('\0', "public-whitelisted-peers",
                        "JSON file with preferred first-hop ADNL peers for public Plumtree broadcasts; optional "
                        "quic_port defaults to the ADNL port plus 1000",
@@ -6368,6 +6387,13 @@ int main(int argc, char *argv[]) {
     LOG(ERROR) << "failed to parse options: " << S.move_as_error();
     std::_Exit(2);
   }
+  if (public_rebroadcast_partition_index >= public_rebroadcast_partition_count) {
+    LOG(ERROR) << "failed to parse options: public rebroadcast partition index must be smaller than partition count";
+    std::_Exit(2);
+  }
+  acts.push_back([&x, count = public_rebroadcast_partition_count, index = public_rebroadcast_partition_index]() {
+    td::actor::send_closure(x, &ValidatorEngine::set_public_rebroadcast_partition, count, index);
+  });
 
   switch (log_type) {
     case LogType::None:

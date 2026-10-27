@@ -313,6 +313,8 @@ struct OverlayOptions {
   td::uint32 nodes_to_send_ = 4;
   td::uint32 propagate_broadcast_to_ = 5;
   std::vector<adnl::AdnlNodeIdShort> public_whitelisted_peers_;
+  td::uint32 plumtree_neighbour_partition_count_ = 1;
+  td::uint32 plumtree_neighbour_partition_index_ = 0;
   td::uint32 default_permanent_members_flags_ = 0;
   double broadcast_speed_multiplier_ = 1.0;
   bool private_ping_peers_ = false;

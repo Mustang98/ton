@@ -351,9 +351,8 @@ void FullNodeImpl::update_shard_actor(ShardIdFull shard, bool active) {
       td::actor::send_closure(keyring_, &ton::keyring::Keyring::add_key, std::move(private_key), true,
                               [](td::Result<>) {});
     }
-    info.actor =
-        FullNodeShard::create(shard, info.local_id, adnl_id_, zero_state_file_hash_, opts_, adnl_, rldp2_, quic_,
-                              overlays_, validator_manager_, actor_id(this), active);
+    info.actor = FullNodeShard::create(shard, info.local_id, adnl_id_, zero_state_file_hash_, opts_, adnl_, rldp2_,
+                                       quic_, overlays_, validator_manager_, actor_id(this), active);
     if (!all_validators_.empty()) {
       td::actor::send_closure(info.actor, &FullNodeShard::update_validators, all_validators_);
     }

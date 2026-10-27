@@ -61,6 +61,8 @@ struct FullNodeOptions {
 
   bool public_rebroadcast_enabled_ = false;
   td::uint32 public_rebroadcast_fanout_ = 50;
+  td::uint32 public_rebroadcast_partition_count_ = 1;
+  td::uint32 public_rebroadcast_partition_index_ = 0;
   std::vector<adnl::AdnlNode> public_whitelisted_peers_;
 
   struct RateLimiterParams {

@@ -118,6 +118,8 @@ void FullNodeShardImpl::create_overlay() {
     opts.plumtree_fec_options_.original_sender_eager_limit_ = opts_.public_rebroadcast_fanout_;
     opts.plumtree_fec_options_.active_neighbours_ =
         std::max(opts.plumtree_fec_options_.active_neighbours_, opts_.public_rebroadcast_fanout_);
+    opts.plumtree_neighbour_partition_count_ = opts_.public_rebroadcast_partition_count_;
+    opts.plumtree_neighbour_partition_index_ = opts_.public_rebroadcast_partition_index_;
     opts.public_whitelisted_peers_ = get_public_whitelisted_peers();
     opts.max_peers_ = std::max<td::uint32>(opts.max_peers_, 600);
   }
@@ -616,8 +618,8 @@ td::actor::Task<QuerySender> FullNodeShardImpl::get_query_sender() {
     }
     peer_id = peers[0];
   }
-  co_return std::make_shared<QuerySenderImpl>(peer_id, adnl_id_, overlay_id_, overlays_, quic_,
-                                              actor_id(this), peer.version());
+  co_return std::make_shared<QuerySenderImpl>(peer_id, adnl_id_, overlay_id_, overlays_, quic_, actor_id(this),
+                                              peer.version());
 }
 
 void FullNodeShardImpl::update_validators(std::vector<PublicKeyHash> public_key_hashes) {

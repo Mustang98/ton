@@ -424,6 +424,10 @@ class ValidatorEngine : public td::actor::Actor {
   void set_public_rebroadcast_fanout(td::uint32 fanout) {
     full_node_options_.public_rebroadcast_fanout_ = fanout;
   }
+  void set_public_rebroadcast_partition(td::uint32 count, td::uint32 index) {
+    full_node_options_.public_rebroadcast_partition_count_ = count;
+    full_node_options_.public_rebroadcast_partition_index_ = index;
+  }
   void set_public_whitelisted_peers(std::vector<ton::adnl::AdnlNode> peers) {
     full_node_options_.public_whitelisted_peers_ = std::move(peers);
   }

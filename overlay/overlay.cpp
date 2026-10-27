@@ -115,6 +115,8 @@ OverlayImpl::OverlayImpl(td::actor::ActorId<keyring::Keyring> keyring, td::actor
     , opts_(std::move(opts))
     , public_whitelisted_peer_ids_(opts_.public_whitelisted_peers_.begin(), opts_.public_whitelisted_peers_.end()) {
   overlay_id_ = id_full_.compute_short_id();
+  CHECK(opts_.plumtree_neighbour_partition_count_ > 0);
+  CHECK(opts_.plumtree_neighbour_partition_index_ < opts_.plumtree_neighbour_partition_count_);
   frequent_dht_lookup_ = opts_.frequent_dht_lookup_;
   peer_list_.local_member_flags_ = opts_.local_overlay_member_flags_;
   opts_.broadcast_speed_multiplier_ = std::max(opts_.broadcast_speed_multiplier_, 1e-9);
