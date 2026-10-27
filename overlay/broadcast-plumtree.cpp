@@ -286,6 +286,7 @@ class BroadcastsPlumtree::Impl {
                                        tl_object_ptr<ton_api::overlay_plumtreeStatsPush> msg);
   std::vector<tl_object_ptr<ton_api::overlay_plumtreeStatsRecord>> stats_collect_records() const;
   PlumtreeEagerPeerStats eager_peer_stats(const std::set<adnl::AdnlNodeIdShort> &whitelisted_peers) const;
+  bool is_eager_peer(adnl::AdnlNodeIdShort peer) const;
 
   void alarm(OverlayImpl *overlay);
   td::Timestamp next_alarm_at();
@@ -1897,6 +1898,10 @@ PlumtreeEagerPeerStats BroadcastsPlumtree::Impl::eager_peer_stats(
   return result;
 }
 
+bool BroadcastsPlumtree::Impl::is_eager_peer(adnl::AdnlNodeIdShort peer) const {
+  return eager_peer_refcnt_.contains(peer);
+}
+
 void BroadcastsPlumtree::Impl::stats_forward(OverlayImpl *overlay, const ton_api::overlay_plumtreeStatsRecord &record,
                                              const adnl::AdnlNodeIdShort &from) {
   for (const auto &dst : slots_[PLUMTREE_SIMPLE_TREE_INDEX].eager) {
@@ -2114,6 +2119,10 @@ std::vector<tl_object_ptr<ton_api::overlay_plumtreeStatsRecord>> BroadcastsPlumt
 PlumtreeEagerPeerStats BroadcastsPlumtree::eager_peer_stats(
     const std::set<adnl::AdnlNodeIdShort> &whitelisted_peers) const {
   return impl_->eager_peer_stats(whitelisted_peers);
+}
+
+bool BroadcastsPlumtree::is_eager_peer(adnl::AdnlNodeIdShort peer) const {
+  return impl_->is_eager_peer(peer);
 }
 
 void BroadcastsPlumtree::alarm(OverlayImpl *overlay) {

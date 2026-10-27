@@ -102,6 +102,7 @@ class BroadcastsPlumtree {
                                        tl_object_ptr<ton_api::overlay_plumtreeStatsPush> msg);
   std::vector<tl_object_ptr<ton_api::overlay_plumtreeStatsRecord>> collect_stats_records() const;
   PlumtreeEagerPeerStats eager_peer_stats(const std::set<adnl::AdnlNodeIdShort> &whitelisted_peers) const;
+  bool is_eager_peer(adnl::AdnlNodeIdShort peer) const;
 
   void alarm(OverlayImpl *overlay);
   td::Timestamp next_alarm_at();
