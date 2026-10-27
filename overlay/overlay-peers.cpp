@@ -311,21 +311,40 @@ void OverlayImpl::process_pending_peers() {
 }
 
 td::actor::Task<> OverlayImpl::process_pending_peer(OverlayNode node) {
-  VLOG(overlay, INFO) << this << ": trying to ping pending peer " << node.adnl_id_short();
+  VLOG(overlay, INFO) << this << ": trying to probe pending peer " << node.adnl_id_short();
   for (size_t attempt = 0; attempt < 3; ++attempt) {
     auto [task, promise] = td::actor::StartedTask<td::BufferSlice>::make_bridge();
-    td::actor::send_closure(manager_, &OverlayManager::send_query, node.adnl_id_short(), local_id_, overlay_id_,
-                            "overlay ping", std::move(promise), td::Timestamp::in(5.0),
-                            create_serialize_tl_object<ton_api::overlay_ping>());
+    auto query = overlay_type_ == OverlayType::Public
+                     ? create_serialize_tl_object<ton_api::tonNode_getCapabilities>()
+                     : create_serialize_tl_object<ton_api::overlay_ping>();
+    send_peer_query(node.adnl_id_short(), "overlay peer probe", std::move(promise), td::Timestamp::in(5.0),
+                    std::move(query));
     auto result = co_await std::move(task).wrap();
-    if (result.is_ok() || peer_list_.peers_.exists(node.adnl_id_short())) {
-      VLOG(overlay, INFO) << this << ": adding pending peer " << node.adnl_id_short();
-      processing_pending_peers_.erase(node.adnl_id_short());
-      add_peer(std::move(node), /* verified = */ true, /* checked_signature = */ true);
-      co_return {};
+    if (!peer_list_.peers_.exists(node.adnl_id_short())) {
+      if (result.is_error()) {
+        continue;
+      }
+      if (overlay_type_ == OverlayType::Public) {
+        auto capabilities = fetch_tl_object<ton_api::tonNode_capabilities>(result.move_as_ok(), true);
+        if (capabilities.is_error()) {
+          VLOG(overlay, INFO) << this << ": dropping pending peer " << node.adnl_id_short()
+                              << " - invalid capabilities response";
+          break;
+        }
+        auto version = std::make_pair(capabilities.ok()->version_major_, capabilities.ok()->version_minor_);
+        if (version < std::make_pair(3, 3)) {
+          VLOG(overlay, INFO) << this << ": dropping pending peer " << node.adnl_id_short()
+                              << " - unsupported protocol version " << version.first << "." << version.second;
+          break;
+        }
+      }
     }
+    VLOG(overlay, INFO) << this << ": adding pending peer " << node.adnl_id_short();
+    processing_pending_peers_.erase(node.adnl_id_short());
+    add_peer(std::move(node), /* verified = */ true, /* checked_signature = */ true);
+    co_return {};
   }
-  VLOG(overlay, INFO) << this << ": dropping pending node " << node.adnl_id_short() << " - does not respond";
+  VLOG(overlay, INFO) << this << ": dropping pending node " << node.adnl_id_short() << " - probe failed";
   processing_pending_peers_.erase(node.adnl_id_short());
   co_return {};
 }
@@ -450,6 +469,19 @@ void OverlayImpl::receive_random_peers_v2(adnl::AdnlNodeIdShort src, td::Result<
   add_peers(R2.move_as_ok(), /* verified = */ false);
 }
 
+void OverlayImpl::send_peer_query(adnl::AdnlNodeIdShort dst, std::string name,
+                                  td::Promise<td::BufferSlice> promise, td::Timestamp timeout,
+                                  td::BufferSlice query) {
+  if (overlay_type_ == OverlayType::Public) {
+    td::actor::send_closure(manager_, &OverlayManager::send_query_via, dst, local_id_, overlay_id_, std::move(name),
+                            std::move(promise), timeout, std::move(query), adnl::Adnl::huge_packet_max_size(),
+                            opts_.plumtree_broadcast_sender_);
+  } else {
+    td::actor::send_closure(manager_, &OverlayManager::send_query, dst, local_id_, overlay_id_, std::move(name),
+                            std::move(promise), timeout, std::move(query));
+  }
+}
+
 void OverlayImpl::send_random_peers_cont(adnl::AdnlNodeIdShort src, OverlayNode node,
                                          td::Promise<td::BufferSlice> promise) {
   std::vector<tl_object_ptr<ton_api::overlay_node>> vec;
@@ -479,9 +511,8 @@ void OverlayImpl::send_random_peers_cont(adnl::AdnlNodeIdShort src, OverlayNode 
         });
     auto Q =
         create_tl_object<ton_api::overlay_getRandomPeers>(create_tl_object<ton_api::overlay_nodes>(std::move(vec)));
-    td::actor::send_closure(manager_, &OverlayManager::send_query, src, local_id_, overlay_id_,
-                            "overlay getRandomPeers", std::move(P),
-                            td::Timestamp::in(5.0 + td::Random::fast(0, 50) * 0.1), serialize_tl_object(Q, true));
+    send_peer_query(src, "overlay getRandomPeers", std::move(P),
+                    td::Timestamp::in(5.0 + td::Random::fast(0, 50) * 0.1), serialize_tl_object(Q, true));
   }
 }
 
@@ -534,9 +565,8 @@ void OverlayImpl::send_random_peers_v2_cont(adnl::AdnlNodeIdShort src, OverlayNo
         });
     auto Q =
         create_tl_object<ton_api::overlay_getRandomPeersV2>(create_tl_object<ton_api::overlay_nodesV2>(std::move(vec)));
-    td::actor::send_closure(manager_, &OverlayManager::send_query, src, local_id_, overlay_id_,
-                            "overlay getRandomPeers", std::move(P),
-                            td::Timestamp::in(5.0 + td::Random::fast(0, 50) * 0.1), serialize_tl_object(Q, true));
+    send_peer_query(src, "overlay getRandomPeers", std::move(P),
+                    td::Timestamp::in(5.0 + td::Random::fast(0, 50) * 0.1), serialize_tl_object(Q, true));
   }
 }
 
@@ -762,7 +792,6 @@ size_t OverlayImpl::persistent_node_count() {
 bool OverlayImpl::check_src_peer(const adnl::AdnlNodeIdShort &src,
                                  const ton_api::overlay_MemberCertificate *certificate) {
   if (overlay_type_ == OverlayType::Public) {
-    on_ping_result(src, true);
     return true;
   } else if (overlay_type_ == OverlayType::FixedMemberList) {
     return peer_list_.peers_.get(src);

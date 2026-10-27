@@ -112,7 +112,7 @@ void FullNodeShardImpl::create_overlay() {
   opts.overlay_chain_ = shard_.is_masterchain() ? overlay::OverlayChain::master : overlay::OverlayChain::shard;
   opts.announce_self_ = active_;
   opts.broadcast_speed_multiplier_ = opts_.public_broadcast_speed_multiplier_;
-  opts.enable_plumtree_broadcast_ = enable_plumtree_broadcast_;
+  opts.enable_plumtree_broadcast_ = true;
   if (opts_.public_rebroadcast_enabled_) {
     opts.is_original_sender_ = true;
     opts.plumtree_fec_options_.original_sender_eager_limit_ = opts_.public_rebroadcast_fanout_;
@@ -121,8 +121,7 @@ void FullNodeShardImpl::create_overlay() {
     opts.public_whitelisted_peers_ = get_public_whitelisted_peers();
     opts.max_peers_ = std::max<td::uint32>(opts.max_peers_, 600);
   }
-  opts.plumtree_broadcast_sender_ = enable_plumtree_broadcast_ ? td::actor::ActorId<adnl::AdnlSenderEx>{quic_}
-                                                               : td::actor::ActorId<adnl::AdnlSenderEx>{};
+  opts.plumtree_broadcast_sender_ = quic_;
   opts.plumtree_fec_options_.stats_store_limit_ = k_public_plumtree_stats_store_limit;
   td::actor::send_closure(overlays_, &overlay::Overlays::create_public_overlay_ex, adnl_id_, overlay_id_full_.clone(),
                           std::make_unique<Callback>(actor_id(this)), rules_,
@@ -130,7 +129,6 @@ void FullNodeShardImpl::create_overlay() {
                                     << ", \"workchain_id\": " << get_workchain() << " }",
                           opts);
 
-  td::actor::send_closure(rldp2_, &rldp2::Rldp::add_id, adnl_id_);
   td::actor::send_closure(quic_, &quic::QuicSender::add_id, adnl_id_);
   if (cert_) {
     td::actor::send_closure(overlays_, &overlay::Overlays::update_certificate, adnl_id_, overlay_id_, local_id_, cert_);
@@ -211,22 +209,10 @@ void FullNodeShardImpl::update_adnl_id(adnl::AdnlNodeIdShort adnl_id, td::Promis
 }
 
 void FullNodeShardImpl::set_active(bool active) {
-  set_params(active, enable_plumtree_broadcast_);
-}
-
-void FullNodeShardImpl::set_params(bool active, bool enable_plumtree_broadcast) {
-  bool changed = false;
-  if (!shard_.is_masterchain() && active_ != active) {
-    active_ = active;
-    changed = true;
-  }
-  if (enable_plumtree_broadcast_ != enable_plumtree_broadcast) {
-    enable_plumtree_broadcast_ = enable_plumtree_broadcast;
-    changed = true;
-  }
-  if (!changed) {
+  if (shard_.is_masterchain() || active_ == active) {
     return;
   }
+  active_ = active;
   td::actor::send_closure(overlays_, &ton::overlay::Overlays::delete_overlay, adnl_id_, overlay_id_);
   create_overlay();
 }
@@ -432,9 +418,6 @@ void FullNodeShardImpl::send_external_message(td::BufferSlice data) {
 
 void FullNodeShardImpl::send_block_candidate(BlockIdExt block_id, CatchainSeqno cc_seqno, td::uint32 validator_set_hash,
                                              td::BufferSlice data) {
-  if (!enable_plumtree_broadcast_) {
-    return;
-  }
   auto B = serialize_block_candidate_broadcast(block_id, cc_seqno, validator_set_hash, data, true,
                                                k_called_from_public);  // compression enabled
   if (B.is_error()) {
@@ -462,9 +445,6 @@ void FullNodeShardImpl::send_broadcast(BlockBroadcast broadcast) {
 }
 
 void FullNodeShardImpl::send_block_finality_broadcast(BlockFinalityBroadcast finality) {
-  if (!enable_plumtree_broadcast_) {
-    return;
-  }
   VLOG(full_node, DEBUG) << "Sending Plumtree blockFinalityBroadcast in public overlay: " << finality.block_id;
   auto broadcast_id = get_tl_object_sha_bits256(
       create_tl_object<ton_api::tonNode_finalityBroadcastId>(create_tl_block_id(finality.block_id)));
@@ -636,13 +616,7 @@ td::actor::Task<QuerySender> FullNodeShardImpl::get_query_sender() {
     }
     peer_id = peers[0];
   }
-  td::actor::ActorId<adnl::AdnlSenderInterface> adnl_sender;
-  if (peer.version() >= std::make_pair<td::uint32, td::uint32>(3, 3)) {
-    adnl_sender = quic_;
-  } else {
-    adnl_sender = rldp2_;
-  }
-  co_return std::make_shared<QuerySenderImpl>(peer_id, adnl_id_, overlay_id_, overlays_, std::move(adnl_sender),
+  co_return std::make_shared<QuerySenderImpl>(peer_id, adnl_id_, overlay_id_, overlays_, quic_,
                                               actor_id(this), peer.version());
 }
 
@@ -841,8 +815,7 @@ FullNodeShardImpl::FullNodeShardImpl(ShardIdFull shard, PublicKeyHash local_id, 
                                      td::actor::ActorId<quic::QuicSender> quic,
                                      td::actor::ActorId<overlay::Overlays> overlays,
                                      td::actor::ActorId<ValidatorManagerInterface> validator_manager,
-                                     td::actor::ActorId<FullNode> full_node, bool active,
-                                     bool enable_plumtree_broadcast)
+                                     td::actor::ActorId<FullNode> full_node, bool active)
     : shard_(shard)
     , local_id_(local_id)
     , adnl_id_(adnl_id)
@@ -854,7 +827,6 @@ FullNodeShardImpl::FullNodeShardImpl(ShardIdFull shard, PublicKeyHash local_id, 
     , validator_manager_(validator_manager)
     , full_node_(full_node)
     , active_(active)
-    , enable_plumtree_broadcast_(enable_plumtree_broadcast)
     , opts_(opts) {
 }
 
@@ -863,10 +835,10 @@ td::actor::ActorOwn<FullNodeShard> FullNodeShard::create(
     FullNodeOptions opts, td::actor::ActorId<adnl::Adnl> adnl, td::actor::ActorId<rldp2::Rldp> rldp2,
     td::actor::ActorId<quic::QuicSender> quic, td::actor::ActorId<overlay::Overlays> overlays,
     td::actor::ActorId<ValidatorManagerInterface> validator_manager, td::actor::ActorId<FullNode> full_node,
-    bool active, bool enable_plumtree_broadcast) {
+    bool active) {
   return td::actor::create_actor<FullNodeShardImpl>(PSTRING() << "tonnode" << shard, shard, local_id, adnl_id,
                                                     zero_state_file_hash, opts, adnl, rldp2, quic, overlays,
-                                                    validator_manager, full_node, active, enable_plumtree_broadcast);
+                                                    validator_manager, full_node, active);
 }
 
 }  // namespace fullnode

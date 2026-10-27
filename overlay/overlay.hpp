@@ -242,6 +242,8 @@ class OverlayImpl : public Overlay {
   void on_ping_result(adnl::AdnlNodeIdShort peer, bool success, double store_ping_time = -1.0);
   void receive_random_peers(adnl::AdnlNodeIdShort src, td::Result<td::BufferSlice> R, double elapsed);
   void receive_random_peers_v2(adnl::AdnlNodeIdShort src, td::Result<td::BufferSlice> R, double elapsed);
+  void send_peer_query(adnl::AdnlNodeIdShort dst, std::string name, td::Promise<td::BufferSlice> promise,
+                       td::Timestamp timeout, td::BufferSlice query);
   void send_random_peers(adnl::AdnlNodeIdShort dst, td::Promise<td::BufferSlice> promise);
   void send_random_peers_v2(adnl::AdnlNodeIdShort dst, td::Promise<td::BufferSlice> promise);
   void send_random_peers_cont(adnl::AdnlNodeIdShort dst, OverlayNode node, td::Promise<td::BufferSlice> promise);
@@ -606,7 +608,7 @@ class OverlayImpl : public Overlay {
 
   std::set<adnl::AdnlNodeIdShort> reject_signatures_from_;
   td::RateLimiterWindow receive_peers_rate_limiter_;
-  td::RateLimiterWindow process_pending_peers_rate_limiter_{60.0, 60};
+  td::RateLimiterWindow process_pending_peers_rate_limiter_{60.0, 180};
   std::set<adnl::AdnlNodeIdShort> processing_pending_peers_;
 
   void cleanup_authorized_key_limiters();
